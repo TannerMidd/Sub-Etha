@@ -9,6 +9,7 @@ import { genericNotificationPayload, validPushEndpoint, validPushKey } from "../
 import { createMediaContent, createTextContent } from "../lib/matrix/message-content";
 import { findOwnReactionEventId, mediaAuthorizationHeaders, shouldTryLegacyMedia } from "../lib/matrix/client";
 import { bytesAreGif, firstImageFile, insertAtSelection, normalizeMediaFile } from "../lib/matrix/media";
+import { relayToPushGateway } from "../lib/vercel-push-proxy";
 
 test("homeserver input accepts Matrix IDs, domains, and explicit URLs", () => {
   assert.deepEqual(normalizeHomeserverInput("@arthur:matrix.example"), { serverName: "matrix.example" });
@@ -134,6 +135,34 @@ test("push payload discards Matrix content and identity fields", () => {
   assert.deepEqual(payload, { roomId: "!room:example", eventId: "$event", unread: 3 });
   assert.equal(JSON.stringify(payload).includes("secret"), false);
   assert.equal(JSON.stringify(payload).includes("ford"), false);
+});
+
+test("Vercel push relay forwards only the privacy-minimal request to the established gateway", async () => {
+  const originalFetch = globalThis.fetch;
+  const calls: Array<{ url: string; headers: Headers }> = [];
+  globalThis.fetch = async (input, init) => {
+    calls.push({ url: String(input), headers: new Headers(init?.headers) });
+    return Response.json({ registered: true });
+  };
+  try {
+    const response = await relayToPushGateway(new Request("https://sub-etha.vercel.app/api/push/subscriptions", {
+      method: "POST",
+      headers: {
+        Authorization: "Bearer must-not-travel",
+        "Content-Type": "application/json",
+        Origin: "https://sub-etha.vercel.app",
+      },
+      body: JSON.stringify({ pushKey: "a".repeat(40) }),
+    }), "/api/push/subscriptions");
+    assert.equal(response.status, 200);
+    const observed = calls[0];
+    assert.ok(observed);
+    assert.equal(observed.url, "https://sub-etha-matrix.middletontanne137269.chatgpt.site/api/push/subscriptions");
+    assert.equal(observed.headers.get("origin"), "https://sub-etha-matrix.middletontanne137269.chatgpt.site");
+    assert.equal(observed.headers.has("authorization"), false);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });
 
 test("message content carries Matrix mentions, replies, and edits", () => {

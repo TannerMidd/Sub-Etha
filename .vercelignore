@@ -1,0 +1,8 @@
+.openai
+.wrangler
+.next
+dist
+node_modules
+tests
+showcase
+*.tar.gz

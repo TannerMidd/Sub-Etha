@@ -8,11 +8,12 @@
   "scripts": {
     "dev": "vinext dev",
     "build": "vinext build",
+    "build:vercel": "vite build",
     "start": "vinext start",
     "typecheck": "tsc --noEmit",
     "test:unit": "node --import tsx --test tests/*.test.ts",
     "test": "npm run typecheck && npm run test:unit && npm run build",
-    "lint": "eslint . --ignore-pattern dist --ignore-pattern .next",
+    "lint": "eslint . --ignore-pattern dist --ignore-pattern .next --ignore-pattern .vercel",
     "db:generate": "drizzle-kit generate"
   },
   "dependencies": {
@@ -22,6 +23,7 @@
     "lucide-react": "^1.30.0",
     "matrix-encrypt-attachment": "^1.0.3",
     "matrix-js-sdk": "^42.1.0",
+    "nitro": "^3.0.260610-beta",
     "react": "19.2.6",
     "react-dom": "19.2.6",
     "react-virtuoso": "^4.18.11",
