@@ -93,6 +93,19 @@ export interface TimelineItem {
 
 export type ConnectionState = "idle" | "starting" | "ready" | "catching-up" | "offline" | "error";
 
+export type DeviceVerificationStage = "incoming" | "waiting" | "comparing" | "complete" | "cancelled" | "error";
+
+export interface DeviceVerificationState {
+  transactionId: string | null;
+  direction: "incoming" | "outgoing";
+  otherUserId: string;
+  otherDeviceId: string | null;
+  stage: DeviceVerificationStage;
+  emojis: Array<[emoji: string, name: string]>;
+  decimals?: [number, number, number];
+  message?: string;
+}
+
 export interface MatrixSnapshot {
   connection: ConnectionState;
   rooms: RoomSummary[];
@@ -105,6 +118,7 @@ export interface MatrixSnapshot {
   displayName: string;
   avatarMxcUrl: string | null;
   deviceId: string;
+  verification: DeviceVerificationState | null;
 }
 
 export interface PushState {
@@ -120,4 +134,5 @@ export interface DeviceSummary {
   lastSeenTs?: number;
   lastSeenIp?: string;
   current: boolean;
+  verified: boolean;
 }

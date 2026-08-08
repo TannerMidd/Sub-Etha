@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import {
   Bell,
   BellOff,
@@ -15,6 +15,7 @@ import {
   Moon,
   Search,
   Settings,
+  ShieldAlert,
   ShieldCheck,
   Sun,
   UserPlus,
@@ -23,7 +24,7 @@ import {
 } from "lucide-react";
 import type { MatrixService } from "@/lib/matrix/client";
 import { disablePush, enablePush, readPushState } from "@/lib/matrix/notifications";
-import type { DeviceSummary, PushState, RoomSummary, TimelineItem } from "@/lib/matrix/types";
+import type { DeviceSummary, DeviceVerificationState, PushState, RoomSummary, TimelineItem } from "@/lib/matrix/types";
 import { Avatar } from "./BrandMark";
 
 export function Dialog({
@@ -40,6 +41,7 @@ export function Dialog({
   wide?: boolean;
 }) {
   const dialogRef = useRef<HTMLElement>(null);
+  const titleId = useId();
   useEffect(() => {
     const handle = (event: KeyboardEvent) => { if (event.key === "Escape") onClose(); };
     window.addEventListener("keydown", handle);
@@ -49,14 +51,108 @@ export function Dialog({
 
   return (
     <div className="dialog-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
-      <section ref={dialogRef} className={`dialog-card${wide ? " dialog-card--wide" : ""}`} role="dialog" aria-modal="true" aria-labelledby="dialog-title">
+      <section ref={dialogRef} className={`dialog-card${wide ? " dialog-card--wide" : ""}`} role="dialog" aria-modal="true" aria-labelledby={titleId}>
         <header className="dialog-card__header">
-          <div>{eyebrow ? <p className="eyebrow">{eyebrow}</p> : null}<h2 id="dialog-title">{title}</h2></div>
+          <div>{eyebrow ? <p className="eyebrow">{eyebrow}</p> : null}<h2 id={titleId}>{title}</h2></div>
           <button className="icon-button" type="button" aria-label="Close" onClick={onClose}><X /></button>
         </header>
         {children}
       </section>
     </div>
+  );
+}
+
+export function VerificationDialog({
+  verification,
+  service,
+}: {
+  verification: DeviceVerificationState;
+  service: MatrixService;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const terminal = verification.stage === "complete" || verification.stage === "cancelled" || verification.stage === "error";
+
+  const act = async (action: () => Promise<void>) => {
+    setBusy(true);
+    setError(null);
+    try { await action(); }
+    catch (cause) { setError(cause instanceof Error ? cause.message : "Verification failed."); }
+    finally { setBusy(false); }
+  };
+
+  const close = () => {
+    if (busy) return;
+    if (terminal) service.dismissDeviceVerification();
+    else void act(() => service.cancelDeviceVerification());
+  };
+
+  const deviceLabel = verification.otherDeviceId || "another signed-in device";
+
+  return (
+    <Dialog
+      title={verification.stage === "comparing" ? "Compare devices" : verification.stage === "complete" ? "Device verified" : "Verify a device"}
+      eyebrow="SECURE RECEIVER HANDSHAKE"
+      onClose={close}
+    >
+      <div className={`verification-flow verification-flow--${verification.stage}`} aria-live="polite">
+        <div className="verification-flow__signal" aria-hidden="true">
+          {verification.stage === "complete" ? <ShieldCheck /> : verification.stage === "error" || verification.stage === "cancelled" ? <ShieldAlert /> : busy || verification.stage === "waiting" ? <LoaderCircle className="spin" /> : <ShieldCheck />}
+        </div>
+
+        {verification.stage === "incoming" ? (
+          <>
+            <h3>Verification requested</h3>
+            <p>Another Sub-Etha receiver signed in as <strong>{verification.otherUserId}</strong> wants to verify this device.</p>
+            <div className="verification-device"><span>REQUESTING DEVICE</span><code>{deviceLabel}</code></div>
+            <p className="verification-warning">Accept only if you just started this from Sub-Etha on your other device.</p>
+            <div className="verification-actions">
+              <button className="secondary-button" type="button" disabled={busy} onClick={() => void act(() => service.cancelDeviceVerification())}>Decline</button>
+              <button className="primary-button" data-dialog-autofocus type="button" disabled={busy} onClick={() => void act(() => service.acceptDeviceVerification())}>{busy ? <LoaderCircle className="spin" /> : <ShieldCheck />}Accept &amp; compare</button>
+            </div>
+          </>
+        ) : null}
+
+        {verification.stage === "waiting" ? (
+          <>
+            <h3>{verification.direction === "outgoing" ? "Waiting for your other device" : "Establishing a secure link"}</h3>
+            <p>{verification.message}</p>
+            <div className="verification-device"><span>OTHER DEVICE</span><code>{deviceLabel}</code></div>
+            <p className="verification-help">Keep Sub-Etha open on both devices. The emoji comparison will appear here automatically.</p>
+            <button className="secondary-button full-width" type="button" disabled={busy} onClick={() => void act(() => service.cancelDeviceVerification())}>Cancel verification</button>
+          </>
+        ) : null}
+
+        {verification.stage === "comparing" ? (
+          <>
+            <h3>Do these match exactly?</h3>
+            <p>Both Sub-Etha devices must show the same symbols in the same order.</p>
+            {verification.emojis.length ? (
+              <ol className="verification-emoji" aria-label="Security emoji">
+                {verification.emojis.map(([emoji, name], index) => <li key={`${index}-${name}`}><span aria-hidden="true">{emoji}</span><small>{name}</small></li>)}
+              </ol>
+            ) : verification.decimals ? (
+              <div className="verification-decimals" aria-label={`Security numbers ${verification.decimals.join(", ")}`}>{verification.decimals.map((number) => <code key={number}>{number}</code>)}</div>
+            ) : <p className="inline-error">This homeserver did not provide a comparison sequence.</p>}
+            <p className="verification-warning">If even one item differs, choose “They do not match.”</p>
+            <div className="verification-actions">
+              <button className="secondary-button" type="button" disabled={busy} onClick={() => void act(() => service.confirmDeviceVerification(false))}>They do not match</button>
+              <button className="primary-button" data-dialog-autofocus type="button" disabled={busy || (!verification.emojis.length && !verification.decimals)} onClick={() => void act(() => service.confirmDeviceVerification(true))}>{busy ? <LoaderCircle className="spin" /> : <Check />}They match</button>
+            </div>
+          </>
+        ) : null}
+
+        {terminal ? (
+          <>
+            <h3>{verification.stage === "complete" ? "Handshake complete" : verification.stage === "cancelled" ? "Verification cancelled" : "Verification failed"}</h3>
+            <p>{verification.message}</p>
+            <button className={verification.stage === "complete" ? "primary-button full-width" : "secondary-button full-width"} data-dialog-autofocus type="button" onClick={() => service.dismissDeviceVerification()}>Done</button>
+          </>
+        ) : null}
+
+        {error ? <p className="inline-error" role="alert">{error}</p> : null}
+      </div>
+    </Dialog>
   );
 }
 
@@ -183,7 +279,17 @@ export function RoomDetailsDialog({ room, service, onClose }: { room: RoomSummar
   );
 }
 
-export function SettingsDialog({ service, onClose, onLogout }: { service: MatrixService; onClose: () => void; onLogout: () => Promise<void> }) {
+export function SettingsDialog({
+  service,
+  onClose,
+  onLogout,
+  onVerificationStarted,
+}: {
+  service: MatrixService;
+  onClose: () => void;
+  onLogout: () => Promise<void>;
+  onVerificationStarted: () => void;
+}) {
   const snapshot = service.getSnapshot();
   const [displayName, setDisplayName] = useState(snapshot.displayName);
   const [avatar, setAvatar] = useState<File | undefined>();
@@ -295,14 +401,18 @@ export function SettingsDialog({ service, onClose, onLogout }: { service: Matrix
             </div>
           ) : null}
           <button className="secondary-button full-width" type="button" disabled={busyAction === "verify"} onClick={() => void act("verify", async () => {
-            await service.verifyWithAnotherDevice(async (emojis) => window.confirm(`Do these emoji match your other device?\n\n${emojis.map(([emoji, name]) => `${emoji} ${name}`).join("   ")}\n\nChoose OK only if every emoji matches.`));
-            setNotice("This device is verified.");
+            await service.startDeviceVerification();
+            onVerificationStarted();
           })}><ShieldCheck />Verify with another device</button>
 
           <h3><Users />Devices</h3>
           <div className="device-list">
             {devices.map((device) => (
-              <div key={device.deviceId}><span className={device.current ? "status-dot status-dot--online" : "status-dot"} /><span><strong>{device.displayName}{device.current ? " · this device" : ""}</strong><small>{device.deviceId}{device.lastSeenTs ? ` · ${new Date(device.lastSeenTs).toLocaleDateString()}` : ""}</small></span></div>
+              <div key={device.deviceId}>
+                <span className={device.current ? "status-dot status-dot--online" : "status-dot"} />
+                <span><strong>{device.displayName}{device.current ? " · this device" : ""}</strong><small>{device.deviceId}{device.lastSeenTs ? ` · ${new Date(device.lastSeenTs).toLocaleDateString()}` : ""}</small><small className={device.verified ? "device-trust device-trust--verified" : "device-trust"}>{device.verified ? "Verified" : "Not verified"}</small></span>
+                {!device.current && !device.verified ? <button type="button" disabled={busyAction === `verify-${device.deviceId}`} onClick={() => void act(`verify-${device.deviceId}`, async () => { await service.startDeviceVerification(device.deviceId); onVerificationStarted(); })}>Verify</button> : null}
+              </div>
             ))}
           </div>
           <button className="danger-button" type="button" onClick={() => {

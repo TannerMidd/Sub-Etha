@@ -25,7 +25,7 @@ import type { MatrixService } from "@/lib/matrix/client";
 import type { RoomSummary, TimelineItem } from "@/lib/matrix/types";
 import { Avatar, BrandMark } from "./BrandMark";
 import { Composer } from "./Composer";
-import { NewConversationDialog, RoomDetailsDialog, SearchDialog, SettingsDialog } from "./Panels";
+import { NewConversationDialog, RoomDetailsDialog, SearchDialog, SettingsDialog, VerificationDialog } from "./Panels";
 import { Timeline } from "./Timeline";
 
 type OpenDialog = "new" | "search" | "settings" | "details" | null;
@@ -246,8 +246,9 @@ export function ChatShell({ service, onLogout }: { service: MatrixService; onLog
       {snapshot.error ? <div className="app-toast" role="alert"><SignalLow /><span>{snapshot.error}</span><button type="button" aria-label="Dismiss" onClick={() => service.clearError()}><X /></button></div> : null}
       {dialog === "new" ? <NewConversationDialog service={service} onClose={() => setDialog(null)} /> : null}
       {dialog === "search" ? <SearchDialog service={service} onClose={() => setDialog(null)} /> : null}
-      {dialog === "settings" ? <SettingsDialog service={service} onClose={() => setDialog(null)} onLogout={onLogout} /> : null}
+      {dialog === "settings" ? <SettingsDialog service={service} onClose={() => setDialog(null)} onLogout={onLogout} onVerificationStarted={() => setDialog(null)} /> : null}
       {dialog === "details" && activeRoom ? <RoomDetailsDialog room={activeRoom} service={service} onClose={() => setDialog(null)} /> : null}
+      {snapshot.verification ? <VerificationDialog verification={snapshot.verification} service={service} /> : null}
     </main>
   );
 }

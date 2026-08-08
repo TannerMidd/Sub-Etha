@@ -49,6 +49,7 @@ function previewMessage(id: string, senderName: string, body: string, timestamp:
 
 function createPreviewService(): MatrixService {
   const listeners = new Set<() => void>();
+  const verificationPreview = typeof window === "undefined" ? null : new URLSearchParams(window.location.search).get("verification-preview");
   let snapshot: MatrixSnapshot = {
     connection: "ready",
     rooms: [
@@ -83,6 +84,15 @@ function createPreviewService(): MatrixService {
     displayName: "Rayne",
     avatarMxcUrl: "/night-receiver-plate.png",
     deviceId: "FIELD-GUIDE-01",
+    verification: verificationPreview ? {
+      transactionId: "PREVIEW-HANDSHAKE-42",
+      direction: verificationPreview === "incoming" ? "incoming" : "outgoing",
+      otherUserId: "@rayne:sub-etha.test",
+      otherDeviceId: "PHONE-7G42",
+      stage: verificationPreview === "incoming" || verificationPreview === "waiting" || verificationPreview === "complete" ? verificationPreview : "comparing",
+      emojis: verificationPreview === "comparing" ? [["🐶", "Dog"], ["🌳", "Tree"], ["🚀", "Rocket"], ["🎸", "Guitar"], ["🌙", "Moon"], ["📕", "Book"], ["🍎", "Apple"]] : [],
+      message: verificationPreview === "complete" ? "These two Sub-Etha receivers now trust one another." : "Open Sub-Etha on your other device and accept the verification request.",
+    } : null,
   };
 
   const emit = () => listeners.forEach((listener) => listener());
@@ -111,12 +121,16 @@ function createPreviewService(): MatrixService {
     searchCurrentRoom: async (term: string) => snapshot.timeline.filter((item) => item.body.toLowerCase().includes(term.toLowerCase())),
     invite: async () => undefined,
     setRoomMuted: async (muted: boolean) => update({ rooms: snapshot.rooms.map((room) => room.id === snapshot.activeRoomId ? { ...room, muted } : room) }),
-    getDevices: async () => [{ deviceId: snapshot.deviceId, displayName: "Sub-Etha field receiver", current: true }],
+    getDevices: async () => [{ deviceId: snapshot.deviceId, displayName: "Sub-Etha field receiver", current: true, verified: true }],
     getCryptoStatus: async () => ({ secretStorageReady: true, crossSigningReady: true, backupVersion: "1" }),
     updateProfile: async (displayName: string) => update({ displayName }),
     setupRecovery: async () => "DEMO RECOVERY KEY",
     unlockRecovery: async () => undefined,
-    verifyWithAnotherDevice: async () => undefined,
+    startDeviceVerification: async () => update({ verification: { transactionId: "PREVIEW-HANDSHAKE-42", direction: "outgoing", otherUserId: snapshot.userId, otherDeviceId: "PHONE-7G42", stage: "waiting", emojis: [], message: "Open Sub-Etha on your other device and accept the verification request." } }),
+    acceptDeviceVerification: async () => update({ verification: { transactionId: "PREVIEW-HANDSHAKE-42", direction: "incoming", otherUserId: snapshot.userId, otherDeviceId: "PHONE-7G42", stage: "comparing", emojis: [["🐶", "Dog"], ["🌳", "Tree"], ["🚀", "Rocket"], ["🎸", "Guitar"], ["🌙", "Moon"], ["📕", "Book"], ["🍎", "Apple"]] } }),
+    confirmDeviceVerification: async (matches: boolean) => update({ verification: { transactionId: "PREVIEW-HANDSHAKE-42", direction: "outgoing", otherUserId: snapshot.userId, otherDeviceId: "PHONE-7G42", stage: matches ? "complete" : "cancelled", emojis: [], message: matches ? "These two Sub-Etha receivers now trust one another." : "The emoji did not match, so verification was safely cancelled." } }),
+    cancelDeviceVerification: async () => update({ verification: { transactionId: "PREVIEW-HANDSHAKE-42", direction: "outgoing", otherUserId: snapshot.userId, otherDeviceId: "PHONE-7G42", stage: "cancelled", emojis: [], message: "Verification cancelled." } }),
+    dismissDeviceVerification: () => update({ verification: null }),
     logout: async () => undefined,
   };
 

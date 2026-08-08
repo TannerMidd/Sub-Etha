@@ -14,7 +14,15 @@ import {
   type IPusherRequest,
   type Room,
 } from "matrix-js-sdk";
-import { VerificationRequestEvent, VerifierEvent } from "matrix-js-sdk/lib/crypto-api/verification";
+import { CryptoEvent } from "matrix-js-sdk/lib/crypto-api";
+import {
+  VerificationPhase,
+  VerificationRequestEvent,
+  VerifierEvent,
+  type ShowSasCallbacks,
+  type VerificationRequest,
+  type Verifier,
+} from "matrix-js-sdk/lib/crypto-api/verification";
 import { decodeRecoveryKey } from "matrix-js-sdk/lib/crypto-api/recovery-key";
 import { deriveRecoveryKeyFromPassphrase } from "matrix-js-sdk/lib/crypto-api/key-passphrase";
 import { decryptAttachment, encryptAttachment, type IEncryptedFile } from "matrix-encrypt-attachment";
@@ -23,7 +31,7 @@ import { humanizeMatrixError } from "./auth";
 import { imageDimensions, normalizeMediaFile } from "./media";
 import { normalizeRooms, normalizeTimeline } from "./normalize";
 import { createMediaContent, createTextContent } from "./message-content";
-import type { DeviceSummary, MatrixMediaRef, MatrixSnapshot, MediaAsset, PersistedMatrixSession, TimelineItem } from "./types";
+import type { DeviceSummary, DeviceVerificationState, MatrixMediaRef, MatrixSnapshot, MediaAsset, PersistedMatrixSession, TimelineItem } from "./types";
 
 type Listener = () => void;
 
@@ -50,7 +58,18 @@ function emptySnapshot(session: PersistedMatrixSession): MatrixSnapshot {
     displayName: session.userId,
     avatarMxcUrl: null,
     deviceId: session.deviceId,
+    verification: null,
   };
+}
+
+interface ActiveVerification {
+  request: VerificationRequest;
+  direction: "incoming" | "outgoing";
+  verifierStarted: boolean;
+  verifier: Verifier | null;
+  sasCallbacks: ShowSasCallbacks | null;
+  requestChange: () => void;
+  showSas: ((callbacks: ShowSasCallbacks) => void) | null;
 }
 
 async function acquireExclusiveLock(name: string): Promise<(() => void) | null> {
@@ -102,6 +121,7 @@ export class MatrixService {
   private mediaAssets = new Map<string, Promise<MediaAsset>>();
   private gifPosters = new Map<string, Promise<string | null>>();
   private secretStorageKey: [string, Uint8Array<ArrayBuffer>] | null = null;
+  private activeVerification: ActiveVerification | null = null;
   private stopped = false;
   private readonly takeoverStorageKey = "sub-etha-account-takeover";
 
@@ -202,6 +222,7 @@ export class MatrixService {
     this.client.on(RoomEvent.Receipt, this.handleRoomChange);
     this.client.on(RoomEvent.MyMembership, this.handleRoomChange);
     this.client.on(RoomMemberEvent.Typing, this.handleTyping);
+    this.client.on(CryptoEvent.VerificationRequestReceived, this.handleIncomingVerification);
     window.addEventListener("storage", this.handleTakeoverRequest);
     this.client.startClient({
       initialSyncLimit: 30,
@@ -241,6 +262,144 @@ export class MatrixService {
     this.emit({ connection: "idle", error: "This receiver was safely released for another tab." });
     this.stop();
   };
+
+  private verificationState(
+    context: ActiveVerification,
+    stage: DeviceVerificationState["stage"],
+    next: Partial<DeviceVerificationState> = {},
+  ): DeviceVerificationState {
+    return {
+      transactionId: context.request.transactionId ?? null,
+      direction: context.direction,
+      otherUserId: context.request.otherUserId,
+      otherDeviceId: context.request.otherDeviceId ?? null,
+      stage,
+      emojis: [],
+      ...next,
+    };
+  }
+
+  private handleIncomingVerification = (request: VerificationRequest): void => {
+    if (!request.isSelfVerification || !request.pending || this.stopped) return;
+    if (this.activeVerification?.request === request) return;
+    if (this.activeVerification?.request.pending) {
+      void request.cancel();
+      return;
+    }
+    const context = this.bindVerification(request, "incoming");
+    this.emit({
+      verification: this.verificationState(context, "incoming", {
+        message: "Another Sub-Etha receiver wants to verify this device.",
+      }),
+    });
+    this.handleVerificationChange(request);
+  };
+
+  private bindVerification(request: VerificationRequest, direction: "incoming" | "outgoing"): ActiveVerification {
+    this.releaseVerificationContext();
+    const requestChange = () => this.handleVerificationChange(request);
+    const context: ActiveVerification = {
+      request,
+      direction,
+      verifierStarted: false,
+      verifier: null,
+      sasCallbacks: null,
+      requestChange,
+      showSas: null,
+    };
+    this.activeVerification = context;
+    request.on(VerificationRequestEvent.Change, requestChange);
+    return context;
+  }
+
+  private handleVerificationChange(request: VerificationRequest): void {
+    const context = this.activeVerification;
+    if (!context || context.request !== request) return;
+    if (request.phase === VerificationPhase.Cancelled) {
+      this.finishVerification("cancelled", "The verification was cancelled on one of your devices.");
+      return;
+    }
+    if (request.phase === VerificationPhase.Done) {
+      this.finishVerification("complete", "These two Sub-Etha receivers now trust one another.");
+      return;
+    }
+    if (request.phase === VerificationPhase.Started) {
+      void this.runVerifier(context);
+      return;
+    }
+    if (request.phase === VerificationPhase.Ready && context.direction === "outgoing") {
+      void this.runVerifier(context);
+      return;
+    }
+    const current = this.snapshot.verification;
+    if (current && current.stage !== "comparing") {
+      this.emit({ verification: this.verificationState(context, current.stage, { message: current.message }) });
+    }
+  }
+
+  private async runVerifier(context: ActiveVerification): Promise<void> {
+    if (this.activeVerification !== context || context.verifierStarted) return;
+    context.verifierStarted = true;
+    try {
+      const verifier = context.request.verifier
+        ?? (context.request.phase === VerificationPhase.Ready
+          ? await context.request.startVerification("m.sas.v1")
+          : null);
+      if (!verifier) {
+        context.verifierStarted = false;
+        return;
+      }
+      if (this.activeVerification !== context) return;
+      context.verifier = verifier;
+      const showSas = (callbacks: ShowSasCallbacks) => {
+        if (this.activeVerification !== context) return;
+        context.sasCallbacks = callbacks;
+        this.emit({
+          verification: this.verificationState(context, "comparing", {
+            emojis: callbacks.sas.emoji ?? [],
+            decimals: callbacks.sas.decimal,
+            message: "Compare this sequence on both devices. Order matters; improbable hats do not.",
+          }),
+        });
+      };
+      context.showSas = showSas;
+      verifier.on(VerifierEvent.ShowSas, showSas);
+      this.emit({
+        verification: this.verificationState(context, "waiting", {
+          message: "The devices are negotiating a short, reassuring sequence of emoji.",
+        }),
+      });
+      const currentSas = verifier.getShowSasCallbacks();
+      if (currentSas) showSas(currentSas);
+      await verifier.verify();
+      if (this.activeVerification === context) {
+        this.finishVerification("complete", "These two Sub-Etha receivers now trust one another.");
+      }
+    } catch (error) {
+      if (this.activeVerification !== context) return;
+      if (context.request.phase === VerificationPhase.Cancelled) {
+        this.finishVerification("cancelled", "The verification was cancelled on one of your devices.");
+      } else {
+        this.finishVerification("error", humanizeMatrixError(error));
+      }
+    }
+  }
+
+  private releaseVerificationContext(): void {
+    const context = this.activeVerification;
+    if (!context) return;
+    context.request.off(VerificationRequestEvent.Change, context.requestChange);
+    if (context.verifier && context.showSas) context.verifier.off(VerifierEvent.ShowSas, context.showSas);
+    this.activeVerification = null;
+  }
+
+  private finishVerification(stage: "complete" | "cancelled" | "error", message: string): void {
+    const context = this.activeVerification;
+    if (!context) return;
+    const state = this.verificationState(context, stage, { message });
+    this.releaseVerificationContext();
+    this.emit({ verification: state });
+  }
 
   private refreshDerivedState(includeTimeline = true): void {
     const client = this.client;
@@ -595,13 +754,19 @@ export class MatrixService {
   }
 
   async getDevices(): Promise<DeviceSummary[]> {
-    const response = await this.requireClient().getDevices();
-    return response.devices.map((device) => ({
-      deviceId: device.device_id,
-      displayName: device.display_name || "Unnamed device",
-      lastSeenTs: device.last_seen_ts,
-      lastSeenIp: device.last_seen_ip,
-      current: device.device_id === this.session.deviceId,
+    const client = this.requireClient();
+    const cryptoApi = client.getCrypto();
+    const response = await client.getDevices();
+    return Promise.all(response.devices.map(async (device) => {
+      const trust = await cryptoApi?.getDeviceVerificationStatus(this.session.userId, device.device_id).catch(() => null);
+      return {
+        deviceId: device.device_id,
+        displayName: device.display_name || "Unnamed device",
+        lastSeenTs: device.last_seen_ts,
+        lastSeenIp: device.last_seen_ip,
+        current: device.device_id === this.session.deviceId,
+        verified: trust?.isVerified() ?? false,
+      };
     }));
   }
 
@@ -659,31 +824,73 @@ export class MatrixService {
     await cryptoApi.checkKeyBackupAndEnable();
   }
 
-  async verifyWithAnotherDevice(onSas: (emojis: Array<[string, string]>) => Promise<boolean>): Promise<void> {
+  async startDeviceVerification(deviceId?: string): Promise<void> {
     const cryptoApi = this.requireClient().getCrypto();
     if (!cryptoApi) throw new Error("Encryption is not available on this device.");
-    const request = await cryptoApi.requestOwnUserVerification();
-    if (!request.initiatedByMe && request.phase <= 2) await request.accept();
-    if (request.phase < 3) {
-      await new Promise<void>((resolve, reject) => {
-        const timeout = window.setTimeout(() => reject(new Error("The other device did not answer in time.")), 120_000);
-        const handle = () => {
-          if (request.phase >= 3) {
-            window.clearTimeout(timeout);
-            request.off(VerificationRequestEvent.Change, handle);
-            resolve();
-          }
-        };
-        request.on(VerificationRequestEvent.Change, handle);
-      });
+    if (this.activeVerification?.request.pending) {
+      throw new Error("A device verification is already in progress.");
     }
-    const verifier = await request.startVerification("m.sas.v1");
-    verifier.on(VerifierEvent.ShowSas, async (callbacks) => {
-      const matches = await onSas(callbacks.sas.emoji ?? []);
-      if (matches) await callbacks.confirm();
-      else callbacks.mismatch();
+    const request = deviceId
+      ? await cryptoApi.requestDeviceVerification(this.session.userId, deviceId)
+      : await cryptoApi.requestOwnUserVerification();
+    const direction = request.initiatedByMe ? "outgoing" : "incoming";
+    const context = this.bindVerification(request, direction);
+    this.emit({
+      verification: this.verificationState(context, direction === "incoming" ? "incoming" : "waiting", {
+        message: direction === "incoming"
+          ? "Another Sub-Etha receiver wants to verify this device."
+          : "Open Sub-Etha on your other device and accept the verification request.",
+      }),
     });
-    await verifier.verify();
+    this.handleVerificationChange(request);
+  }
+
+  async acceptDeviceVerification(): Promise<void> {
+    const context = this.activeVerification;
+    if (!context || context.direction !== "incoming") throw new Error("There is no incoming verification request.");
+    this.emit({
+      verification: this.verificationState(context, "waiting", {
+        message: "Request accepted. Waiting for your other Sub-Etha receiver to begin the comparison.",
+      }),
+    });
+    await context.request.accept();
+    this.handleVerificationChange(context.request);
+  }
+
+  async confirmDeviceVerification(matches: boolean): Promise<void> {
+    const context = this.activeVerification;
+    const callbacks = context?.sasCallbacks;
+    if (!context || !callbacks) throw new Error("The emoji comparison is not ready yet.");
+    context.sasCallbacks = null;
+    if (!matches) {
+      callbacks.mismatch();
+      this.finishVerification("cancelled", "The emoji did not match, so verification was safely cancelled.");
+      return;
+    }
+    this.emit({
+      verification: this.verificationState(context, "waiting", {
+        message: "Match confirmed here. Waiting for your other device to confirm as well.",
+      }),
+    });
+    await callbacks.confirm();
+  }
+
+  async cancelDeviceVerification(): Promise<void> {
+    const context = this.activeVerification;
+    if (!context) {
+      this.emit({ verification: null });
+      return;
+    }
+    try {
+      if (context.sasCallbacks) context.sasCallbacks.cancel();
+      else await context.request.cancel();
+    } finally {
+      if (this.activeVerification === context) this.finishVerification("cancelled", "Verification cancelled.");
+    }
+  }
+
+  dismissDeviceVerification(): void {
+    if (!this.activeVerification) this.emit({ verification: null });
   }
 
   getClient(): MatrixClient {
@@ -707,12 +914,14 @@ export class MatrixService {
     this.stopped = true;
     try { await this.client?.logout(); } catch { /* local cleanup still proceeds */ }
     this.client?.stopClient();
+    this.client?.off(CryptoEvent.VerificationRequestReceived, this.handleIncomingVerification);
     window.removeEventListener("storage", this.handleTakeoverRequest);
     try {
       await this.client?.clearStores({ cryptoDatabasePrefix: `sub-etha-crypto-${stableStoreName(this.session)}` });
     } catch { /* best effort */ }
     await clearSession();
     this.releaseMediaAssets();
+    this.releaseVerificationContext();
     this.releaseLock?.();
     this.releaseLock = null;
     this.emit({ connection: "idle", rooms: [], timeline: [], activeRoomId: null });
@@ -721,8 +930,10 @@ export class MatrixService {
   stop(): void {
     this.stopped = true;
     this.client?.stopClient();
+    this.client?.off(CryptoEvent.VerificationRequestReceived, this.handleIncomingVerification);
     window.removeEventListener("storage", this.handleTakeoverRequest);
     this.releaseMediaAssets();
+    this.releaseVerificationContext();
     this.releaseLock?.();
     this.releaseLock = null;
   }
