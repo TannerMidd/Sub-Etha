@@ -132,7 +132,7 @@ export function SearchDialog({ service, onClose }: { service: MatrixService; onC
         {!busy && term && !results.length && !error ? <p className="empty-note">No matching transmissions. The universe remains coy.</p> : null}
         {results.map((result) => (
           <button key={result.id} type="button" onClick={() => { window.location.assign(`#/room/${encodeURIComponent(service.getSnapshot().activeRoomId ?? "")}/event/${encodeURIComponent(result.id)}`); onClose(); }}>
-            <Avatar name={result.senderName} src={result.senderAvatarUrl} size="small" />
+            <Avatar name={result.senderName} mxcUrl={result.senderAvatarMxcUrl} service={service} size="small" />
             <span><strong>{result.senderName}</strong><span>{result.body}</span></span>
             <time>{new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric" }).format(result.timestamp)}</time>
           </button>
@@ -160,7 +160,7 @@ export function RoomDetailsDialog({ room, service, onClose }: { room: RoomSummar
   return (
     <Dialog title={room.name} eyebrow="ROOM FIELD NOTES" onClose={onClose}>
       <div className="room-profile">
-        <Avatar name={room.name} src={room.avatarUrl} size="large" />
+        <Avatar name={room.name} mxcUrl={room.avatarMxcUrl} service={service} size="large" />
         <div><strong>{room.memberCount} {room.memberCount === 1 ? "member" : "members"}</strong><span>{room.encrypted ? "End-to-end encrypted" : "Not encrypted"}</span></div>
       </div>
       <div className="settings-list">
@@ -230,6 +230,10 @@ export function SettingsDialog({ service, onClose, onLogout }: { service: Matrix
             event.preventDefault();
             void act("profile", async () => { await service.updateProfile(displayName, avatar); setNotice("Profile updated."); });
           }}>
+            <div className="profile-preview">
+              <Avatar name={displayName || snapshot.userId} mxcUrl={snapshot.avatarMxcUrl} service={service} size="large" />
+              <span><strong>{displayName || snapshot.userId}</strong><small>{snapshot.userId}</small></span>
+            </div>
             <label htmlFor="display-name">Display name</label>
             <input id="display-name" value={displayName} onChange={(event) => setDisplayName(event.target.value)} />
             <label htmlFor="avatar-file">Profile picture</label>

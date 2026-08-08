@@ -1,11 +1,14 @@
 import assert from "node:assert/strict";
+import { File as NodeFile } from "node:buffer";
 import test from "node:test";
 import { humanizeMatrixError, normalizeHomeserverInput, sanitizedCallbackPath } from "../lib/matrix/auth";
 import { base64UrlToBytes, createSession, randomBase64Url } from "../lib/matrix/session-store";
 import type { RoomSummary } from "../lib/matrix/types";
-import { sortRoomSummaries } from "../lib/matrix/normalize";
+import { roomAvatarMxcUrl, sortRoomSummaries } from "../lib/matrix/normalize";
 import { genericNotificationPayload, validPushEndpoint, validPushKey } from "../lib/push-gateway";
-import { createTextContent } from "../lib/matrix/message-content";
+import { createMediaContent, createTextContent } from "../lib/matrix/message-content";
+import { findOwnReactionEventId, mediaAuthorizationHeaders, shouldTryLegacyMedia } from "../lib/matrix/client";
+import { bytesAreGif, firstImageFile, insertAtSelection, normalizeMediaFile } from "../lib/matrix/media";
 
 test("homeserver input accepts Matrix IDs, domains, and explicit URLs", () => {
   assert.deepEqual(normalizeHomeserverInput("@arthur:matrix.example"), { serverName: "matrix.example" });
@@ -42,7 +45,7 @@ test("room sorting prioritizes invites, favourites, unread rooms, then recency",
   const room = (id: string, values: Partial<RoomSummary>): RoomSummary => ({
     id,
     name: id,
-    avatarUrl: null,
+    avatarMxcUrl: null,
     membership: "join",
     lastMessage: "",
     timestamp: 0,
@@ -63,6 +66,52 @@ test("room sorting prioritizes invites, favourites, unread rooms, then recency",
     room("new", { timestamp: 9 }),
   ]);
   assert.deepEqual(sorted.map(({ id }) => id), ["invite", "favourite", "unread", "new", "old"]);
+});
+
+test("room avatars prefer an explicit room image and fall back to the other DM member", () => {
+  const fallbackMember = { getMxcAvatarUrl: () => "mxc://example/dm-avatar" };
+  assert.equal(roomAvatarMxcUrl({
+    getMxcAvatarUrl: () => "mxc://example/room-avatar",
+    getAvatarFallbackMember: () => fallbackMember,
+  } as never), "mxc://example/room-avatar");
+  assert.equal(roomAvatarMxcUrl({
+    getMxcAvatarUrl: () => null,
+    getAvatarFallbackMember: () => fallbackMember,
+  } as never), "mxc://example/dm-avatar");
+});
+
+test("authenticated media credentials are restricted to the homeserver origin", () => {
+  assert.deepEqual(
+    mediaAuthorizationHeaders("https://matrix.example/_matrix/client/v1/media/download/a/b", "https://matrix.example", "secret"),
+    { Authorization: "Bearer secret" },
+  );
+  assert.throws(
+    () => mediaAuthorizationHeaders("https://media.attacker.example/image", "https://matrix.example", "secret"),
+    /unexpected media host/i,
+  );
+  assert.equal(mediaAuthorizationHeaders("https://matrix.example/image", "https://matrix.example", null), undefined);
+  assert.equal(shouldTryLegacyMedia(404), true);
+  assert.equal(shouldTryLegacyMedia(501), true);
+  assert.equal(shouldTryLegacyMedia(401), false);
+  assert.equal(shouldTryLegacyMedia(500), false);
+});
+
+test("GIF clipboard files are recognized even when the keyboard omits MIME metadata", async () => {
+  const bytes = new TextEncoder().encode("GIF89a placeholder");
+  assert.equal(bytesAreGif(bytes), true);
+  const raw = new NodeFile([bytes], "image.", { type: "" }) as unknown as File;
+  const normalized = await normalizeMediaFile(raw);
+  assert.equal(normalized.type, "image/gif");
+  assert.match(normalized.name, /\.gif$/);
+  const transfer = {
+    items: [{ kind: "file", type: "", getAsFile: () => raw }],
+    files: [],
+  } as unknown as DataTransfer;
+  assert.equal(firstImageFile(transfer), raw);
+});
+
+test("emoji insertion replaces the active composer selection and returns the new caret", () => {
+  assert.deepEqual(insertAtSelection("Hello world", "🛰️", 6, 11), { value: "Hello 🛰️", caret: 9 });
 });
 
 test("push gateway validates opaque keys and public HTTPS endpoints", () => {
@@ -100,4 +149,31 @@ test("message content carries Matrix mentions, replies, and edits", () => {
   const edit = createTextContent("Corrected", { editEventId: "$original" });
   assert.equal((edit["m.new_content"] as { body: string }).body, "Corrected");
   assert.deepEqual(edit["m.relates_to"], { rel_type: "m.replace", event_id: "$original" });
+});
+
+test("image attachments preserve captions, dimensions, encryption metadata, and replies", () => {
+  const content = createMediaContent({
+    fileName: "signal.gif",
+    mimeType: "image/gif",
+    contentUri: "mxc://example/media",
+    info: { mimetype: "image/gif", size: 42, w: 320, h: 240 },
+    caption: "A moving signal",
+    replyTo: "$earlier",
+    encryptedFile: { key: { k: "secret" }, iv: "iv", hashes: { sha256: "hash" }, v: "v2" },
+  });
+  assert.equal(content.msgtype, "m.image");
+  assert.equal(content.body, "A moving signal");
+  assert.equal(content.filename, "signal.gif");
+  assert.deepEqual(content["m.relates_to"], { "m.in_reply_to": { event_id: "$earlier" } });
+  assert.equal((content.file as { url: string }).url, "mxc://example/media");
+  assert.equal("url" in content, false);
+});
+
+test("reaction toggling identifies the current user's relation for redaction", () => {
+  const timeline = [{ id: "$message", reactions: [
+    { key: "👍", count: 2, mine: true, ownEventId: "$my-reaction" },
+    { key: "🎉", count: 1, mine: false },
+  ] }] as never;
+  assert.equal(findOwnReactionEventId(timeline, "$message", "👍"), "$my-reaction");
+  assert.equal(findOwnReactionEventId(timeline, "$message", "🎉"), null);
 });

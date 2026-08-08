@@ -33,7 +33,7 @@ export interface LoginCapabilities {
 export interface RoomSummary {
   id: string;
   name: string;
-  avatarUrl: string | null;
+  avatarMxcUrl: string | null;
   membership: string;
   lastMessage: string;
   timestamp: number;
@@ -50,6 +50,23 @@ export interface ReactionSummary {
   key: string;
   count: number;
   mine: boolean;
+  ownEventId?: string;
+}
+
+export interface MatrixMediaRef {
+  mxcUrl: string;
+  mimeType?: string;
+  size?: number;
+  width?: number;
+  height?: number;
+  encryptedFile?: Record<string, unknown>;
+}
+
+export interface MediaAsset {
+  url: string;
+  blob: Blob;
+  mimeType: string;
+  animated: boolean;
 }
 
 export interface TimelineItem {
@@ -57,7 +74,7 @@ export interface TimelineItem {
   type: "message" | "image" | "video" | "audio" | "file" | "notice" | "system" | "encrypted";
   senderId: string;
   senderName: string;
-  senderAvatarUrl: string | null;
+  senderAvatarMxcUrl: string | null;
   body: string;
   formattedBody?: string;
   timestamp: number;
@@ -66,12 +83,7 @@ export interface TimelineItem {
   redacted: boolean;
   encrypted: boolean;
   decryptionFailed: boolean;
-  media?: {
-    mxcUrl: string;
-    mimeType?: string;
-    size?: number;
-    encryptedFile?: Record<string, unknown>;
-  };
+  media?: MatrixMediaRef;
   replyTo?: string;
   reactions: ReactionSummary[];
   sendingStatus: string | null;
@@ -91,7 +103,7 @@ export interface MatrixSnapshot {
   error: string | null;
   userId: string;
   displayName: string;
-  avatarUrl: string | null;
+  avatarMxcUrl: string | null;
   deviceId: string;
 }
 

@@ -27,16 +27,19 @@ function eventBody(event: MatrixEvent): string {
   return "";
 }
 
-function reactionMap(events: MatrixEvent[], ownUserId: string): Map<string, Map<string, { count: number; mine: boolean }>> {
-  const result = new Map<string, Map<string, { count: number; mine: boolean }>>();
+function reactionMap(events: MatrixEvent[], ownUserId: string): Map<string, Map<string, { count: number; mine: boolean; ownEventId?: string }>> {
+  const result = new Map<string, Map<string, { count: number; mine: boolean; ownEventId?: string }>>();
   for (const event of events) {
     if (event.getType() !== EventType.Reaction || event.getContent()["m.relates_to"] == null) continue;
     const relation = event.getContent()["m.relates_to"] as { event_id?: string; key?: string; rel_type?: string };
     if (relation.rel_type !== "m.annotation" || !relation.event_id || !relation.key) continue;
-    const byEvent = result.get(relation.event_id) ?? new Map<string, { count: number; mine: boolean }>();
+    const byEvent = result.get(relation.event_id) ?? new Map<string, { count: number; mine: boolean; ownEventId?: string }>();
     const current = byEvent.get(relation.key) ?? { count: 0, mine: false };
     current.count += 1;
-    current.mine ||= event.getSender() === ownUserId;
+    if (event.getSender() === ownUserId) {
+      current.mine = true;
+      current.ownEventId = event.getId() ?? undefined;
+    }
     byEvent.set(relation.key, current);
     result.set(relation.event_id, byEvent);
   }
@@ -107,7 +110,7 @@ export function normalizeTimeline(room: Room, client: MatrixClient): TimelineIte
       type: classifyMessage(content, event),
       senderId,
       senderName,
-      senderAvatarUrl: member?.getAvatarUrl(client.getHomeserverUrl(), 64, 64, "crop", false, false, true) ?? null,
+      senderAvatarMxcUrl: member?.getMxcAvatarUrl() ?? null,
       body: isMembership ? membershipBody(event, senderName) : eventBody(event),
       formattedBody,
       timestamp: event.getTs(),
@@ -123,6 +126,12 @@ export function normalizeTimeline(room: Room, client: MatrixClient): TimelineIte
           : undefined,
         size: typeof (content.info as Record<string, unknown> | undefined)?.size === "number"
           ? Number((content.info as Record<string, unknown>).size)
+          : undefined,
+        width: typeof (content.info as Record<string, unknown> | undefined)?.w === "number"
+          ? Number((content.info as Record<string, unknown>).w)
+          : undefined,
+        height: typeof (content.info as Record<string, unknown> | undefined)?.h === "number"
+          ? Number((content.info as Record<string, unknown>).h)
           : undefined,
         encryptedFile: mediaFile,
       } : undefined,
@@ -144,8 +153,11 @@ function lastMessageText(room: Room): string {
   return "New activity";
 }
 
+export function roomAvatarMxcUrl(room: Pick<Room, "getMxcAvatarUrl" | "getAvatarFallbackMember">): string | null {
+  return room.getMxcAvatarUrl() ?? room.getAvatarFallbackMember()?.getMxcAvatarUrl() ?? null;
+}
+
 export function normalizeRooms(client: MatrixClient): RoomSummary[] {
-  const baseUrl = client.getHomeserverUrl();
   const rooms = client.getRooms()
     .filter((room) => ["join", "invite"].includes(room.getMyMembership()))
     .map((room) => {
@@ -153,7 +165,7 @@ export function normalizeRooms(client: MatrixClient): RoomSummary[] {
       return {
         id: room.roomId,
         name: room.name || room.getDefaultRoomName(client.getUserId() ?? ""),
-        avatarUrl: room.getAvatarUrl(baseUrl, 96, 96, "crop", false, true),
+        avatarMxcUrl: roomAvatarMxcUrl(room),
         membership: room.getMyMembership(),
         lastMessage: lastMessageText(room),
         timestamp: room.getLastActiveTimestamp(),

@@ -43,10 +43,10 @@ function ConnectionPill({ state }: { state: ReturnType<MatrixService["getSnapsho
   return <span className="connection-pill"><SignalLow />{state === "catching-up" ? "Catching up" : "Tuning"}</span>;
 }
 
-function RoomListItem({ room, active, onClick }: { room: RoomSummary; active: boolean; onClick: () => void }) {
+function RoomListItem({ room, service, active, onClick }: { room: RoomSummary; service: MatrixService; active: boolean; onClick: () => void }) {
   return (
     <button className={`room-list-item${active ? " is-active" : ""}`} type="button" onClick={onClick} aria-current={active ? "page" : undefined}>
-      <Avatar name={room.name} src={room.avatarUrl} />
+      <Avatar name={room.name} mxcUrl={room.avatarMxcUrl} service={service} />
       <span className="room-list-item__copy">
         <span><strong>{room.name}</strong>{room.encrypted ? <LockKeyhole aria-label="Encrypted" /> : null}</span>
         <small>{room.membership === "invite" ? "Invitation waiting" : room.lastMessage}</small>
@@ -125,7 +125,7 @@ export function ChatShell({ service, onLogout }: { service: MatrixService; onLog
     return (
       <section className="room-group" aria-labelledby={groupId}>
         <h2 id={groupId}>{title}<span>{rooms.length}</span></h2>
-        {rooms.map((room) => <RoomListItem key={room.id} room={room} active={room.id === snapshot.activeRoomId} onClick={() => selectRoom(room.id)} />)}
+        {rooms.map((room) => <RoomListItem key={room.id} room={room} service={service} active={room.id === snapshot.activeRoomId} onClick={() => selectRoom(room.id)} />)}
       </section>
     );
   };
@@ -172,7 +172,7 @@ export function ChatShell({ service, onLogout }: { service: MatrixService; onLog
               {!filteredRooms.length ? <div className="room-list-empty"><Search /><strong>No rooms found</strong><span>The index is being uncharacteristically decisive.</span></div> : null}
             </nav>
             <footer className="profile-strip">
-              <Avatar name={snapshot.displayName} src={snapshot.avatarUrl} />
+              <Avatar name={snapshot.displayName} mxcUrl={snapshot.avatarMxcUrl} service={service} />
               <button type="button" onClick={() => setDialog("settings")}><span><strong>{snapshot.displayName}</strong><small>{snapshot.userId}</small></span><Settings /></button>
             </footer>
           </div>
@@ -184,7 +184,7 @@ export function ChatShell({ service, onLogout }: { service: MatrixService; onLog
           <>
             <header className="conversation-header">
               <button className="mobile-menu-button" type="button" aria-label="Show rooms" onClick={() => setMobileRoomsOpen(true)}><ArrowLeft /></button>
-              <Avatar name={activeRoom.name} src={activeRoom.avatarUrl} />
+              <Avatar name={activeRoom.name} mxcUrl={activeRoom.avatarMxcUrl} service={service} />
               <div className="conversation-header__title">
                 <h1>{activeRoom.name}{activeRoom.muted ? <BellOff aria-label="Muted" /> : null}</h1>
                 <p><span className="member-count">{activeRoom.memberCount} {activeRoom.memberCount === 1 ? "member" : "members"}</span><span>·</span>{activeRoom.encrypted ? <><LockKeyhole />Encrypted end-to-end</> : "Unencrypted"}</p>
@@ -199,7 +199,7 @@ export function ChatShell({ service, onLogout }: { service: MatrixService; onLog
               <div className="invite-view">
                 <div className="invite-card">
                   <span className="index-chip">INVITE</span>
-                  <Avatar name={activeRoom.name} src={activeRoom.avatarUrl} size="large" />
+                  <Avatar name={activeRoom.name} mxcUrl={activeRoom.avatarMxcUrl} service={service} size="large" />
                   <h2>You have been invited to {activeRoom.name}</h2>
                   <p>The room would like to contain you. This is more courteous than most rooms manage.</p>
                   <div><button className="primary-button" type="button" onClick={() => void service.joinRoom(activeRoom.id)}><Check />Accept invitation</button><button className="secondary-button" type="button" onClick={() => void service.leaveActiveRoom()}><X />Decline</button></div>

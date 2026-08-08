@@ -1,4 +1,8 @@
+"use client";
+
+import { useEffect, useState } from "react";
 import { RadioTower } from "lucide-react";
+import type { MatrixService } from "@/lib/matrix/client";
 
 export function BrandMark({ compact = false, edition }: { compact?: boolean; edition?: string }) {
   return (
@@ -10,8 +14,32 @@ export function BrandMark({ compact = false, edition }: { compact?: boolean; edi
   );
 }
 
-export function Avatar({ name, src, size = "medium" }: { name: string; src?: string | null; size?: "small" | "medium" | "large" }) {
+export function Avatar({
+  name,
+  mxcUrl,
+  service,
+  size = "medium",
+}: {
+  name: string;
+  mxcUrl?: string | null;
+  service?: MatrixService;
+  size?: "small" | "medium" | "large";
+}) {
   const initials = name.split(/\s+/).map((part) => part[0]).join("").slice(0, 2).toUpperCase() || "?";
+  const directUrl = mxcUrl && !mxcUrl.startsWith("mxc://") ? mxcUrl : null;
+  const [loaded, setLoaded] = useState<{ mxcUrl: string; src: string } | null>(null);
+  const src = directUrl ?? (loaded && loaded.mxcUrl === mxcUrl ? loaded.src : null);
+
+  useEffect(() => {
+    let active = true;
+    if (!mxcUrl || directUrl || !service) return () => { active = false; };
+    const pixels = size === "large" ? 148 : size === "small" ? 56 : 96;
+    void service.getMediaAsset({ mxcUrl }, { width: pixels, height: pixels, resizeMethod: "crop", cacheKey: `avatar:${mxcUrl}:${pixels}` })
+      .then((asset) => { if (active) setLoaded({ mxcUrl, src: asset.url }); })
+      .catch(() => undefined);
+    return () => { active = false; };
+  }, [directUrl, mxcUrl, service, size]);
+
   return (
     <span className={`avatar avatar--${size}`} aria-hidden="true">
       {/* eslint-disable-next-line @next/next/no-img-element -- Matrix avatars are authenticated remote media. */}

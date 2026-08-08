@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import type { MatrixService } from "@/lib/matrix/client";
-import type { MatrixSnapshot, RoomSummary, TimelineItem } from "@/lib/matrix/types";
+import type { MatrixMediaRef, MatrixSnapshot, RoomSummary, TimelineItem } from "@/lib/matrix/types";
 import { ChatShell } from "./ChatShell";
 
 const at = (hour: number, minute: number) => new Date(2026, 7, 8, hour, minute).getTime();
@@ -11,7 +11,7 @@ function previewRoom(id: string, name: string, memberCount: number, lastMessage:
   return {
     id,
     name,
-    avatarUrl: id === "signal-watch" ? "/night-receiver-plate.png" : null,
+    avatarMxcUrl: id === "signal-watch" ? "/night-receiver-plate.png" : null,
     membership: "join",
     lastMessage,
     timestamp,
@@ -31,7 +31,7 @@ function previewMessage(id: string, senderName: string, body: string, timestamp:
     type: "message",
     senderId: `@${senderName.toLowerCase().replace(/\s+/g, "-")}:sub-etha.test`,
     senderName,
-    senderAvatarUrl: senderName === "Vera" ? "/night-receiver-plate.png" : null,
+    senderAvatarMxcUrl: senderName === "Vera" ? "/night-receiver-plate.png" : null,
     body,
     timestamp,
     own,
@@ -71,13 +71,17 @@ function createPreviewService(): MatrixService {
       previewMessage("m6", "Rook", "Did we get the new coil batch manifest?\nLogistics said it cleared customs.", at(10, 31)),
       previewMessage("m7", "Vera", "Yes. Dockside locker. Seal intact.", at(10, 33), false, { reactions: [{ key: "👍", count: 2, mine: false }] }),
       previewMessage("m8", "Tamsin", "Scheduling maintenance window for 2100.\nI’ll drop the calendar invite.", at(10, 42)),
+      previewMessage("m9", "Vera", "Receiver plate recovered from the archive.", at(10, 44), false, {
+        type: "image",
+        media: { mxcUrl: "/night-receiver-plate.png", mimeType: "image/png", size: 382_000, width: 1024, height: 1024 },
+      }),
     ],
     typingNames: [],
     loadingHistory: false,
     error: null,
     userId: "@rayne:sub-etha.test",
     displayName: "Rayne",
-    avatarUrl: "/night-receiver-plate.png",
+    avatarMxcUrl: "/night-receiver-plate.png",
     deviceId: "FIELD-GUIDE-01",
   };
 
@@ -90,7 +94,7 @@ function createPreviewService(): MatrixService {
     selectRoom: (roomId: string) => update({ activeRoomId: roomId }),
     clearError: () => update({ error: null }),
     paginate: async () => undefined,
-    react: async (eventId: string, key: string) => {
+    toggleReaction: async (eventId: string, key: string) => {
       update({ timeline: snapshot.timeline.map((item) => item.id === eventId ? { ...item, reactions: [...item.reactions.filter((reaction) => reaction.key !== key), { key, count: (item.reactions.find((reaction) => reaction.key === key)?.count ?? 0) + 1, mine: true }] } : item) });
     },
     retry: async () => undefined,
@@ -98,7 +102,9 @@ function createPreviewService(): MatrixService {
     setTyping: async (typing: boolean) => update({ typingNames: typing ? ["Sol"] : [] }),
     sendText: async (body: string) => update({ timeline: [...snapshot.timeline, previewMessage(`m${Date.now()}`, "Rayne", body, Date.now(), true, { readBy: ["Vera"] })] }),
     sendFile: async () => undefined,
-    getMediaUrl: async () => "",
+    getMediaAsset: async (media: MatrixMediaRef) => ({ url: media.mxcUrl, blob: new Blob(), mimeType: media.mimeType ?? "application/octet-stream", animated: media.mimeType === "image/gif" }),
+    getGifPoster: async () => null,
+    invalidateMedia: () => undefined,
     createRoom: async () => undefined,
     joinRoom: async (roomId: string) => update({ activeRoomId: roomId }),
     leaveActiveRoom: async () => update({ activeRoomId: null }),

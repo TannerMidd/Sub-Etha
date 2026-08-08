@@ -20,9 +20,10 @@ import { deriveRecoveryKeyFromPassphrase } from "matrix-js-sdk/lib/crypto-api/ke
 import { decryptAttachment, encryptAttachment, type IEncryptedFile } from "matrix-encrypt-attachment";
 import { base64UrlToBytes, clearSession, saveSession } from "./session-store";
 import { humanizeMatrixError } from "./auth";
+import { imageDimensions, normalizeMediaFile } from "./media";
 import { normalizeRooms, normalizeTimeline } from "./normalize";
-import { createTextContent } from "./message-content";
-import type { DeviceSummary, MatrixSnapshot, PersistedMatrixSession, TimelineItem } from "./types";
+import { createMediaContent, createTextContent } from "./message-content";
+import type { DeviceSummary, MatrixMediaRef, MatrixSnapshot, MediaAsset, PersistedMatrixSession, TimelineItem } from "./types";
 
 type Listener = () => void;
 
@@ -47,7 +48,7 @@ function emptySnapshot(session: PersistedMatrixSession): MatrixSnapshot {
     error: null,
     userId: session.userId,
     displayName: session.userId,
-    avatarUrl: null,
+    avatarMxcUrl: null,
     deviceId: session.deviceId,
   };
 }
@@ -66,16 +67,29 @@ async function acquireExclusiveLock(name: string): Promise<(() => void) | null> 
   return () => releaseLock?.();
 }
 
-function messageInfo(file: File): Record<string, unknown> {
+async function messageInfo(file: File): Promise<Record<string, unknown>> {
   const info: Record<string, unknown> = { size: file.size, mimetype: file.type || "application/octet-stream" };
+  const dimensions = await imageDimensions(file);
+  if (dimensions.width) info.w = dimensions.width;
+  if (dimensions.height) info.h = dimensions.height;
   return info;
 }
 
-function messageTypeFor(file: File): string {
-  if (file.type.startsWith("image/")) return "m.image";
-  if (file.type.startsWith("video/")) return "m.video";
-  if (file.type.startsWith("audio/")) return "m.audio";
-  return "m.file";
+export function mediaAuthorizationHeaders(url: string, homeserverUrl: string, accessToken: string | null): HeadersInit | undefined {
+  if (!accessToken) return undefined;
+  if (new URL(url).origin !== new URL(homeserverUrl).origin) {
+    throw new Error("Refusing to send Matrix credentials to an unexpected media host.");
+  }
+  return { Authorization: `Bearer ${accessToken}` };
+}
+
+export function shouldTryLegacyMedia(status: number): boolean {
+  return [400, 404, 405, 501].includes(status);
+}
+
+export function findOwnReactionEventId(timeline: TimelineItem[], eventId: string, key: string): string | null {
+  return timeline.find((item) => item.id === eventId)?.reactions
+    .find((reaction) => reaction.key === key && reaction.mine)?.ownEventId ?? null;
 }
 
 export class MatrixService {
@@ -85,7 +99,8 @@ export class MatrixService {
   private snapshot: MatrixSnapshot;
   private listeners = new Set<Listener>();
   private releaseLock: (() => void) | null = null;
-  private mediaUrls = new Map<string, Promise<string>>();
+  private mediaAssets = new Map<string, Promise<MediaAsset>>();
+  private gifPosters = new Map<string, Promise<string | null>>();
   private secretStorageKey: [string, Uint8Array<ArrayBuffer>] | null = null;
   private stopped = false;
   private readonly takeoverStorageKey = "sub-etha-account-takeover";
@@ -196,6 +211,7 @@ export class MatrixService {
       clientWellKnownPollPeriod: 6 * 60 * 60,
     });
     this.refreshDerivedState();
+    void this.refreshOwnProfile();
   }
 
   private handleSync = (state: SyncState): void => {
@@ -233,15 +249,31 @@ export class MatrixService {
     let activeRoomId = this.snapshot.activeRoomId;
     if (activeRoomId && !rooms.some((room) => room.id === activeRoomId)) activeRoomId = null;
     const room = activeRoomId ? client.getRoom(activeRoomId) : null;
-    const ownMember = room?.getMember(client.getUserId() ?? "") ?? null;
     this.emit({
       rooms,
       activeRoomId,
       timeline: includeTimeline && room ? normalizeTimeline(room, client) : this.snapshot.timeline,
-      displayName: ownMember?.name || client.getUserId() || this.session.userId,
-      avatarUrl: ownMember?.getAvatarUrl(client.getHomeserverUrl(), 96, 96, "crop", false, false, false) ?? null,
     });
     this.refreshTyping();
+  }
+
+  private async refreshOwnProfile(): Promise<void> {
+    const client = this.client;
+    const userId = client?.getUserId();
+    if (!client || !userId) return;
+    try {
+      const profile = await client.getProfileInfo(userId);
+      this.emit({
+        displayName: profile.displayname || userId,
+        avatarMxcUrl: profile.avatar_url ?? null,
+      });
+    } catch {
+      const user = client.getUser(userId);
+      this.emit({
+        displayName: user?.displayName || userId,
+        avatarMxcUrl: user?.avatarUrl ?? null,
+      });
+    }
   }
 
   private refreshTyping(): void {
@@ -299,7 +331,8 @@ export class MatrixService {
   }
 
   async sendFile(
-    file: File,
+    sourceFile: File,
+    options: { caption?: string; replyTo?: string } = {},
     onProgress?: (percentage: number) => void,
     onCancellable?: (cancel: (() => void) | null) => void,
   ): Promise<void> {
@@ -308,6 +341,7 @@ export class MatrixService {
     if (!roomId) return;
     const room = client.getRoom(roomId);
     if (!room) return;
+    const file = await normalizeMediaFile(sourceFile);
     const encrypted = room.hasEncryptionStateEvent();
     let uploadBody: Blob = file;
     let encryptedFile: IEncryptedFile | undefined;
@@ -326,49 +360,143 @@ export class MatrixService {
     });
     onCancellable?.(() => { client.cancelUpload(uploadPromise); });
     const upload = await uploadPromise.finally(() => onCancellable?.(null));
-    const content: Record<string, unknown> = {
-      msgtype: messageTypeFor(file),
-      body: file.name,
-      info: messageInfo(file),
-    };
-    if (encryptedFile) content.file = { ...encryptedFile, url: upload.content_uri };
-    else content.url = upload.content_uri;
+    const content = createMediaContent({
+      fileName: file.name,
+      mimeType: file.type,
+      contentUri: upload.content_uri,
+      info: await messageInfo(file),
+      caption: options.caption,
+      replyTo: options.replyTo,
+      encryptedFile: encryptedFile as unknown as Record<string, unknown> | undefined,
+    });
     await client.sendMessage(roomId, content as never);
   }
 
-  async getMediaUrl(item: TimelineItem): Promise<string | null> {
-    if (!item.media) return null;
-    const existing = this.mediaUrls.get(item.id);
+  async getMediaAsset(
+    media: MatrixMediaRef,
+    options: { width?: number; height?: number; resizeMethod?: "crop" | "scale"; cacheKey?: string } = {},
+  ): Promise<MediaAsset> {
+    const key = [options.cacheKey ?? media.mxcUrl, options.width ?? "full", options.height ?? "full", options.resizeMethod ?? "scale"].join("|");
+    const existing = this.mediaAssets.get(key);
     if (existing) return existing;
-    const loading = this.loadMedia(item);
-    this.mediaUrls.set(item.id, loading);
+    const loading = this.loadMedia(media, options);
+    this.mediaAssets.set(key, loading);
     try {
       return await loading;
     } catch (error) {
-      this.mediaUrls.delete(item.id);
+      this.mediaAssets.delete(key);
       throw error;
     }
   }
 
-  private async loadMedia(item: TimelineItem): Promise<string> {
+  invalidateMedia(media: MatrixMediaRef, cacheKey?: string): void {
+    const prefix = cacheKey ?? media.mxcUrl;
+    for (const [key, promise] of this.mediaAssets) {
+      if (!key.startsWith(`${prefix}|`)) continue;
+      void promise.then((asset) => URL.revokeObjectURL(asset.url)).catch(() => undefined);
+      this.mediaAssets.delete(key);
+    }
+    for (const [key, promise] of this.gifPosters) {
+      if (!key.startsWith(`${prefix}|`)) continue;
+      void promise.then((url) => { if (url) URL.revokeObjectURL(url); }).catch(() => undefined);
+      this.gifPosters.delete(key);
+    }
+  }
+
+  async getGifPoster(media: MatrixMediaRef, cacheKey?: string): Promise<string | null> {
+    const key = `${cacheKey ?? media.mxcUrl}|poster`;
+    const existing = this.gifPosters.get(key);
+    if (existing) return existing;
+    const loading = this.createGifPoster(media, cacheKey);
+    this.gifPosters.set(key, loading);
+    return loading;
+  }
+
+  private async createGifPoster(media: MatrixMediaRef, cacheKey?: string): Promise<string | null> {
+    if (typeof document === "undefined") return null;
+    try {
+      const asset = await this.getMediaAsset(media, { cacheKey });
+      let source: CanvasImageSource;
+      let width: number;
+      let height: number;
+      let releaseSource: () => void = () => undefined;
+      if ("createImageBitmap" in globalThis) {
+        const bitmap = await createImageBitmap(asset.blob);
+        source = bitmap;
+        width = bitmap.width;
+        height = bitmap.height;
+        releaseSource = () => bitmap.close();
+      } else {
+        const image = new Image();
+        image.src = asset.url;
+        await image.decode();
+        source = image;
+        width = image.naturalWidth;
+        height = image.naturalHeight;
+      }
+      const scale = Math.min(1, 1000 / Math.max(width, height));
+      const canvas = document.createElement("canvas");
+      canvas.width = Math.max(1, Math.round(width * scale));
+      canvas.height = Math.max(1, Math.round(height * scale));
+      canvas.getContext("2d")?.drawImage(source, 0, 0, canvas.width, canvas.height);
+      releaseSource();
+      const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, "image/png"));
+      return blob ? URL.createObjectURL(blob) : null;
+    } catch {
+      return null;
+    }
+  }
+
+  private async loadMedia(
+    media: MatrixMediaRef,
+    options: { width?: number; height?: number; resizeMethod?: "crop" | "scale" } = {},
+  ): Promise<MediaAsset> {
     const client = this.requireClient();
-    const media = item.media;
-    if (!media) throw new Error("No media is attached to this event.");
-    const url = client.mxcUrlToHttp(media.mxcUrl, undefined, undefined, undefined, false, true, true);
-    if (!url) throw new Error("The homeserver returned an invalid media address.");
+    const useThumbnail = !media.encryptedFile && options.width && options.height;
+    const authenticatedUrl = client.mxcUrlToHttp(
+      media.mxcUrl,
+      useThumbnail ? options.width : undefined,
+      useThumbnail ? options.height : undefined,
+      useThumbnail ? options.resizeMethod ?? "scale" : undefined,
+      false,
+      true,
+      true,
+    );
+    if (!authenticatedUrl) throw new Error("The homeserver returned an invalid media address.");
     const token = client.getAccessToken();
-    const response = await fetch(url, { headers: token ? { Authorization: `Bearer ${token}` } : undefined });
+    let response = await fetch(authenticatedUrl, {
+      headers: mediaAuthorizationHeaders(authenticatedUrl, client.getHomeserverUrl(), token),
+      cache: "no-store",
+    });
+    if (shouldTryLegacyMedia(response.status)) {
+      const legacyUrl = client.mxcUrlToHttp(
+        media.mxcUrl,
+        useThumbnail ? options.width : undefined,
+        useThumbnail ? options.height : undefined,
+        useThumbnail ? options.resizeMethod ?? "scale" : undefined,
+        false,
+        false,
+        false,
+      );
+      if (legacyUrl && legacyUrl !== authenticatedUrl) response = await fetch(legacyUrl, { cache: "no-store" });
+    }
     if (!response.ok) throw new Error(`Media download failed (${response.status}).`);
     let bytes = await response.arrayBuffer();
     if (media.encryptedFile) bytes = await decryptAttachment(bytes, media.encryptedFile as unknown as IEncryptedFile);
-    const blob = new Blob([bytes], { type: media.mimeType || "application/octet-stream" });
-    return URL.createObjectURL(blob);
+    const mimeType = media.mimeType || response.headers.get("content-type")?.split(";")[0] || "application/octet-stream";
+    const blob = new Blob([bytes], { type: mimeType });
+    return { url: URL.createObjectURL(blob), blob, mimeType, animated: mimeType === "image/gif" };
   }
 
-  async react(eventId: string, key: string): Promise<void> {
+  async toggleReaction(eventId: string, key: string): Promise<void> {
     const client = this.requireClient();
     const roomId = this.snapshot.activeRoomId;
     if (!roomId) return;
+    const ownReactionEventId = findOwnReactionEventId(this.snapshot.timeline, eventId, key);
+    if (ownReactionEventId) {
+      await client.redactEvent(roomId, ownReactionEventId, undefined, { reason: "Reaction removed in Sub-Etha" });
+      return;
+    }
     await client.sendEvent(roomId, EventType.Reaction, {
       "m.relates_to": { rel_type: RelationType.Annotation, event_id: eventId, key },
     });
@@ -463,6 +591,7 @@ export class MatrixService {
       await client.setAvatarUrl(upload.content_uri);
     }
     this.refreshDerivedState(true);
+    await this.refreshOwnProfile();
   }
 
   async getDevices(): Promise<DeviceSummary[]> {
@@ -583,10 +712,7 @@ export class MatrixService {
       await this.client?.clearStores({ cryptoDatabasePrefix: `sub-etha-crypto-${stableStoreName(this.session)}` });
     } catch { /* best effort */ }
     await clearSession();
-    for (const urlPromise of this.mediaUrls.values()) {
-      void urlPromise.then((url) => URL.revokeObjectURL(url)).catch(() => undefined);
-    }
-    this.mediaUrls.clear();
+    this.releaseMediaAssets();
     this.releaseLock?.();
     this.releaseLock = null;
     this.emit({ connection: "idle", rooms: [], timeline: [], activeRoomId: null });
@@ -596,11 +722,19 @@ export class MatrixService {
     this.stopped = true;
     this.client?.stopClient();
     window.removeEventListener("storage", this.handleTakeoverRequest);
-    for (const urlPromise of this.mediaUrls.values()) {
-      void urlPromise.then((url) => URL.revokeObjectURL(url)).catch(() => undefined);
-    }
-    this.mediaUrls.clear();
+    this.releaseMediaAssets();
     this.releaseLock?.();
     this.releaseLock = null;
+  }
+
+  private releaseMediaAssets(): void {
+    for (const promise of this.mediaAssets.values()) {
+      void promise.then((asset) => URL.revokeObjectURL(asset.url)).catch(() => undefined);
+    }
+    for (const promise of this.gifPosters.values()) {
+      void promise.then((url) => { if (url) URL.revokeObjectURL(url); }).catch(() => undefined);
+    }
+    this.mediaAssets.clear();
+    this.gifPosters.clear();
   }
 }
