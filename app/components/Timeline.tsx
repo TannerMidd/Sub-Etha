@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { Virtuoso } from "react-virtuoso";
-import { CheckCheck, CornerUpLeft, Download, FileText, LoaderCircle, Pencil, RefreshCw, ShieldAlert, Trash2 } from "lucide-react";
+import { CheckCheck, CornerUpLeft, Download, FileText, LoaderCircle, Pencil, RefreshCw, ShieldAlert, ThumbsUp, Trash2 } from "lucide-react";
 import type { MatrixService } from "@/lib/matrix/client";
 import type { TimelineItem } from "@/lib/matrix/types";
 import { Avatar } from "./BrandMark";
@@ -121,7 +121,7 @@ function MessageRow({
         {!item.redacted && item.sendingStatus !== "not_sent" ? (
           <div className="message-actions" aria-label={`Actions for message from ${item.senderName}`}>
             <button type="button" title="Reply" aria-label="Reply" onClick={() => onReply(item)}><CornerUpLeft /></button>
-            <button type="button" title="React with thumbs up" aria-label="React with thumbs up" onClick={() => void service.react(item.id, "👍")}><span aria-hidden="true">👍</span></button>
+            <button type="button" title="React with thumbs up" aria-label="React with thumbs up" onClick={() => void service.react(item.id, "👍")}><ThumbsUp /></button>
             {item.own ? <button type="button" title="Edit" aria-label="Edit" onClick={() => onEdit(item)}><Pencil /></button> : null}
             {item.own ? <button type="button" title="Remove" aria-label="Remove" onClick={() => void service.redact(item.id)}><Trash2 /></button> : null}
           </div>
@@ -135,12 +135,14 @@ export function Timeline({
   items,
   service,
   loadingHistory,
+  unreadCount,
   onReply,
   onEdit,
 }: {
   items: TimelineItem[];
   service: MatrixService;
   loadingHistory: boolean;
+  unreadCount: number;
   onReply: (item: TimelineItem) => void;
   onEdit: (item: TimelineItem) => void;
 }) {
@@ -173,7 +175,10 @@ export function Timeline({
           ),
         }}
         itemContent={(index, item) => (
-          <MessageRow item={item} previous={items[index - 1]} service={service} onReply={onReply} onEdit={onEdit} />
+          <>
+            {unreadCount > 0 && index === Math.max(0, items.length - unreadCount) ? <div className="unread-divider" role="separator"><span>New messages</span></div> : null}
+            <MessageRow item={item} previous={items[index - 1]} service={service} onReply={onReply} onEdit={onEdit} />
+          </>
         )}
       />
     </div>

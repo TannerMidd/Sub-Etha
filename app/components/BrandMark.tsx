@@ -1,11 +1,11 @@
 import { RadioTower } from "lucide-react";
 
-export function BrandMark({ compact = false }: { compact?: boolean }) {
+export function BrandMark({ compact = false, edition }: { compact?: boolean; edition?: string }) {
   return (
     <div className={`brand-mark${compact ? " brand-mark--compact" : ""}`} aria-label="Sub-Etha">
       <span className="brand-mark__signal" aria-hidden="true"><RadioTower size={compact ? 17 : 21} strokeWidth={1.8} /></span>
       <span className="brand-mark__word">SUB—ETHA</span>
-      {compact ? null : <span className="brand-mark__edition">FIELD EDITION · 01</span>}
+      {compact ? null : <span className="brand-mark__edition">{edition ?? "FIELD EDITION · 01"}</span>}
     </div>
   );
 }

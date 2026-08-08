@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useState, useSyncExternalStore } from "react";
 import { LoaderCircle, RadioTower, RefreshCw, ShieldAlert } from "lucide-react";
 import { completeRedirectLogin, humanizeMatrixError } from "@/lib/matrix/auth";
 import type { MatrixService } from "@/lib/matrix/client";
@@ -9,15 +9,19 @@ import { readSession, saveSession } from "@/lib/matrix/session-store";
 import type { PersistedMatrixSession } from "@/lib/matrix/types";
 import { BrandMark } from "./BrandMark";
 import { ChatShell } from "./ChatShell";
+import { DesignPreview } from "./DesignPreview";
 import { LoginScreen } from "./LoginScreen";
 
 type BootState = "booting" | "login" | "connected" | "duplicate" | "error";
+const subscribeToPreviewFlag = () => () => undefined;
+const readPreviewFlag = () => process.env.NODE_ENV !== "production" && new URLSearchParams(window.location.search).has("design-preview");
 
 export function SubEthaApp() {
   const [bootState, setBootState] = useState<BootState>("booting");
   const [service, setService] = useState<MatrixService | null>(null);
   const [bootError, setBootError] = useState<string | null>(null);
   const [waitingWorker, setWaitingWorker] = useState<ServiceWorker | null>(null);
+  const designPreview = useSyncExternalStore(subscribeToPreviewFlag, readPreviewFlag, () => false);
 
   const connect = useCallback(async (session: PersistedMatrixSession) => {
     setBootState("booting");
@@ -40,6 +44,9 @@ export function SubEthaApp() {
   }, []);
 
   useEffect(() => {
+    if (process.env.NODE_ENV !== "production" && new URLSearchParams(window.location.search).has("design-preview")) {
+      return;
+    }
     const storedTheme = localStorage.getItem("sub-etha-theme");
     if (storedTheme === "light" || storedTheme === "dark") document.documentElement.dataset.theme = storedTheme;
     let registration: ServiceWorkerRegistration | null = null;
@@ -102,6 +109,8 @@ export function SubEthaApp() {
     navigator.serviceWorker.addEventListener("controllerchange", () => window.location.reload(), { once: true });
     waitingWorker.postMessage({ type: "SKIP_WAITING" });
   };
+
+  if (designPreview) return <DesignPreview />;
 
   if (bootState === "login") return <LoginScreen onAuthenticated={connect} />;
   if (bootState === "connected" && service) return <>
