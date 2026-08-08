@@ -1,0 +1,111 @@
+import type { MatrixEvent, Room } from "matrix-js-sdk";
+import type { ValidatedAuthMetadata } from "matrix-js-sdk/lib/oauth";
+
+export type AuthKind = "password" | "sso" | "token" | "oauth";
+
+export interface PersistedMatrixSession {
+  baseUrl: string;
+  userId: string;
+  deviceId: string;
+  accessToken: string;
+  refreshToken?: string;
+  expiresAt?: number;
+  authKind: AuthKind;
+  cryptoStorageKey: string;
+  oauth?: {
+    clientId: string;
+    deviceId: string;
+    redirectUri: string;
+    metadata: ValidatedAuthMetadata;
+  };
+}
+
+export interface LoginCapabilities {
+  baseUrl: string;
+  serverName: string;
+  password: boolean;
+  token: boolean;
+  sso: boolean;
+  oauth: boolean;
+  identityProviders: Array<{ id: string; name: string; brand?: string }>;
+}
+
+export interface RoomSummary {
+  id: string;
+  name: string;
+  avatarUrl: string | null;
+  membership: string;
+  lastMessage: string;
+  timestamp: number;
+  unread: number;
+  highlights: number;
+  encrypted: boolean;
+  favourite: boolean;
+  muted: boolean;
+  memberCount: number;
+  room: Room;
+}
+
+export interface ReactionSummary {
+  key: string;
+  count: number;
+  mine: boolean;
+}
+
+export interface TimelineItem {
+  id: string;
+  type: "message" | "image" | "video" | "audio" | "file" | "notice" | "system" | "encrypted";
+  senderId: string;
+  senderName: string;
+  senderAvatarUrl: string | null;
+  body: string;
+  formattedBody?: string;
+  timestamp: number;
+  own: boolean;
+  edited: boolean;
+  redacted: boolean;
+  encrypted: boolean;
+  decryptionFailed: boolean;
+  media?: {
+    mxcUrl: string;
+    mimeType?: string;
+    size?: number;
+    encryptedFile?: Record<string, unknown>;
+  };
+  replyTo?: string;
+  reactions: ReactionSummary[];
+  sendingStatus: string | null;
+  readBy: string[];
+  event: MatrixEvent;
+}
+
+export type ConnectionState = "idle" | "starting" | "ready" | "catching-up" | "offline" | "error";
+
+export interface MatrixSnapshot {
+  connection: ConnectionState;
+  rooms: RoomSummary[];
+  activeRoomId: string | null;
+  timeline: TimelineItem[];
+  typingNames: string[];
+  loadingHistory: boolean;
+  error: string | null;
+  userId: string;
+  displayName: string;
+  avatarUrl: string | null;
+  deviceId: string;
+}
+
+export interface PushState {
+  supported: boolean;
+  enabled: boolean;
+  permission: NotificationPermission | "unsupported";
+  error?: string;
+}
+
+export interface DeviceSummary {
+  deviceId: string;
+  displayName: string;
+  lastSeenTs?: number;
+  lastSeenIp?: string;
+  current: boolean;
+}
