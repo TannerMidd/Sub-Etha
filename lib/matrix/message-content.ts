@@ -20,17 +20,20 @@ export function createTextContent(
     body: trimmed,
     ...(mentions.user_ids.length || "room" in mentions ? { "m.mentions": mentions } : {}),
   };
-  if (options.replyTo) {
-    return { ...plainContent, "m.relates_to": { "m.in_reply_to": { event_id: options.replyTo } } };
-  }
   if (options.editEventId) {
+    const replacementContent = options.replyTo
+      ? { ...plainContent, "m.relates_to": { "m.in_reply_to": { event_id: options.replyTo } } }
+      : plainContent;
     return {
       msgtype: "m.text",
       body: `* ${trimmed}`,
-      "m.new_content": plainContent,
+      "m.new_content": replacementContent,
       "m.relates_to": { rel_type: RelationType.Replace, event_id: options.editEventId },
       ...(plainContent["m.mentions"] ? { "m.mentions": plainContent["m.mentions"] } : {}),
     };
+  }
+  if (options.replyTo) {
+    return { ...plainContent, "m.relates_to": { "m.in_reply_to": { event_id: options.replyTo } } };
   }
   return plainContent;
 }

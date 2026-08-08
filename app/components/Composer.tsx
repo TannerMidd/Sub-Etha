@@ -41,6 +41,20 @@ export function Composer({
   const emojiWrap = useRef<HTMLDivElement>(null);
   const typingTimer = useRef<number | null>(null);
   const attachmentPreviewRef = useRef<string | null>(null);
+  const trimmedBody = body.trim();
+  const unchangedEdit = Boolean(editing && trimmedBody === editing.body.trim());
+  const canSend = Boolean(attachment || trimmedBody) && !unchangedEdit && !sending;
+
+  useEffect(() => {
+    if (!editing) return;
+    const frame = window.requestAnimationFrame(() => {
+      const input = textarea.current;
+      if (!input) return;
+      input.focus();
+      input.setSelectionRange(input.value.length, input.value.length);
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [editing]);
 
   useEffect(() => {
     if (editing) return;
@@ -96,7 +110,7 @@ export function Composer({
   }, [clearAttachment]);
 
   const send = async () => {
-    if ((!body.trim() && !attachment) || sending) return;
+    if (!canSend) return;
     setSending(true);
     setError(null);
     try {
@@ -156,10 +170,10 @@ export function Composer({
       }}
     >
       {replyingTo || editing ? (
-        <div className="composer-context">
+        <div className="composer-context" aria-live="polite">
           {editing ? <Pencil aria-hidden="true" /> : <CornerUpLeft aria-hidden="true" />}
           <span><strong>{editing ? "Editing message" : `Replying to ${replyingTo?.senderName}`}</strong>{editing ? editing.body : replyingTo?.body}</span>
-          <button type="button" aria-label="Cancel reply or edit" onClick={onClearContext}><X /></button>
+          <button type="button" aria-label={editing ? "Cancel message edit" : "Cancel reply"} onClick={onClearContext}><X /></button>
         </div>
       ) : null}
 
@@ -219,19 +233,24 @@ export function Composer({
             if (native.inputType === "insertFromPaste" && acceptClipboardImage(native.dataTransfer)) event.preventDefault();
           }}
           onKeyDown={(event) => {
+            if (event.key === "Escape" && (editing || replyingTo) && !sending) {
+              event.preventDefault();
+              onClearContext();
+              return;
+            }
             if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
               event.preventDefault();
               void send();
             }
           }}
-          placeholder={attachment ? "Add a caption…" : "Transmit a message…"}
+          placeholder={editing ? "Revise this message…" : attachment ? "Add a caption…" : "Transmit a message…"}
           rows={1}
         />
-        <button type="button" className="send-button" aria-label={attachment ? "Send attachment" : "Send message"} onClick={() => void send()} disabled={(!body.trim() && !attachment) || sending}>
+        <button type="button" className="send-button" aria-label={editing ? "Save message edit" : attachment ? "Send attachment" : "Send message"} title={editing ? "Save edit" : undefined} onClick={() => void send()} disabled={!canSend}>
           {sending ? <LoaderCircle className="spin" /> : <Send />}
         </button>
       </div>
-      {error ? <p className="composer-error" role="alert">{error}</p> : <p className="composer-hint">Enter to send · Shift + Enter for a new line · Paste or drop images and GIFs</p>}
+      {error ? <p className="composer-error" role="alert">{error}</p> : <p className="composer-hint">Enter to {editing ? "save" : "send"} · Shift + Enter for a new line{editing || replyingTo ? " · Esc to cancel" : " · Paste or drop images and GIFs"}</p>}
     </div>
   );
 }

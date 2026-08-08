@@ -479,8 +479,14 @@ export class MatrixService {
     const roomId = this.snapshot.activeRoomId;
     if (!roomId || !body.trim()) return;
     const room = client.getRoom(roomId);
-    const replyUserId = options.replyTo ? room?.findEventById(options.replyTo)?.getSender() : undefined;
-    const content = createTextContent(body, { ...options, replyUserId });
+    const editedEvent = options.editEventId ? room?.findEventById(options.editEventId) : undefined;
+    if (editedEvent && editedEvent.getSender() !== client.getUserId()) {
+      throw new Error("You can only edit your own messages.");
+    }
+    const editedRelation = editedEvent?.getContent<Record<string, unknown>>()["m.relates_to"] as { "m.in_reply_to"?: { event_id?: string } } | undefined;
+    const replyTo = options.replyTo ?? editedRelation?.["m.in_reply_to"]?.event_id;
+    const replyUserId = replyTo ? room?.findEventById(replyTo)?.getSender() : undefined;
+    const content = createTextContent(body, { ...options, replyTo, replyUserId });
     try {
       await client.sendMessage(roomId, content as never);
     } catch (error) {

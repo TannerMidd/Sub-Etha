@@ -110,7 +110,11 @@ function createPreviewService(): MatrixService {
     retry: async () => undefined,
     redact: async (eventId: string) => update({ timeline: snapshot.timeline.map((item) => item.id === eventId ? { ...item, redacted: true, body: "" } : item) }),
     setTyping: async (typing: boolean) => update({ typingNames: typing ? ["Sol"] : [] }),
-    sendText: async (body: string) => update({ timeline: [...snapshot.timeline, previewMessage(`m${Date.now()}`, "Rayne", body, Date.now(), true, { readBy: ["Vera"] })] }),
+    sendText: async (body: string, options: { replyTo?: string; editEventId?: string } = {}) => update({
+      timeline: options.editEventId
+        ? snapshot.timeline.map((item) => item.id === options.editEventId ? { ...item, body, formattedBody: undefined, edited: true } : item)
+        : [...snapshot.timeline, previewMessage(`m${Date.now()}`, "Rayne", body, Date.now(), true, { readBy: ["Vera"], replyTo: options.replyTo })],
+    }),
     sendFile: async () => undefined,
     getMediaAsset: async (media: MatrixMediaRef) => ({ url: media.mxcUrl, blob: new Blob(), mimeType: media.mimeType ?? "application/octet-stream", animated: media.mimeType === "image/gif" }),
     getGifPoster: async () => null,

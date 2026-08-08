@@ -191,8 +191,9 @@ test("message content carries Matrix mentions, replies, and edits", () => {
     room: true,
   });
   assert.deepEqual(reply["m.relates_to"], { "m.in_reply_to": { event_id: "$earlier" } });
-  const edit = createTextContent("Corrected", { editEventId: "$original" });
+  const edit = createTextContent("Corrected", { editEventId: "$original", replyTo: "$earlier" });
   assert.equal((edit["m.new_content"] as { body: string }).body, "Corrected");
+  assert.deepEqual((edit["m.new_content"] as Record<string, unknown>)["m.relates_to"], { "m.in_reply_to": { event_id: "$earlier" } });
   assert.deepEqual(edit["m.relates_to"], { rel_type: "m.replace", event_id: "$original" });
 });
 

@@ -11,6 +11,7 @@ import {
   FileText,
   LoaderCircle,
   Maximize2,
+  MoreHorizontal,
   Pencil,
   Play,
   RefreshCw,
@@ -278,14 +279,40 @@ function MessageRow({ item, previous, service, onReply, onEdit, onOpenMedia }: {
   onOpenMedia: (item: TimelineItem, opener: HTMLElement) => void;
 }) {
   const [reactionOpen, setReactionOpen] = useState(false);
+  const [actionsOpen, setActionsOpen] = useState(false);
+  const rowRef = useRef<HTMLElement>(null);
   const newDay = !previous || new Date(previous.timestamp).toDateString() !== new Date(item.timestamp).toDateString();
+  const editable = item.own && item.type === "message" && !item.media && !item.sendingStatus;
+
+  useEffect(() => {
+    if (!actionsOpen) return;
+    const dismiss = (event: PointerEvent) => {
+      if (!rowRef.current?.contains(event.target as Node)) {
+        setActionsOpen(false);
+        setReactionOpen(false);
+      }
+    };
+    const escape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setActionsOpen(false);
+        setReactionOpen(false);
+      }
+    };
+    document.addEventListener("pointerdown", dismiss);
+    window.addEventListener("keydown", escape);
+    return () => {
+      document.removeEventListener("pointerdown", dismiss);
+      window.removeEventListener("keydown", escape);
+    };
+  }, [actionsOpen]);
+
   if (item.type === "system") {
     return <>{newDay ? <DayDivider timestamp={item.timestamp} /> : null}<div className="system-event"><span>{item.body}</span><time>{formatTime(item.timestamp)}</time></div></>;
   }
   return (
     <>
       {newDay ? <DayDivider timestamp={item.timestamp} /> : null}
-      <article className={`message-row${item.own ? " message-row--own" : ""}${item.type === "notice" ? " message-row--notice" : ""}`} data-event-id={item.id} aria-label={`Message from ${item.senderName}`}>
+      <article ref={rowRef} className={`message-row${item.own ? " message-row--own" : ""}${item.type === "notice" ? " message-row--notice" : ""}${actionsOpen ? " is-actions-open" : ""}`} data-event-id={item.id} aria-label={`Message from ${item.senderName}`}>
         <Avatar name={item.senderName} mxcUrl={item.senderAvatarMxcUrl} service={service} />
         <div className="message-row__main">
           <header>
@@ -316,12 +343,15 @@ function MessageRow({ item, previous, service, onReply, onEdit, onOpenMedia }: {
           ) : null}
           {item.readBy.length ? <div className="read-receipt"><CheckCheck aria-hidden="true" />Read by {item.readBy.join(", ")}</div> : null}
         </div>
-        {!item.redacted && item.sendingStatus !== "not_sent" ? (
+        {!item.redacted && !item.sendingStatus ? (
+          <button type="button" className="message-actions-toggle" aria-label={`Show actions for message from ${item.senderName}`} aria-expanded={actionsOpen} onClick={() => setActionsOpen((open) => !open)}><MoreHorizontal /></button>
+        ) : null}
+        {!item.redacted && !item.sendingStatus ? (
           <div className="message-actions" aria-label={`Actions for message from ${item.senderName}`}>
-            <button type="button" title="Reply" aria-label="Reply" onClick={() => onReply(item)}><CornerUpLeft /></button>
+            <button type="button" title="Reply" aria-label="Reply" onClick={() => { setActionsOpen(false); onReply(item); }}><CornerUpLeft /></button>
             <button type="button" title="Add reaction" aria-label="Add reaction" aria-expanded={reactionOpen} onClick={() => setReactionOpen((open) => !open)}><SmilePlus /></button>
-            {item.own ? <button type="button" title="Edit" aria-label="Edit" onClick={() => onEdit(item)}><Pencil /></button> : null}
-            {item.own ? <button type="button" title="Remove" aria-label="Remove" onClick={() => void service.redact(item.id)}><Trash2 /></button> : null}
+            {editable ? <button type="button" title="Edit" aria-label="Edit" onClick={() => { setActionsOpen(false); onEdit(item); }}><Pencil /></button> : null}
+            {item.own ? <button type="button" title="Remove" aria-label="Remove" onClick={() => { setActionsOpen(false); void service.redact(item.id); }}><Trash2 /></button> : null}
             {reactionOpen ? <ReactionPicker item={item} service={service} onClose={() => setReactionOpen(false)} /> : null}
           </div>
         ) : null}

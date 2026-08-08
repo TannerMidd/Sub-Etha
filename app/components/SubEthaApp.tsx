@@ -23,6 +23,39 @@ export function SubEthaApp() {
   const [waitingWorker, setWaitingWorker] = useState<ServiceWorker | null>(null);
   const designPreview = useSyncExternalStore(subscribeToPreviewFlag, readPreviewFlag, () => false);
 
+  useEffect(() => {
+    const viewport = document.querySelector<HTMLMetaElement>('meta[name="viewport"]');
+    const displayMode = window.matchMedia("(display-mode: standalone)");
+    const browserViewport = viewport?.content ?? "width=device-width, initial-scale=1";
+    const isStandalone = () => displayMode.matches || Boolean((navigator as Navigator & { standalone?: boolean }).standalone);
+    const applyDisplayMode = () => {
+      const standalone = isStandalone();
+      document.documentElement.dataset.displayMode = standalone ? "standalone" : "browser";
+      if (viewport) {
+        viewport.content = standalone
+          ? "width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover"
+          : browserViewport;
+      }
+    };
+    const preventZoomShortcut = (event: KeyboardEvent) => {
+      if (isStandalone() && (event.ctrlKey || event.metaKey) && ["+", "-", "=", "0"].includes(event.key)) event.preventDefault();
+    };
+    const preventZoomWheel = (event: WheelEvent) => {
+      if (isStandalone() && event.ctrlKey) event.preventDefault();
+    };
+    applyDisplayMode();
+    displayMode.addEventListener("change", applyDisplayMode);
+    window.addEventListener("keydown", preventZoomShortcut);
+    window.addEventListener("wheel", preventZoomWheel, { passive: false });
+    return () => {
+      displayMode.removeEventListener("change", applyDisplayMode);
+      window.removeEventListener("keydown", preventZoomShortcut);
+      window.removeEventListener("wheel", preventZoomWheel);
+      if (viewport) viewport.content = browserViewport;
+      delete document.documentElement.dataset.displayMode;
+    };
+  }, []);
+
   const connect = useCallback(async (session: PersistedMatrixSession) => {
     setBootState("booting");
     setBootError(null);

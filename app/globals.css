@@ -72,6 +72,11 @@ body {
 button, input, textarea { font: inherit; }
 button { color: inherit; }
 button, a { -webkit-tap-highlight-color: transparent; }
+@media (display-mode: standalone) {
+  html, body { overscroll-behavior: none; }
+  html { touch-action: pan-x pan-y; }
+}
+html[data-display-mode="standalone"] { touch-action: pan-x pan-y; }
 button:focus-visible, input:focus-visible, textarea:focus-visible, a:focus-visible {
   outline: 3px solid color-mix(in srgb, var(--teal) 55%, transparent);
   outline-offset: 2px;
@@ -278,6 +283,7 @@ input::placeholder, textarea::placeholder { color: color-mix(in srgb, var(--ink-
 .reply-context { margin: 3px 0; padding-left: 8px; border-left: 2px solid var(--teal); display: flex; align-items: center; gap: 5px; color: var(--ink-soft); font-size: 10px; }
 .reply-context svg { width: 12px; }
 .redacted-body { margin: 2px 0; color: var(--ink-soft); font-size: 12px; font-style: italic; }
+.message-actions-toggle { display: none; }
 .message-actions { position: absolute; top: -22px; right: max(20px, 4vw); display: flex; opacity: 0; pointer-events: none; padding: 3px; border: 1px solid var(--line); background: var(--paper-raised); border-radius: 8px; box-shadow: 0 7px 20px rgba(0,0,0,.1); }
 .message-row:hover .message-actions, .message-row:focus-within .message-actions { opacity: 1; pointer-events: auto; }
 .message-actions button { width: 30px; height: 28px; border: 0; border-radius: 5px; background: transparent; display: grid; place-items: center; cursor: pointer; }
@@ -766,6 +772,13 @@ input::placeholder, textarea::placeholder { color: color-mix(in srgb, var(--ink-
 .lightbox__previous svg, .lightbox__next svg { width: 23px; }
 
 @media (max-width: 720px) {
+  .message-row { padding-right: 46px; }
+  .message-actions-toggle { position: absolute; top: 5px; right: 9px; width: 34px; height: 34px; display: grid; place-items: center; border: 0; border-radius: 7px; background: transparent; color: var(--ink-soft); cursor: pointer; }
+  .message-actions-toggle:hover, .message-actions-toggle[aria-expanded="true"] { background: var(--paper-deep); color: var(--ink); }
+  .message-actions-toggle svg { width: 17px; }
+  .message-actions { top: 40px; right: 9px; }
+  .message-row:hover .message-actions, .message-row:focus-within .message-actions { opacity: 0; pointer-events: none; }
+  .message-row.is-actions-open .message-actions, .message-row.is-actions-open:focus-within .message-actions { opacity: 1; pointer-events: auto; }
   .attachment-stage { grid-template-columns: 60px minmax(0, 1fr) 32px; }
   .attachment-stage__preview { width: 60px; height: 52px; }
   .emoji-control > .icon-button { width: 38px; }
