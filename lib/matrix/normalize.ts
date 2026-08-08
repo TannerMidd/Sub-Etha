@@ -6,15 +6,20 @@ import {
   type MatrixEvent,
   type Room,
 } from "matrix-js-sdk";
+import { stripPlainReplyFallback } from "./message-text";
 import type { ReactionSummary, RoomSummary, TimelineItem } from "./types";
 
-const ALLOWED_TAGS = ["a", "b", "blockquote", "br", "code", "del", "em", "i", "li", "ol", "p", "pre", "span", "strong", "ul"];
+const ALLOWED_TAGS = [
+  "a", "b", "blockquote", "br", "caption", "code", "del", "details", "div", "em", "h1", "h2", "h3", "h4", "h5", "h6", "hr", "i", "li", "ol", "p", "pre", "s", "span", "strong", "sub", "summary", "sup", "table", "tbody", "td", "th", "thead", "tr", "u", "ul",
+];
+const RICH_REPLY_FALLBACK = /^\s*<mx-reply(?:\s[^>]*)?>[\s\S]*?<\/mx-reply>\s*/i;
 
 export function sanitizeMatrixHtml(value: string): string {
-  return DOMPurify.sanitize(value, {
+  return DOMPurify.sanitize(value.replace(RICH_REPLY_FALLBACK, ""), {
     ALLOWED_TAGS,
-    ALLOWED_ATTR: ["href", "title", "data-mx-color", "data-mx-bg-color"],
+    ALLOWED_ATTR: ["href", "title", "start", "data-mx-color", "data-mx-bg-color", "data-mx-spoiler", "data-mx-maths"],
     ALLOW_UNKNOWN_PROTOCOLS: false,
+    ALLOWED_URI_REGEXP: /^(?:(?:https?|ftp|mailto|magnet):)/i,
   });
 }
 
@@ -23,7 +28,10 @@ function eventBody(event: MatrixEvent): string {
   const replacing = event.replacingEvent();
   const replacingContent = replacing?.getContent<Record<string, unknown>>();
   const base = replacingContent?.["m.new_content"] ?? event.getContent<Record<string, unknown>>()["m.new_content"] ?? event.getContent();
-  if (base && typeof base === "object" && "body" in base && typeof base.body === "string") return base.body;
+  if (base && typeof base === "object" && "body" in base && typeof base.body === "string") {
+    const relation = (base as Record<string, unknown>)["m.relates_to"] as { "m.in_reply_to"?: { event_id?: string } } | undefined;
+    return relation?.["m.in_reply_to"]?.event_id ? stripPlainReplyFallback(base.body) : base.body;
+  }
   return "";
 }
 
@@ -103,7 +111,9 @@ export function normalizeTimeline(room: Room, client: MatrixClient): TimelineIte
         .slice(0, 3)
       : [];
     const isMembership = event.getType() === EventType.RoomMember;
-    const formattedBody = typeof content.formatted_body === "string" ? sanitizeMatrixHtml(content.formatted_body) : undefined;
+    const formattedBody = content.format === "org.matrix.custom.html" && typeof content.formatted_body === "string"
+      ? sanitizeMatrixHtml(content.formatted_body)
+      : undefined;
 
     return {
       id: eventId,

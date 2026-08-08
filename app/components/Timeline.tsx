@@ -1,6 +1,6 @@
 "use client";
 
-import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { Virtuoso } from "react-virtuoso";
 import {
   CheckCheck,
@@ -24,6 +24,7 @@ import {
   ZoomOut,
 } from "lucide-react";
 import type { MatrixService } from "@/lib/matrix/client";
+import { messageTextSegments } from "@/lib/matrix/message-text";
 import type { MediaAsset, TimelineItem } from "@/lib/matrix/types";
 import { Avatar } from "./BrandMark";
 
@@ -270,6 +271,75 @@ function DayDivider({ timestamp }: { timestamp: number }) {
   return <div className="day-divider" role="separator"><span>{formatDate(timestamp)}</span></div>;
 }
 
+function PlainMessageBody({ body }: { body: string }) {
+  const segments = useMemo(() => messageTextSegments(body), [body]);
+  return (
+    <p className="message-body">
+      {segments.map((segment, index) => segment.href ? (
+        <a key={`${segment.href}-${index}`} href={segment.href} target="_blank" rel="noopener noreferrer">{segment.text}</a>
+      ) : <Fragment key={index}>{segment.text}</Fragment>)}
+    </p>
+  );
+}
+
+function FormattedMessageBody({ html }: { html: string }) {
+  const bodyRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const root = bodyRef.current;
+    if (!root) return;
+    const cleanups: Array<() => void> = [];
+    for (const link of root.querySelectorAll<HTMLAnchorElement>("a[href]")) {
+      link.target = "_blank";
+      link.rel = "noopener noreferrer";
+    }
+    for (const element of root.querySelectorAll<HTMLElement>("[data-mx-color], [data-mx-bg-color]")) {
+      const foreground = element.dataset.mxColor;
+      const background = element.dataset.mxBgColor;
+      if (foreground && /^#[0-9a-f]{6}$/i.test(foreground)) element.style.color = foreground;
+      if (background && /^#[0-9a-f]{6}$/i.test(background)) element.style.backgroundColor = background;
+    }
+    for (const spoiler of root.querySelectorAll<HTMLElement>("[data-mx-spoiler]")) {
+      const reason = spoiler.dataset.mxSpoiler;
+      spoiler.tabIndex = 0;
+      spoiler.setAttribute("role", "button");
+      spoiler.setAttribute("aria-expanded", "false");
+      spoiler.setAttribute("aria-label", reason ? `Spoiler: ${reason}. Activate to reveal.` : "Spoiler. Activate to reveal.");
+      const toggle = () => {
+        const revealed = spoiler.toggleAttribute("data-revealed");
+        spoiler.setAttribute("aria-expanded", String(revealed));
+        spoiler.setAttribute("aria-label", revealed
+          ? `Revealed spoiler${reason ? ` (${reason})` : ""}: ${spoiler.textContent ?? ""}`
+          : reason ? `Spoiler: ${reason}. Activate to reveal.` : "Spoiler. Activate to reveal.");
+      };
+      const click = (event: MouseEvent) => {
+        event.preventDefault();
+        toggle();
+      };
+      const keydown = (event: KeyboardEvent) => {
+        if (event.key !== "Enter" && event.key !== " ") return;
+        event.preventDefault();
+        toggle();
+      };
+      spoiler.addEventListener("click", click);
+      spoiler.addEventListener("keydown", keydown);
+      cleanups.push(() => {
+        spoiler.removeEventListener("click", click);
+        spoiler.removeEventListener("keydown", keydown);
+      });
+    }
+    return () => cleanups.forEach((cleanup) => cleanup());
+  }, [html]);
+
+  return (
+    <div
+      ref={bodyRef}
+      className="formatted-body"
+      dangerouslySetInnerHTML={{ __html: html }}
+    />
+  );
+}
+
 function MessageRow({ item, previous, service, onReply, onEdit, onOpenMedia }: {
   item: TimelineItem;
   previous?: TimelineItem;
@@ -323,8 +393,8 @@ function MessageRow({ item, previous, service, onReply, onEdit, onOpenMedia }: {
           </header>
           {item.replyTo ? <div className="reply-context"><CornerUpLeft aria-hidden="true" />Reply to an earlier transmission</div> : null}
           {item.redacted ? <p className="redacted-body">Message removed</p> : item.formattedBody ? (
-            <div className="formatted-body" dangerouslySetInnerHTML={{ __html: item.formattedBody }} />
-          ) : item.type === "file" ? null : <p className="message-body">{item.body}</p>}
+            <FormattedMessageBody html={item.formattedBody} />
+          ) : item.type === "file" ? null : <PlainMessageBody body={item.body} />}
           {item.media ? <MediaAttachment item={item} service={service} onOpen={onOpenMedia} /> : null}
           {item.reactions.length ? (
             <div className="reaction-list" aria-label="Reactions">

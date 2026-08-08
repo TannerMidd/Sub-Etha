@@ -7,6 +7,7 @@ import type { RoomSummary } from "../lib/matrix/types";
 import { roomAvatarMxcUrl, sortRoomSummaries } from "../lib/matrix/normalize";
 import { genericNotificationPayload, validPushEndpoint, validPushKey } from "../lib/push-gateway";
 import { createMediaContent, createTextContent } from "../lib/matrix/message-content";
+import { messageTextSegments, stripPlainReplyFallback } from "../lib/matrix/message-text";
 import { findOwnReactionEventId, mediaAuthorizationHeaders, shouldTryLegacyMedia } from "../lib/matrix/client";
 import { bytesAreGif, firstImageFile, insertAtSelection, normalizeMediaFile } from "../lib/matrix/media";
 import { relayToPushGateway } from "../lib/vercel-push-proxy";
@@ -195,6 +196,20 @@ test("message content carries Matrix mentions, replies, and edits", () => {
   assert.equal((edit["m.new_content"] as { body: string }).body, "Corrected");
   assert.deepEqual((edit["m.new_content"] as Record<string, unknown>)["m.relates_to"], { "m.in_reply_to": { event_id: "$earlier" } });
   assert.deepEqual(edit["m.relates_to"], { rel_type: "m.replace", event_id: "$original" });
+});
+
+test("plain message text recognizes links without swallowing sentence punctuation", () => {
+  assert.deepEqual(messageTextSegments("See https://example.org/docs_(v2), www.matrix.org or crew@example.org."), [
+    { text: "See " },
+    { text: "https://example.org/docs_(v2)", href: "https://example.org/docs_(v2)" },
+    { text: ", " },
+    { text: "www.matrix.org", href: "https://www.matrix.org" },
+    { text: " or " },
+    { text: "crew@example.org", href: "mailto:crew@example.org" },
+    { text: "." },
+  ]);
+  assert.equal(stripPlainReplyFallback("> <@ford:example.org> Earlier\n> message\n\nActual reply"), "Actual reply");
+  assert.equal(stripPlainReplyFallback("> This is an ordinary quote"), "");
 });
 
 test("image attachments preserve captions, dimensions, encryption metadata, and replies", () => {

@@ -279,7 +279,26 @@ input::placeholder, textarea::placeholder { color: color-mix(in srgb, var(--ink-
 .message-row__main > header strong { font-size: 12px; }.message-row__main > header time, .edited-label { color: var(--ink-soft); font-size: 9px; }
 .encrypted-label { padding: 1px 4px; border-radius: 3px; background: var(--teal-soft); color: var(--teal); font: 800 8px var(--font-mono); letter-spacing: .06em; }
 .message-body, .formatted-body { margin: 2px 0 0; color: var(--ink); font-size: 14px; overflow-wrap: anywhere; white-space: pre-wrap; }
-.formatted-body p { margin: 0 0 5px; }.formatted-body a { color: var(--teal); text-decoration-thickness: 1px; }.formatted-body pre, .formatted-body code { font-family: var(--font-mono); background: var(--paper-deep); border-radius: 4px; }.formatted-body code { padding: 1px 4px; }.formatted-body pre { padding: 10px; overflow-x: auto; }
+.formatted-body { white-space: normal; overflow-x: auto; }
+.formatted-body p { margin: 0 0 5px; }
+.message-body a, .formatted-body a { color: var(--teal); text-decoration: underline; text-decoration-thickness: 1px; text-underline-offset: 2px; }
+.message-body a:hover, .formatted-body a:hover { color: var(--signal-dark); }
+.formatted-body pre, .formatted-body code { font-family: var(--font-mono); background: var(--paper-deep); border-radius: 4px; }
+.formatted-body code { padding: 1px 4px; }
+.formatted-body pre { padding: 10px; overflow-x: auto; white-space: pre-wrap; }
+.formatted-body h1, .formatted-body h2, .formatted-body h3, .formatted-body h4, .formatted-body h5, .formatted-body h6 { margin: .65em 0 .3em; font-family: var(--font-display); line-height: 1.15; }
+.formatted-body h1 { font-size: 1.7em; }.formatted-body h2 { font-size: 1.5em; }.formatted-body h3 { font-size: 1.3em; }
+.formatted-body ul, .formatted-body ol { margin: .35em 0; padding-left: 1.5em; }
+.formatted-body blockquote { margin: .45em 0; padding: .25em .75em; border-left: 3px solid var(--teal); color: var(--ink-soft); }
+.formatted-body hr { border: 0; border-top: 1px solid var(--line); margin: .75em 0; }
+.formatted-body table { max-width: 100%; border-collapse: collapse; font-size: .92em; }
+.formatted-body th, .formatted-body td { padding: .35em .55em; border: 1px solid var(--line); text-align: left; }
+.formatted-body th { background: var(--paper-deep); }
+.formatted-body details { margin: .4em 0; }.formatted-body summary { cursor: pointer; font-weight: 700; }
+.formatted-body [data-mx-spoiler] { padding: 0 .18em; border-radius: 3px; cursor: pointer; }
+.formatted-body [data-mx-spoiler]:not([data-revealed]) { background: var(--ink) !important; color: transparent !important; }
+.formatted-body [data-mx-spoiler]:not([data-revealed]) * { visibility: hidden; }
+.formatted-body [data-mx-spoiler]:focus-visible { outline: 2px solid var(--teal); outline-offset: 2px; }
 .reply-context { margin: 3px 0; padding-left: 8px; border-left: 2px solid var(--teal); display: flex; align-items: center; gap: 5px; color: var(--ink-soft); font-size: 10px; }
 .reply-context svg { width: 12px; }
 .redacted-body { margin: 2px 0; color: var(--ink-soft); font-size: 12px; font-style: italic; }
@@ -294,7 +313,7 @@ input::placeholder, textarea::placeholder { color: color-mix(in srgb, var(--ink-
 .send-status, .read-receipt { display: flex; align-items: center; gap: 5px; margin-top: 4px; color: var(--ink-soft); font-size: 9px; }
 .send-status--not_sent { color: var(--signal-dark); }.send-status button { border: 0; background: transparent; color: inherit; display: inline-flex; gap: 3px; cursor: pointer; }.send-status svg, .read-receipt svg { width: 11px; }
 .system-event { display: flex; justify-content: center; gap: 7px; padding: 5px 24px; color: var(--ink-soft); font-size: 10px; }.system-event time { opacity: .65; }
-.message-row--notice .message-body { color: var(--ink-soft); }
+.message-row--notice .message-body, .message-row--notice .formatted-body { color: var(--ink-soft); }
 .media-loading, .media-error { margin-top: 7px; display: flex; align-items: center; gap: 7px; color: var(--ink-soft); font-size: 10px; }.media-loading svg, .media-error svg { width: 14px; }.media-error { color: var(--signal-dark); }
 .image-attachment { display: block; width: min(520px, 100%); margin-top: 8px; border: 1px solid var(--line); border-radius: 10px; overflow: hidden; background: var(--paper-deep); }
 .image-attachment img { display: block; max-width: 100%; max-height: 460px; object-fit: contain; }
