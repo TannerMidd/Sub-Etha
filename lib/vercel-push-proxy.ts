@@ -1,8 +1,8 @@
-const DEFAULT_PUSH_GATEWAY_ORIGIN = "https://sub-etha-matrix.middletontanne137269.chatgpt.site";
 const MAX_BODY_BYTES = 64 * 1024;
 
-function gatewayOrigin(): URL {
-  const configured = process.env.SUB_ETHA_PUSH_GATEWAY_ORIGIN || DEFAULT_PUSH_GATEWAY_ORIGIN;
+function gatewayOrigin(): URL | null {
+  const configured = process.env.SUB_ETHA_PUSH_GATEWAY_ORIGIN;
+  if (!configured) return null;
   const gateway = new URL(configured);
   if (gateway.protocol !== "https:") throw new Error("The Sub-Etha push gateway must use HTTPS.");
   return gateway;
@@ -11,6 +11,12 @@ function gatewayOrigin(): URL {
 export async function relayToPushGateway(request: Request, path: string): Promise<Response> {
   try {
     const gateway = gatewayOrigin();
+    if (!gateway) {
+      return Response.json({ error: "Closed-app notifications are not configured on this mirror." }, {
+        status: 503,
+        headers: { "Cache-Control": "no-store" },
+      });
+    }
     const contentLength = Number(request.headers.get("content-length") || 0);
     if (contentLength > MAX_BODY_BYTES) return Response.json({ error: "Request body is too large." }, { status: 413 });
     const body = request.method === "GET" || request.method === "HEAD" ? undefined : await request.arrayBuffer();

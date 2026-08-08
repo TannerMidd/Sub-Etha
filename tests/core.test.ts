@@ -139,6 +139,8 @@ test("push payload discards Matrix content and identity fields", () => {
 
 test("Vercel push relay forwards only the privacy-minimal request to the established gateway", async () => {
   const originalFetch = globalThis.fetch;
+  const originalGateway = process.env.SUB_ETHA_PUSH_GATEWAY_ORIGIN;
+  process.env.SUB_ETHA_PUSH_GATEWAY_ORIGIN = "https://push.sub-etha.example";
   const calls: Array<{ url: string; headers: Headers }> = [];
   globalThis.fetch = async (input, init) => {
     calls.push({ url: String(input), headers: new Headers(init?.headers) });
@@ -157,11 +159,25 @@ test("Vercel push relay forwards only the privacy-minimal request to the establi
     assert.equal(response.status, 200);
     const observed = calls[0];
     assert.ok(observed);
-    assert.equal(observed.url, "https://sub-etha-matrix.middletontanne137269.chatgpt.site/api/push/subscriptions");
-    assert.equal(observed.headers.get("origin"), "https://sub-etha-matrix.middletontanne137269.chatgpt.site");
+    assert.equal(observed.url, "https://push.sub-etha.example/api/push/subscriptions");
+    assert.equal(observed.headers.get("origin"), "https://push.sub-etha.example");
     assert.equal(observed.headers.has("authorization"), false);
   } finally {
     globalThis.fetch = originalFetch;
+    if (originalGateway === undefined) delete process.env.SUB_ETHA_PUSH_GATEWAY_ORIGIN;
+    else process.env.SUB_ETHA_PUSH_GATEWAY_ORIGIN = originalGateway;
+  }
+});
+
+test("Vercel mirror fails closed when no public push gateway is configured", async () => {
+  const originalGateway = process.env.SUB_ETHA_PUSH_GATEWAY_ORIGIN;
+  delete process.env.SUB_ETHA_PUSH_GATEWAY_ORIGIN;
+  try {
+    const response = await relayToPushGateway(new Request("https://sub-etha.vercel.app/api/push/vapid-key"), "/api/push/vapid-key");
+    assert.equal(response.status, 503);
+    assert.match(await response.text(), /not configured/i);
+  } finally {
+    if (originalGateway !== undefined) process.env.SUB_ETHA_PUSH_GATEWAY_ORIGIN = originalGateway;
   }
 });
 
