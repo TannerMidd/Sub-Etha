@@ -3,9 +3,13 @@
 import { useEffect, useState } from "react";
 import type { MatrixService } from "@/lib/matrix/client";
 import type { MatrixMediaRef, MatrixSnapshot, RoomSummary, TimelineItem } from "@/lib/matrix/types";
+import { INITIAL_TIMELINE_ITEM_INDEX } from "@/lib/timeline-window";
 import { ChatShell } from "./ChatShell";
 
 const at = (hour: number, minute: number) => new Date(2026, 7, 8, hour, minute).getTime();
+const STRESS_INITIAL_START = 80;
+const STRESS_INITIAL_COUNT = 120;
+const STRESS_PAGE_SIZE = 40;
 
 function previewRoom(id: string, name: string, memberCount: number, lastMessage: string, timestamp: number, unread = 0, favourite = false): RoomSummary {
   return {
@@ -47,11 +51,54 @@ function previewMessage(id: string, senderName: string, body: string, timestamp:
   };
 }
 
+function stressTimeline(start: number, count: number): TimelineItem[] {
+  const senders = ["Vera", "Sol", "Tamsin", "Rook"];
+  return Array.from({ length: count }, (_value, offset) => {
+    const index = start + offset;
+    const sender = senders[index % senders.length];
+    const details = "Carrier trace remains inside the expected margin. ".repeat(1 + (index % 3)).trim();
+    const media = index % 17 === 0 ? {
+      type: "image" as const,
+      media: {
+        mxcUrl: "/night-receiver-plate.png",
+        mimeType: "image/png",
+        size: 382_000,
+        width: 1024,
+        height: 1024,
+      },
+    } : {};
+    return previewMessage(
+      `stress-${index}`,
+      sender,
+      `Transmission ${index}. ${details}`,
+      at(7, 0) + (index * 60_000),
+      index % 5 === 0,
+      media,
+    );
+  });
+}
+
 function createPreviewService(): MatrixService {
   const listeners = new Set<() => void>();
   const previewParams = typeof window === "undefined" ? null : new URLSearchParams(window.location.search);
   const verificationPreview = previewParams?.get("verification-preview") ?? null;
   const uxPreview = previewParams?.get("ux-preview") ?? null;
+  const timelineStressPreview = uxPreview === "timeline-stress";
+  let nextStressStart = STRESS_INITIAL_START;
+  const standardTimeline = [
+    previewMessage("m1", "Vera", "Weak carrier riding the band. Not our bird.\nLogging and letting it pass.", at(10, 18), false, { reactions: [{ key: "📡", count: 3, mine: true }, { key: "👁", count: 1, mine: false }] }),
+    previewMessage("m2", "Sol", "Copy. I’ll continue the sweep on the north arc\nand report any anomalies.", at(10, 21)),
+    previewMessage("m3", "Tamsin", "Power fluctuation on Relay 7B at 03:17.\nNothing persistent.", at(10, 24)),
+    previewMessage("m4", "Vera", "Thanks. I’ve annotated the spike.", at(10, 25), false, { replyTo: "m3" }),
+    previewMessage("m5", "Sol", "Looks like background ion wash. Within margin.", at(10, 26), true),
+    previewMessage("m6", "Rook", "Did we get the new coil batch manifest?\nLogistics said it cleared customs.", at(10, 31)),
+    previewMessage("m7", "Vera", "Yes. Dockside locker. Seal intact.", at(10, 33), false, { reactions: [{ key: "👍", count: 2, mine: false }] }),
+    previewMessage("m8", "Tamsin", "Scheduling maintenance window for 2100.\nI’ll drop the calendar invite.", at(10, 42), false, uxPreview === "states" ? { decryptionState: "decrypting" } : {}),
+    previewMessage("m9", "Vera", "Receiver plate recovered from the archive.", at(10, 44), false, {
+      type: "image",
+      media: { mxcUrl: "/night-receiver-plate.png", mimeType: "image/png", size: 382_000, width: 1024, height: 1024 },
+    }),
+  ];
   let snapshot: MatrixSnapshot = {
     connection: uxPreview === "loading" ? "starting" : "ready",
     rooms: [
@@ -65,20 +112,8 @@ function createPreviewService(): MatrixService {
       previewRoom("ilya", "Ilya", 2, "Typing…", at(5, 42), 1),
     ],
     activeRoomId: "signal-watch",
-    timeline: uxPreview === "loading" ? [] : [
-      previewMessage("m1", "Vera", "Weak carrier riding the band. Not our bird.\nLogging and letting it pass.", at(10, 18), false, { reactions: [{ key: "📡", count: 3, mine: true }, { key: "👁", count: 1, mine: false }] }),
-      previewMessage("m2", "Sol", "Copy. I’ll continue the sweep on the north arc\nand report any anomalies.", at(10, 21)),
-      previewMessage("m3", "Tamsin", "Power fluctuation on Relay 7B at 03:17.\nNothing persistent.", at(10, 24)),
-      previewMessage("m4", "Vera", "Thanks. I’ve annotated the spike.", at(10, 25), false, { replyTo: "m3" }),
-      previewMessage("m5", "Sol", "Looks like background ion wash. Within margin.", at(10, 26), true),
-      previewMessage("m6", "Rook", "Did we get the new coil batch manifest?\nLogistics said it cleared customs.", at(10, 31)),
-      previewMessage("m7", "Vera", "Yes. Dockside locker. Seal intact.", at(10, 33), false, { reactions: [{ key: "👍", count: 2, mine: false }] }),
-      previewMessage("m8", "Tamsin", "Scheduling maintenance window for 2100.\nI’ll drop the calendar invite.", at(10, 42), false, uxPreview === "states" ? { decryptionState: "decrypting" } : {}),
-      previewMessage("m9", "Vera", "Receiver plate recovered from the archive.", at(10, 44), false, {
-        type: "image",
-        media: { mxcUrl: "/night-receiver-plate.png", mimeType: "image/png", size: 382_000, width: 1024, height: 1024 },
-      }),
-    ],
+    timeline: uxPreview === "loading" ? [] : timelineStressPreview ? stressTimeline(STRESS_INITIAL_START, STRESS_INITIAL_COUNT) : standardTimeline,
+    timelineStartIndex: INITIAL_TIMELINE_ITEM_INDEX,
     typingNames: uxPreview === "states" ? ["Sol"] : [],
     loadingHistory: false,
     error: null,
@@ -106,7 +141,19 @@ function createPreviewService(): MatrixService {
     selectRoom: (roomId: string) => update({ activeRoomId: roomId }),
     clearError: () => update({ error: null }),
     markRoomRead: async () => undefined,
-    paginate: async () => undefined,
+    paginate: async () => {
+      if (!timelineStressPreview || snapshot.loadingHistory || nextStressStart <= 0) return;
+      update({ loadingHistory: true });
+      await new Promise((resolve) => window.setTimeout(resolve, 250));
+      const pageStart = Math.max(0, nextStressStart - STRESS_PAGE_SIZE);
+      const earlierTimeline = stressTimeline(pageStart, nextStressStart - pageStart);
+      nextStressStart = pageStart;
+      update({
+        timeline: [...earlierTimeline, ...snapshot.timeline],
+        timelineStartIndex: snapshot.timelineStartIndex - earlierTimeline.length,
+        loadingHistory: false,
+      });
+    },
     toggleReaction: async (eventId: string, key: string) => {
       update({ timeline: snapshot.timeline.map((item) => item.id === eventId ? { ...item, reactions: [...item.reactions.filter((reaction) => reaction.key !== key), { key, count: (item.reactions.find((reaction) => reaction.key === key)?.count ?? 0) + 1, mine: true }] } : item) });
     },
@@ -119,12 +166,15 @@ function createPreviewService(): MatrixService {
         : [...snapshot.timeline, previewMessage(`m${Date.now()}`, "Rayne", body, Date.now(), true, { readBy: ["Vera"], replyTo: options.replyTo })],
     }),
     sendFile: async () => undefined,
-    getMediaAsset: async (media: MatrixMediaRef) => ({
-      url: media.mxcUrl.startsWith("mxc://preview/") ? "/night-receiver-plate.png" : media.mxcUrl,
-      blob: new Blob(),
-      mimeType: media.mimeType ?? "application/octet-stream",
-      animated: media.mimeType === "image/gif",
-    }),
+    getMediaAsset: async (media: MatrixMediaRef) => {
+      if (timelineStressPreview) await new Promise((resolve) => window.setTimeout(resolve, 350));
+      return {
+        url: media.mxcUrl.startsWith("mxc://preview/") ? "/night-receiver-plate.png" : media.mxcUrl,
+        blob: new Blob(),
+        mimeType: media.mimeType ?? "application/octet-stream",
+        animated: media.mimeType === "image/gif",
+      };
+    },
     getGifPoster: async () => null,
     invalidateMedia: () => undefined,
     createRoom: async () => undefined,

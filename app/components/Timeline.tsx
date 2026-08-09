@@ -1,7 +1,7 @@
 "use client";
 
 import { Fragment, lazy, Suspense, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
-import type { PointerEvent as ReactPointerEvent } from "react";
+import type { CSSProperties, PointerEvent as ReactPointerEvent } from "react";
 import { Virtuoso } from "react-virtuoso";
 import {
   CheckCheck,
@@ -54,6 +54,14 @@ function formatSize(size?: number): string {
   if (size < 1024) return `${size} B`;
   if (size < 1024 * 1024) return `${Math.round(size / 1024)} KB`;
   return `${(size / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function timelineImageFrameStyle(item: TimelineItem): CSSProperties | undefined {
+  const width = item.media?.width;
+  const height = item.media?.height;
+  if (!width || !height || width <= 0 || height <= 0) return undefined;
+  const size = containImageSize({ width, height }, { width: 620, height: 520 });
+  return { width: `${size.width}px`, aspectRatio: `${width} / ${height}` };
 }
 
 function useTimelineMedia(item: TimelineItem, service: MatrixService, retryToken = 0) {
@@ -142,6 +150,7 @@ function AnimatedImage({ item, service, asset, className, loading = "lazy", onIm
 function MediaAttachment({ item, service, onOpen }: { item: TimelineItem; service: MatrixService; onOpen: (item: TimelineItem, opener: HTMLElement) => void }) {
   const [retryToken, setRetryToken] = useState(0);
   const { asset, error, retryable } = useTimelineMedia(item, service, retryToken);
+  const imageFrameStyle = item.type === "image" ? timelineImageFrameStyle(item) : undefined;
 
   const retry = () => {
     if (item.media) service.invalidateMedia(item.media, item.id);
@@ -149,12 +158,20 @@ function MediaAttachment({ item, service, onOpen }: { item: TimelineItem; servic
   };
 
   if (error) {
+    if (item.type === "image" && imageFrameStyle) {
+      return <div className="image-attachment image-attachment--reserved" style={imageFrameStyle}><div className="media-error media-error--visual"><ShieldAlert aria-hidden="true" /><span>{error}</span>{retryable ? <button type="button" onClick={retry}><RefreshCw />Retry</button> : null}</div></div>;
+    }
     return <div className="media-error"><ShieldAlert aria-hidden="true" /><span>{error}</span>{retryable ? <button type="button" onClick={retry}><RefreshCw />Retry</button> : null}</div>;
   }
-  if (!asset) return <div className="media-loading"><LoaderCircle className="spin" aria-hidden="true" /> Decrypting attachment…</div>;
+  if (!asset) {
+    if (item.type === "image" && imageFrameStyle) {
+      return <div className="image-attachment image-attachment--reserved" style={imageFrameStyle}><div className="media-loading media-loading--visual"><LoaderCircle className="spin" aria-hidden="true" /> Decrypting attachment…</div></div>;
+    }
+    return <div className="media-loading"><LoaderCircle className="spin" aria-hidden="true" /> Decrypting attachment…</div>;
+  }
   if (item.type === "image") {
     return (
-      <div className="image-attachment">
+      <div className={`image-attachment${imageFrameStyle ? " image-attachment--reserved" : ""}`} style={imageFrameStyle}>
         <AnimatedImage item={item} service={service} asset={asset} onOpen={(opener) => onOpen(item, opener)} />
         <span className="image-attachment__hint" aria-hidden="true"><Maximize2 />View</span>
       </div>
@@ -670,8 +687,9 @@ function MessageRow({ item, previous, service, onReply, onEdit, onOpenMedia }: {
   );
 }
 
-export function Timeline({ items, service, loadingHistory, initializing, unreadCount, onReply, onEdit }: {
+export function Timeline({ items, firstItemIndex, service, loadingHistory, initializing, unreadCount, onReply, onEdit }: {
   items: TimelineItem[];
+  firstItemIndex: number;
   service: MatrixService;
   loadingHistory: boolean;
   initializing: boolean;
@@ -687,17 +705,18 @@ export function Timeline({ items, service, loadingHistory, initializing, unreadC
     window.requestAnimationFrame(() => lightboxOpener.current?.focus());
   };
 
+  if (initializing) {
+    return (
+      <div className="timeline-empty timeline-loading" role="status" aria-live="polite" aria-busy="true">
+        <LoaderCircle className="spin" aria-hidden="true" />
+        <p className="eyebrow">TUNING ROOM HISTORY</p>
+        <h3>Resolving local signals.</h3>
+        <p>Loading messages and the encryption keys needed to read them…</p>
+      </div>
+    );
+  }
+
   if (!items.length) {
-    if (initializing) {
-      return (
-        <div className="timeline-empty timeline-loading" role="status" aria-live="polite" aria-busy="true">
-          <LoaderCircle className="spin" aria-hidden="true" />
-          <p className="eyebrow">TUNING ROOM HISTORY</p>
-          <h3>Resolving local signals.</h3>
-          <p>Loading messages and the encryption keys needed to read them…</p>
-        </div>
-      );
-    }
     return (
       <div className="timeline-empty">
         <div className="empty-orbit" aria-hidden="true"><span /></div>
@@ -709,11 +728,14 @@ export function Timeline({ items, service, loadingHistory, initializing, unreadC
   }
 
   return (
-    <div className="timeline" aria-label="Room messages">
+    <div className="timeline" aria-label="Room messages" aria-busy={loadingHistory}>
       <Virtuoso
         data={items}
-        initialTopMostItemIndex={Math.max(0, items.length - 1)}
-        followOutput={(atBottom) => atBottom ? "smooth" : false}
+        firstItemIndex={firstItemIndex}
+        initialTopMostItemIndex={{ index: "LAST", align: "end" }}
+        alignToBottom
+        computeItemKey={(_index, item) => item.id}
+        followOutput={(atBottom) => atBottom ? "auto" : false}
         increaseViewportBy={{ top: 600, bottom: 300 }}
         components={{
           Header: () => (
@@ -725,19 +747,22 @@ export function Timeline({ items, service, loadingHistory, initializing, unreadC
             </div>
           ),
         }}
-        itemContent={(index, item) => (
-          <>
-            {unreadCount > 0 && index === Math.max(0, items.length - unreadCount) ? <div className="unread-divider" role="separator"><span>New messages</span></div> : null}
-            <MessageRow
-              item={item}
-              previous={items[index - 1]}
-              service={service}
-              onReply={onReply}
-              onEdit={onEdit}
-              onOpenMedia={(mediaItem, opener) => { lightboxOpener.current = opener; setLightboxId(mediaItem.id); }}
-            />
-          </>
-        )}
+        itemContent={(index, item) => {
+          const itemIndex = index - firstItemIndex;
+          return (
+            <>
+              {unreadCount > 0 && itemIndex === Math.max(0, items.length - unreadCount) ? <div className="unread-divider" role="separator"><span>New messages</span></div> : null}
+              <MessageRow
+                item={item}
+                previous={items[itemIndex - 1]}
+                service={service}
+                onReply={onReply}
+                onEdit={onEdit}
+                onOpenMedia={(mediaItem, opener) => { lightboxOpener.current = opener; setLightboxId(mediaItem.id); }}
+              />
+            </>
+          );
+        }}
       />
       {lightboxId && imageItems.length ? <Lightbox key={lightboxId} items={imageItems} selectedId={lightboxId} service={service} onSelect={setLightboxId} onClose={closeLightbox} /> : null}
     </div>

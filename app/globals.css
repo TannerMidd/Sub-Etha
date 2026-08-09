@@ -315,6 +315,7 @@ input::placeholder, textarea::placeholder { color: color-mix(in srgb, var(--ink-
 .system-event { display: flex; justify-content: center; gap: 7px; padding: 5px 24px; color: var(--ink-soft); font-size: 10px; }.system-event time { opacity: .65; }
 .message-row--notice .message-body, .message-row--notice .formatted-body { color: var(--ink-soft); }
 .media-loading, .media-error { margin-top: 7px; display: flex; align-items: center; gap: 7px; color: var(--ink-soft); font-size: 10px; }.media-loading svg, .media-error svg { width: 14px; }.media-error { color: var(--signal-dark); }
+.media-loading--visual, .media-error--visual { width: 100%; height: 100%; margin: 0; padding: 18px; justify-content: center; align-content: center; flex-wrap: wrap; text-align: center; }
 .decryption-state {
   min-height: 25px;
   margin-top: 2px;
@@ -741,6 +742,9 @@ input::placeholder, textarea::placeholder { color: color-mix(in srgb, var(--ink-
 .media-error button { min-height: 26px; padding: 3px 8px; display: inline-flex; align-items: center; gap: 4px; border: 1px solid currentColor; border-radius: 5px; background: transparent; color: inherit; cursor: pointer; font: 750 9px var(--font-ui); }
 .media-error button svg { width: 12px; height: 12px; }
 .image-attachment { position: relative; width: fit-content; max-width: min(620px, 100%); }
+.image-attachment--reserved { width: min(620px, 100%); }
+.image-attachment--reserved .animated-image { width: 100%; height: 100%; min-height: 0; }
+.image-attachment--reserved img { width: 100%; height: 100%; min-width: 0; max-width: none; max-height: none; }
 .image-attachment .animated-image { display: block; }
 .image-attachment .animated-image[role="button"] { cursor: zoom-in; }
 .image-attachment .animated-image[role="button"]:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }

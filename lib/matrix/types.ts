@@ -111,6 +111,7 @@ export interface MatrixSnapshot {
   rooms: RoomSummary[];
   activeRoomId: string | null;
   timeline: TimelineItem[];
+  timelineStartIndex: number;
   typingNames: string[];
   loadingHistory: boolean;
   error: string | null;

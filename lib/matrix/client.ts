@@ -49,6 +49,7 @@ import {
 import { normalizeRooms, normalizeTimeline } from "./normalize";
 import { createMediaContent, createTextContent } from "./message-content";
 import type { DeviceSummary, DeviceVerificationState, MatrixMediaRef, MatrixSnapshot, MediaAsset, PersistedMatrixSession, TimelineItem } from "./types";
+import { INITIAL_TIMELINE_ITEM_INDEX, timelineStartIndexAfterPrepend } from "../timeline-window";
 
 type Listener = () => void;
 
@@ -68,6 +69,7 @@ function emptySnapshot(session: PersistedMatrixSession): MatrixSnapshot {
     rooms: [],
     activeRoomId: null,
     timeline: [],
+    timelineStartIndex: INITIAL_TIMELINE_ITEM_INDEX,
     typingNames: [],
     loadingHistory: false,
     error: null,
@@ -167,6 +169,7 @@ export class MatrixService {
   private activeVerification: ActiveVerification | null = null;
   private derivedRefreshFrame: number | null = null;
   private pendingTimelineRefresh = false;
+  private paginatingRoomId: string | null = null;
   private readMarkerTargets = new Map<string, { event: MatrixEvent; eventId: string }>();
   private readMarkerTasks = new Map<string, Promise<void>>();
   private lastReadEventIds = new Map<string, string>();
@@ -298,9 +301,10 @@ export class MatrixService {
     }
   };
 
-  private handleTimeline = (_event: MatrixEvent, room: Room | undefined): void => {
+  private handleTimeline = (_event: MatrixEvent, room: Room | undefined, toStartOfTimeline?: boolean): void => {
     if (this.stopped) return;
     const active = room?.roomId === this.snapshot.activeRoomId;
+    if (active && toStartOfTimeline && room?.roomId === this.paginatingRoomId) return;
     this.refreshDerivedState(active);
     if (active && room && document.visibilityState === "visible") {
       void this.markRoomRead(room.roomId);
@@ -492,10 +496,11 @@ export class MatrixService {
     let activeRoomId = this.snapshot.activeRoomId;
     if (activeRoomId && !rooms.some((room) => room.id === activeRoomId)) activeRoomId = null;
     const room = activeRoomId ? client.getRoom(activeRoomId) : null;
+    const shouldRefreshTimeline = includeTimeline && room?.roomId !== this.paginatingRoomId;
     this.emit({
       rooms,
       activeRoomId,
-      timeline: includeTimeline && room ? normalizeTimeline(room, client) : this.snapshot.timeline,
+      timeline: shouldRefreshTimeline && room ? normalizeTimeline(room, client) : this.snapshot.timeline,
     });
     this.refreshTyping();
   }
@@ -535,6 +540,8 @@ export class MatrixService {
     this.emit({
       activeRoomId: room?.roomId ?? null,
       timeline: room ? normalizeTimeline(room, client) : [],
+      timelineStartIndex: INITIAL_TIMELINE_ITEM_INDEX,
+      loadingHistory: false,
       error: null,
     });
     this.refreshTyping();
@@ -552,13 +559,33 @@ export class MatrixService {
     const client = this.requireClient();
     const room = this.snapshot.activeRoomId ? client.getRoom(this.snapshot.activeRoomId) : null;
     if (!room || this.snapshot.loadingHistory) return;
+    const roomId = room.roomId;
+    const previousFirstItemId = this.snapshot.timeline[0]?.id ?? null;
+    this.paginatingRoomId = roomId;
     this.emit({ loadingHistory: true });
     try {
       await client.scrollback(room, 40);
-      this.emit({ timeline: normalizeTimeline(room, client), loadingHistory: false });
+      if (roomId !== this.snapshot.activeRoomId) {
+        if (this.snapshot.loadingHistory) this.emit({ loadingHistory: false });
+        return;
+      }
+      const timeline = normalizeTimeline(room, client);
+      this.emit({
+        timeline,
+        timelineStartIndex: timelineStartIndexAfterPrepend(
+          this.snapshot.timelineStartIndex,
+          previousFirstItemId,
+          timeline.map((item) => item.id),
+        ),
+        loadingHistory: false,
+      });
       void this.decryptRoomTimeline(room);
     } catch (error) {
-      this.emit({ loadingHistory: false, error: humanizeMatrixError(error) });
+      if (roomId === this.snapshot.activeRoomId) {
+        this.emit({ loadingHistory: false, error: humanizeMatrixError(error) });
+      }
+    } finally {
+      if (this.paginatingRoomId === roomId) this.paginatingRoomId = null;
     }
   }
 
@@ -1225,7 +1252,13 @@ export class MatrixService {
     this.releaseVerificationContext();
     this.releaseLock?.();
     this.releaseLock = null;
-    this.emit({ connection: "idle", rooms: [], timeline: [], activeRoomId: null });
+    this.emit({
+      connection: "idle",
+      rooms: [],
+      timeline: [],
+      timelineStartIndex: INITIAL_TIMELINE_ITEM_INDEX,
+      activeRoomId: null,
+    });
   }
 
   stop(): void {
@@ -1256,6 +1289,7 @@ export class MatrixService {
       this.derivedRefreshFrame = null;
     }
     this.pendingTimelineRefresh = false;
+    this.paginatingRoomId = null;
     this.readMarkerTargets.clear();
     this.readMarkerTasks.clear();
     this.lastReadEventIds.clear();

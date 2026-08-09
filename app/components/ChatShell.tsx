@@ -234,7 +234,7 @@ export function ChatShell({ service, onLogout }: { service: MatrixService; onLog
             ) : (
               <>
                 <div className="conversation-stage">
-                  <Timeline items={snapshot.timeline} service={service} loadingHistory={snapshot.loadingHistory} initializing={snapshot.connection === "starting"} unreadCount={activeRoom.unread} onReply={(item) => { setReplyingTo(item); setEditing(null); }} onEdit={(item) => { setEditing(item); setReplyingTo(null); }} />
+                  <Timeline key={activeRoom.id} items={snapshot.timeline} firstItemIndex={snapshot.timelineStartIndex} service={service} loadingHistory={snapshot.loadingHistory} initializing={snapshot.connection === "starting"} unreadCount={activeRoom.unread} onReply={(item) => { setReplyingTo(item); setEditing(null); }} onEdit={(item) => { setEditing(item); setReplyingTo(null); }} />
                   <aside className="receiver-field-guide" aria-hidden="true">
                     {/* eslint-disable-next-line @next/next/no-img-element -- Generated decorative brand plate. */}
                     <img className="receiver-field-guide__dark" src="/night-receiver-plate.png" alt="" />

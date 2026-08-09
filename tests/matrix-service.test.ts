@@ -86,3 +86,23 @@ test("decryption events batch one active-timeline refresh without another sync",
     }
   }
 });
+
+test("back-pagination timeline events stay hidden until pagination emits its atomic snapshot", () => {
+  const service = new MatrixService(SESSION);
+  const refreshes: boolean[] = [];
+  const internals = service as unknown as {
+    handleTimeline: (event: unknown, room: { roomId: string }, toStartOfTimeline?: boolean) => void;
+    paginatingRoomId: string | null;
+    refreshDerivedState: (includeTimeline: boolean) => void;
+    snapshot: { activeRoomId: string };
+  };
+  internals.snapshot.activeRoomId = "!room:example";
+  internals.paginatingRoomId = "!room:example";
+  internals.refreshDerivedState = (includeTimeline) => refreshes.push(includeTimeline);
+
+  internals.handleTimeline({}, { roomId: "!room:example" }, true);
+  assert.deepEqual(refreshes, []);
+
+  internals.handleTimeline({}, { roomId: "!other:example" }, true);
+  assert.deepEqual(refreshes, [false]);
+});
