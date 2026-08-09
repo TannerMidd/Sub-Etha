@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { RadioTower } from "lucide-react";
 import type { MatrixService } from "@/lib/matrix/client";
+import { isMxcUri } from "@/lib/matrix/media";
 
 export function BrandMark({ compact = false, edition }: { compact?: boolean; edition?: string }) {
   return (
@@ -26,19 +27,25 @@ export function Avatar({
   size?: "small" | "medium" | "large";
 }) {
   const initials = name.split(/\s+/).map((part) => part[0]).join("").slice(0, 2).toUpperCase() || "?";
-  const directUrl = mxcUrl && !mxcUrl.startsWith("mxc://") ? mxcUrl : null;
+  const matrixUrl = isMxcUri(mxcUrl) ? mxcUrl : null;
   const [loaded, setLoaded] = useState<{ mxcUrl: string; src: string } | null>(null);
-  const src = directUrl ?? (loaded && loaded.mxcUrl === mxcUrl ? loaded.src : null);
+  const src = loaded && loaded.mxcUrl === matrixUrl ? loaded.src : null;
 
   useEffect(() => {
     let active = true;
-    if (!mxcUrl || directUrl || !service) return () => { active = false; };
+    if (!matrixUrl || !service) return () => { active = false; };
     const pixels = size === "large" ? 148 : size === "small" ? 56 : 96;
-    void service.getMediaAsset({ mxcUrl }, { width: pixels, height: pixels, resizeMethod: "crop", cacheKey: `avatar:${mxcUrl}:${pixels}` })
-      .then((asset) => { if (active) setLoaded({ mxcUrl, src: asset.url }); })
+    void service.getMediaAsset({ mxcUrl: matrixUrl }, {
+      width: pixels,
+      height: pixels,
+      resizeMethod: "crop",
+      cacheKey: `avatar:${matrixUrl}:${pixels}`,
+      expectedKind: "image",
+    })
+      .then((asset) => { if (active) setLoaded({ mxcUrl: matrixUrl, src: asset.url }); })
       .catch(() => undefined);
     return () => { active = false; };
-  }, [directUrl, mxcUrl, service, size]);
+  }, [matrixUrl, service, size]);
 
   return (
     <span className={`avatar avatar--${size}`} aria-hidden="true">

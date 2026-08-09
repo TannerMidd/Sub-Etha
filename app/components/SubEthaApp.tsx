@@ -5,8 +5,9 @@ import { LoaderCircle, RadioTower, RefreshCw, ShieldAlert } from "lucide-react";
 import { completeRedirectLogin, humanizeMatrixError } from "@/lib/matrix/auth";
 import type { MatrixService } from "@/lib/matrix/client";
 import { disablePush, registerServiceWorker } from "@/lib/matrix/notifications";
-import { readSession, saveSession } from "@/lib/matrix/session-store";
+import { clearSession, readSession, saveSession } from "@/lib/matrix/session-store";
 import type { PersistedMatrixSession } from "@/lib/matrix/types";
+import { assertAllowedHomeserverUrl, InsecureHomeserverError } from "@/lib/matrix/url-policy";
 import { BrandMark } from "./BrandMark";
 import { ChatShell } from "./ChatShell";
 import { DesignPreview } from "./DesignPreview";
@@ -102,7 +103,15 @@ export function SubEthaApp() {
         const redirectSession = await completeRedirectLogin();
         const session = redirectSession ?? await readSession();
         if (cancelled) return;
-        if (session) await connect(session);
+        if (session) {
+          try {
+            session.baseUrl = assertAllowedHomeserverUrl(session.baseUrl);
+          } catch (error) {
+            if (error instanceof InsecureHomeserverError) await clearSession();
+            throw error;
+          }
+          await connect(session);
+        }
         else setBootState("login");
       } catch (error) {
         if (!cancelled) {

@@ -24,6 +24,7 @@ import {
   ZoomOut,
 } from "lucide-react";
 import type { MatrixService } from "@/lib/matrix/client";
+import { MediaLimitError } from "@/lib/matrix/media";
 import {
   clampViewerZoom,
   containImageSize,
@@ -55,32 +56,33 @@ function formatSize(size?: number): string {
   return `${(size / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-function useReducedMotion(): boolean {
-  const [reduced, setReduced] = useState(false);
-  useEffect(() => {
-    const query = window.matchMedia("(prefers-reduced-motion: reduce)");
-    const update = () => setReduced(query.matches);
-    update();
-    query.addEventListener("change", update);
-    return () => query.removeEventListener("change", update);
-  }, []);
-  return reduced;
-}
-
 function useTimelineMedia(item: TimelineItem, service: MatrixService, retryToken = 0) {
   const requestKey = `${item.id}:${retryToken}`;
-  const [result, setResult] = useState<{ key: string; asset: MediaAsset | null; error: string | null } | null>(null);
+  const [result, setResult] = useState<{
+    key: string;
+    asset: MediaAsset | null;
+    error: string | null;
+    retryable: boolean;
+  } | null>(null);
   useEffect(() => {
     let active = true;
     if (!item.media) return () => { active = false; };
-    void service.getMediaAsset(item.media, { cacheKey: item.id }).then((value) => {
-      if (active) setResult({ key: requestKey, asset: value, error: null });
+    void service.getMediaAsset(item.media, {
+      cacheKey: item.id,
+      expectedKind: ["image", "video", "audio"].includes(item.type) ? item.type as "image" | "video" | "audio" : "file",
+    }).then((value) => {
+      if (active) setResult({ key: requestKey, asset: value, error: null, retryable: true });
     }).catch((cause) => {
-      if (active) setResult({ key: requestKey, asset: null, error: cause instanceof Error ? cause.message : "Media could not be loaded." });
+      if (active) setResult({
+        key: requestKey,
+        asset: null,
+        error: cause instanceof Error ? cause.message : "Media could not be loaded.",
+        retryable: !(cause instanceof MediaLimitError),
+      });
     });
     return () => { active = false; };
-  }, [item.id, item.media, requestKey, service]);
-  return result?.key === requestKey ? result : { asset: null, error: null };
+  }, [item.id, item.media, item.type, requestKey, service]);
+  return result?.key === requestKey ? result : { asset: null, error: null, retryable: true };
 }
 
 function AnimatedImage({ item, service, asset, className, loading = "lazy", onImageLoad, onOpen }: {
@@ -92,17 +94,16 @@ function AnimatedImage({ item, service, asset, className, loading = "lazy", onIm
   onImageLoad?: (size: ViewerSize) => void;
   onOpen?: (opener: HTMLElement) => void;
 }) {
-  const reducedMotion = useReducedMotion();
   const [playOverride, setPlayOverride] = useState(false);
   const [poster, setPoster] = useState<string | null>(null);
-  const playing = !reducedMotion || playOverride;
+  const playing = playOverride;
 
   useEffect(() => {
     let active = true;
-    if (!asset.animated || !reducedMotion || !item.media) return () => { active = false; };
+    if (!asset.animated || !item.media) return () => { active = false; };
     void service.getGifPoster(item.media, item.id).then((url) => { if (active) setPoster(url); });
     return () => { active = false; };
-  }, [asset.animated, item.id, item.media, reducedMotion, service]);
+  }, [asset.animated, item.id, item.media, service]);
 
   return (
     <span
@@ -140,14 +141,16 @@ function AnimatedImage({ item, service, asset, className, loading = "lazy", onIm
 
 function MediaAttachment({ item, service, onOpen }: { item: TimelineItem; service: MatrixService; onOpen: (item: TimelineItem, opener: HTMLElement) => void }) {
   const [retryToken, setRetryToken] = useState(0);
-  const { asset, error } = useTimelineMedia(item, service, retryToken);
+  const { asset, error, retryable } = useTimelineMedia(item, service, retryToken);
 
   const retry = () => {
     if (item.media) service.invalidateMedia(item.media, item.id);
     setRetryToken((value) => value + 1);
   };
 
-  if (error) return <div className="media-error"><ShieldAlert aria-hidden="true" /><span>{error}</span><button type="button" onClick={retry}><RefreshCw />Retry</button></div>;
+  if (error) {
+    return <div className="media-error"><ShieldAlert aria-hidden="true" /><span>{error}</span>{retryable ? <button type="button" onClick={retry}><RefreshCw />Retry</button> : null}</div>;
+  }
   if (!asset) return <div className="media-loading"><LoaderCircle className="spin" aria-hidden="true" /> Decrypting attachment…</div>;
   if (item.type === "image") {
     return (

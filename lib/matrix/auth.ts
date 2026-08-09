@@ -2,13 +2,27 @@ import type { ValidatedAuthMetadata } from "matrix-js-sdk/lib/oauth";
 import type { LoginResponse } from "matrix-js-sdk";
 import { createSession, randomBase64Url } from "./session-store";
 import type { LoginCapabilities, PersistedMatrixSession } from "./types";
+import { assertAllowedHomeserverUrl } from "./url-policy";
 
 const PENDING_AUTH_KEY = "sub-etha-pending-auth";
 const OAUTH_CLIENT_PREFIX = "sub-etha-oauth-client:";
+const LEGACY_SSO_MAX_AGE_MS = 10 * 60 * 1_000;
+export const LEGACY_SSO_STATE_PARAM = "subetha_sso_state";
+const OAUTH_URL_FIELDS = [
+  "account_management_uri",
+  "authorization_endpoint",
+  "device_authorization_endpoint",
+  "issuer",
+  "registration_endpoint",
+  "revocation_endpoint",
+  "token_endpoint",
+] as const;
 
-interface PendingSso {
+export interface PendingSso {
   kind: "sso";
   baseUrl: string;
+  state: string;
+  createdAt: number;
 }
 
 interface PendingOAuth {
@@ -25,6 +39,55 @@ interface PendingOAuth {
 }
 
 type PendingAuth = PendingSso | PendingOAuth;
+
+export function assertSafeOAuthNavigationUrl(value: string): string {
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    throw new Error("The homeserver returned an invalid OAuth URL.");
+  }
+  if (url.protocol !== "https:") {
+    throw new Error("OAuth endpoints must use HTTPS.");
+  }
+  if (url.username || url.password) {
+    throw new Error("OAuth endpoints must not contain credentials.");
+  }
+  return url.toString();
+}
+
+export function assertSafeOAuthMetadata<T>(metadata: T): T {
+  if (!metadata || typeof metadata !== "object") {
+    throw new Error("The homeserver returned invalid OAuth metadata.");
+  }
+  const values = metadata as Record<string, unknown>;
+  for (const field of OAUTH_URL_FIELDS) {
+    const value = values[field];
+    if (value === undefined) continue;
+    if (typeof value !== "string") {
+      throw new Error(`The homeserver returned an invalid OAuth ${field}.`);
+    }
+    const safeUrl = new URL(assertSafeOAuthNavigationUrl(value));
+    if (safeUrl.hash) {
+      throw new Error("OAuth metadata endpoints must not contain fragments.");
+    }
+  }
+  return metadata;
+}
+
+export function assertSafeSsoNavigationUrl(value: string, baseUrl: string): string {
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    throw new Error("The homeserver returned an invalid SSO URL.");
+  }
+  const expectedOrigin = new URL(baseUrl).origin;
+  if (url.origin !== expectedOrigin || url.username || url.password) {
+    throw new Error("The homeserver returned an unsafe SSO URL.");
+  }
+  return url.toString();
+}
 
 export function humanizeMatrixError(error: unknown): string {
   if (error && typeof error === "object") {
@@ -46,8 +109,8 @@ export function normalizeHomeserverInput(raw: string): { serverName: string; exp
   const value = raw.trim();
   if (!value) throw new Error("Enter a Matrix ID, server name, or homeserver URL.");
   if (/^https?:\/\//i.test(value)) {
-    const url = new URL(value);
-    return { serverName: url.host, explicitUrl: url.origin };
+    const allowedUrl = new URL(assertAllowedHomeserverUrl(value));
+    return { serverName: allowedUrl.host, explicitUrl: allowedUrl.origin };
   }
   const serverName = value.startsWith("@") && value.includes(":") ? value.slice(value.indexOf(":") + 1) : value;
   if (!serverName || /[\s/]/.test(serverName)) throw new Error("That does not look like a Matrix server.");
@@ -76,8 +139,8 @@ export async function discoverHomeserver(raw: string): Promise<{ baseUrl: string
 
   let lastError: unknown;
   for (const candidate of [...new Set(candidates)]) {
-    const baseUrl = candidate.replace(/\/$/, "");
     try {
+      const baseUrl = assertAllowedHomeserverUrl(candidate.replace(/\/$/, ""));
       const response = await fetch(`${baseUrl}/_matrix/client/versions`, {
         headers: { Accept: "application/json" },
         signal: AbortSignal.timeout(10_000),
@@ -95,7 +158,10 @@ export async function inspectLoginCapabilities(raw: string): Promise<LoginCapabi
   const { baseUrl, serverName } = await discoverHomeserver(raw);
   const { createClient } = await import("matrix-js-sdk");
   const client = createClient({ baseUrl, localTimeoutMs: 10_000, disableVoip: true });
-  const [legacy, oauth] = await Promise.allSettled([client.loginFlows(), client.getAuthMetadata()]);
+  const [legacy, oauth] = await Promise.allSettled([
+    client.loginFlows(),
+    client.getAuthMetadata().then(assertSafeOAuthMetadata),
+  ]);
   const flows = legacy.status === "fulfilled" ? legacy.value.flows : [];
   const ssoFlow = flows.find((flow) => flow.type === "m.login.sso" || flow.type === "m.login.cas");
   const providers = ssoFlow && "identity_providers" in ssoFlow ? ssoFlow.identity_providers ?? [] : [];
@@ -123,6 +189,7 @@ function sessionFromLogin(baseUrl: string, response: LoginResponse, authKind: Pe
 }
 
 export async function loginWithPassword(baseUrl: string, user: string, password: string): Promise<PersistedMatrixSession> {
+  baseUrl = assertAllowedHomeserverUrl(baseUrl);
   const { createClient } = await import("matrix-js-sdk");
   const response = await createClient({ baseUrl, localTimeoutMs: 15_000, disableVoip: true }).loginRequest({
     type: "m.login.password",
@@ -135,6 +202,7 @@ export async function loginWithPassword(baseUrl: string, user: string, password:
 }
 
 export async function loginWithAccessToken(baseUrl: string, accessToken: string): Promise<PersistedMatrixSession> {
+  baseUrl = assertAllowedHomeserverUrl(baseUrl);
   const { createClient } = await import("matrix-js-sdk");
   const client = createClient({ baseUrl, accessToken, localTimeoutMs: 15_000, disableVoip: true });
   const identity = await client.whoami();
@@ -148,16 +216,38 @@ export async function loginWithAccessToken(baseUrl: string, accessToken: string)
   });
 }
 
+export function legacySsoRedirectUrl(origin: string, state: string): string {
+  const redirect = new URL("/", origin);
+  redirect.searchParams.set(LEGACY_SSO_STATE_PARAM, state);
+  return redirect.toString();
+}
+
+export function validateLegacySsoCallback(pending: PendingSso, params: URLSearchParams, now = Date.now()): void {
+  if (!pending.state || params.get(LEGACY_SSO_STATE_PARAM) !== pending.state) {
+    throw new Error("The SSO state did not match; no credentials were accepted.");
+  }
+  const age = now - pending.createdAt;
+  if (!Number.isFinite(age) || age < 0 || age > LEGACY_SSO_MAX_AGE_MS) {
+    throw new Error("The SSO return expired. Please begin again.");
+  }
+}
+
 export async function beginSso(baseUrl: string, providerId?: string): Promise<void> {
+  baseUrl = assertAllowedHomeserverUrl(baseUrl);
   const { createClient } = await import("matrix-js-sdk");
-  const redirectUrl = `${window.location.origin}/`;
+  const state = randomBase64Url(24);
+  const redirectUrl = legacySsoRedirectUrl(window.location.origin, state);
   const client = createClient({ baseUrl, disableVoip: true });
-  const pending: PendingSso = { kind: "sso", baseUrl };
+  const pending: PendingSso = { kind: "sso", baseUrl, state, createdAt: Date.now() };
   sessionStorage.setItem(PENDING_AUTH_KEY, JSON.stringify(pending));
-  window.location.assign(client.getSsoLoginUrl(redirectUrl, "sso", providerId));
+  window.location.assign(assertSafeSsoNavigationUrl(
+    client.getSsoLoginUrl(redirectUrl, "sso", providerId),
+    baseUrl,
+  ));
 }
 
 export async function beginOAuth(baseUrl: string): Promise<void> {
+  baseUrl = assertAllowedHomeserverUrl(baseUrl);
   if (window.location.protocol !== "https:") {
     throw new Error("OAuth login requires the deployed HTTPS version. Legacy SSO and password login still work locally.");
   }
@@ -167,7 +257,7 @@ export async function beginOAuth(baseUrl: string): Promise<void> {
   ]);
   const redirectUri = `${window.location.origin}/`;
   const client = createClient({ baseUrl, disableVoip: true });
-  const metadata = await client.getAuthMetadata();
+  const metadata = assertSafeOAuthMetadata(await client.getAuthMetadata());
   const storageKey = `${OAUTH_CLIENT_PREFIX}${baseUrl}`;
   let clientId = localStorage.getItem(storageKey);
   if (!clientId) {
@@ -183,7 +273,9 @@ export async function beginOAuth(baseUrl: string): Promise<void> {
   const state = randomBase64Url(24);
   const deviceId = `SUBETHA_${randomBase64Url(9).toUpperCase()}`;
   const oauth = new OAuth2(metadata, { clientId, deviceId, redirectUri });
-  const authorizationUrl = await oauth.generateAuthorizationCodeGrantUrl(state, "fragment");
+  const authorizationUrl = assertSafeOAuthNavigationUrl(
+    await oauth.generateAuthorizationCodeGrantUrl(state, "fragment"),
+  );
   const pending: PendingOAuth = { kind: "oauth", baseUrl, state, metadata, context: oauth.context };
   sessionStorage.setItem(PENDING_AUTH_KEY, JSON.stringify(pending));
   window.location.assign(authorizationUrl);
@@ -207,13 +299,19 @@ export async function completeRedirectLogin(): Promise<PersistedMatrixSession | 
   if (!loginToken && !code && !params.get("error")) return null;
 
   const rawPending = sessionStorage.getItem(PENDING_AUTH_KEY);
-  if (!rawPending) throw new Error("The login return arrived without its departure paperwork. Please begin again.");
-  const pending = JSON.parse(rawPending) as PendingAuth;
   sessionStorage.removeItem(PENDING_AUTH_KEY);
   window.history.replaceState({}, "", sanitizedCallbackPath(window.location.pathname, window.location.hash));
+  if (!rawPending) throw new Error("The login return arrived without its departure paperwork. Please begin again.");
+  const pending = JSON.parse(rawPending) as PendingAuth;
+  if (!pending || typeof pending !== "object" || (pending.kind !== "sso" && pending.kind !== "oauth")) {
+    throw new Error("The login return had invalid departure paperwork. Please begin again.");
+  }
 
-  if (params.get("error")) throw new Error(params.get("error_description") ?? params.get("error") ?? "Login was cancelled.");
-  if (pending.kind === "sso" && loginToken) {
+  pending.baseUrl = assertAllowedHomeserverUrl(pending.baseUrl);
+  if (pending.kind === "sso") {
+    validateLegacySsoCallback(pending, params);
+    if (params.get("error")) throw new Error(params.get("error_description") ?? params.get("error") ?? "Login was cancelled.");
+    if (!loginToken) throw new Error("The homeserver returned an unexpected SSO response.");
     const { createClient } = await import("matrix-js-sdk");
     const response = await createClient({ baseUrl: pending.baseUrl, disableVoip: true }).loginRequest({
       type: "m.login.token",
@@ -223,12 +321,14 @@ export async function completeRedirectLogin(): Promise<PersistedMatrixSession | 
     });
     return sessionFromLogin(pending.baseUrl, response, "sso");
   }
-  if (pending.kind === "oauth" && code) {
+  if (params.get("state") !== pending.state) throw new Error("The OAuth state did not match; no credentials were accepted.");
+  if (params.get("error")) throw new Error(params.get("error_description") ?? params.get("error") ?? "Login was cancelled.");
+  if (code) {
+    pending.metadata = assertSafeOAuthMetadata(pending.metadata);
     const [{ createClient }, { OAuth2 }] = await Promise.all([
       import("matrix-js-sdk"),
       import("matrix-js-sdk/lib/oauth"),
     ]);
-    if (params.get("state") !== pending.state) throw new Error("The OAuth state did not match; no credentials were accepted.");
     const oauth = new OAuth2(pending.metadata, pending.context);
     const tokens = await oauth.completeAuthorizationCodeGrant(code);
     const client = createClient({ baseUrl: pending.baseUrl, accessToken: tokens.access_token, disableVoip: true });

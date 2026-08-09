@@ -1,4 +1,4 @@
-const CACHE_NAME = "sub-etha-shell-v3";
+const CACHE_NAME = "sub-etha-shell-v4";
 const SHELL = ["/", "/manifest.webmanifest", "/icon-192.png", "/icon-512.png"];
 const PUSH_DB = "sub-etha-push";
 const PUSH_STORE = "settings";
@@ -88,7 +88,11 @@ self.addEventListener("message", (event) => {
     self.skipWaiting();
   }
   if (event.data?.type === "SET_PUSH_CONFIG") {
-    event.waitUntil(writePushConfig({ pushKey: event.data.pushKey, publicKey: event.data.publicKey }));
+    event.waitUntil(writePushConfig({
+      deliveryKey: event.data.deliveryKey,
+      managementKey: event.data.managementKey,
+      publicKey: event.data.publicKey,
+    }));
   }
   if (event.data?.type === "CLEAR_PUSH_CONFIG") {
     event.waitUntil(writePushConfig(null));
@@ -137,6 +141,17 @@ self.addEventListener("push", (event) => {
   let payload = {};
   try { payload = event.data ? event.data.json() : {}; } catch { payload = {}; }
   event.waitUntil((async () => {
+    if (payload.kind === "subscription-challenge" && typeof payload.challenge === "string") {
+      const response = await fetch("/api/push/subscriptions", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ challenge: payload.challenge }),
+      });
+      if (!response.ok) throw new Error("Push subscription confirmation failed.");
+      const clients = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
+      for (const client of clients) client.postMessage({ type: "PUSH_SUBSCRIPTION_CONFIRMED" });
+      return;
+    }
     const kind = payload.kind === "test" ? "test" : "matrix";
     const roomId = typeof payload.roomId === "string" ? payload.roomId : null;
     const eventId = typeof payload.eventId === "string" ? payload.eventId : null;
@@ -165,7 +180,7 @@ self.addEventListener("push", (event) => {
 self.addEventListener("pushsubscriptionchange", (event) => {
   event.waitUntil((async () => {
     const config = await readPushConfig();
-    if (!config?.pushKey || !config?.publicKey) return;
+    if (!config?.deliveryKey || !config?.managementKey || !config?.publicKey) return;
     const subscription = await self.registration.pushManager.subscribe({
       userVisibleOnly: true,
       applicationServerKey: decodeApplicationServerKey(config.publicKey),
@@ -173,7 +188,11 @@ self.addEventListener("pushsubscriptionchange", (event) => {
     const response = await fetch("/api/push/subscriptions", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ pushKey: config.pushKey, subscription: subscription.toJSON() }),
+      body: JSON.stringify({
+        deliveryKey: config.deliveryKey,
+        managementKey: config.managementKey,
+        subscription: subscription.toJSON(),
+      }),
     });
     if (!response.ok) throw new Error("Push subscription renewal failed.");
   })());

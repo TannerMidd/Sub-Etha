@@ -21,6 +21,8 @@
     "dompurify": "^3.4.13",
     "drizzle-orm": "0.45.2",
     "emoji-picker-react": "^4.19.1",
+    "image-size": "2.0.2",
+    "ipaddr.js": "2.4.0",
     "lucide-react": "^1.30.0",
     "matrix-encrypt-attachment": "^1.0.3",
     "matrix-js-sdk": "^42.1.0",

@@ -18,6 +18,8 @@ function createWorker(visible = false) {
   const shown: ShownNotification[] = [];
   const active = new Map<string, { close: () => void }>();
   const badgeSets: number[] = [];
+  const clientMessages: unknown[] = [];
+  const requests: Array<{ input: string; init?: RequestInit }> = [];
   let badgeClears = 0;
 
   const registration = {
@@ -43,7 +45,12 @@ function createWorker(visible = false) {
     },
     clients: {
       async matchAll() {
-        return visible ? [{ visibilityState: "visible" }] : [];
+        return [{
+          visibilityState: visible ? "visible" : "hidden",
+          postMessage(message: unknown) {
+            clientMessages.push(message);
+          },
+        }];
       },
     },
     navigator: {
@@ -56,7 +63,11 @@ function createWorker(visible = false) {
     },
     registration,
   };
-  vm.runInNewContext(source, { self: worker, console, Promise, URL, atob, caches: {}, fetch });
+  const workerFetch = async (input: string, init?: RequestInit) => {
+    requests.push({ input, init });
+    return new Response(null, { status: 200 });
+  };
+  vm.runInNewContext(source, { self: worker, console, Promise, URL, atob, caches: {}, fetch: workerFetch });
 
   const settle = async (type: string, event: Record<string, unknown>) => {
     const waits: Promise<unknown>[] = [];
@@ -73,8 +84,10 @@ function createWorker(visible = false) {
     active,
     badgeClears: () => badgeClears,
     badgeSets,
+    clientMessages,
     dismiss: (roomId: string) => settle("message", { data: { type: "DISMISS_ROOM_NOTIFICATION", roomId } }),
     push: (payload: Record<string, unknown>) => settle("push", { data: { json: () => payload } }),
+    requests,
     shown,
   };
 }
@@ -112,6 +125,18 @@ test("test pushes always alert without changing the unread badge", async () => {
   assert.equal(worker.shown[0].options.renotify, true);
   assert.deepEqual(worker.badgeSets, []);
   assert.equal(worker.badgeClears(), 0);
+});
+
+test("subscription challenges confirm silently through the service worker", async () => {
+  const worker = createWorker();
+  await worker.push({ kind: "subscription-challenge", challenge: "challenge-token" });
+  assert.equal(worker.shown.length, 0);
+  assert.deepEqual(worker.badgeSets, []);
+  assert.equal(worker.requests.length, 1);
+  assert.equal(worker.requests[0].input, "/api/push/subscriptions");
+  assert.equal(worker.requests[0].init?.method, "PATCH");
+  assert.deepEqual(JSON.parse(String(worker.requests[0].init?.body)), { challenge: "challenge-token" });
+  assert.equal(JSON.stringify(worker.clientMessages), JSON.stringify([{ type: "PUSH_SUBSCRIPTION_CONFIRMED" }]));
 });
 
 test("opening a room dismisses its grouped notification", async () => {

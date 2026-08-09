@@ -30,7 +30,22 @@ import { deriveRecoveryKeyFromPassphrase } from "matrix-js-sdk/lib/crypto-api/ke
 import { decryptAttachment, encryptAttachment, type IEncryptedFile } from "matrix-encrypt-attachment";
 import { base64UrlToBytes, clearSession, saveSession } from "./session-store";
 import { humanizeMatrixError } from "./auth";
-import { imageDimensions, normalizeMediaFile } from "./media";
+import { assertAllowedHomeserverUrl } from "./url-policy";
+import {
+  assertMediaByteLength,
+  assertDeclaredMediaLimits,
+  assertSafeImageBytes,
+  imageDimensions,
+  MAX_CONCURRENT_MEDIA_LOADS,
+  MAX_MEDIA_BYTES,
+  MAX_MEDIA_CACHE_BYTES,
+  MAX_MEDIA_CACHE_ENTRIES,
+  MediaLimitError,
+  MediaTimeoutError,
+  normalizeMediaFile,
+  readBoundedResponse,
+  type MediaExpectedKind,
+} from "./media";
 import { normalizeRooms, normalizeTimeline } from "./normalize";
 import { createMediaContent, createTextContent } from "./message-content";
 import type { DeviceSummary, DeviceVerificationState, MatrixMediaRef, MatrixSnapshot, MediaAsset, PersistedMatrixSession, TimelineItem } from "./types";
@@ -72,6 +87,28 @@ interface ActiveVerification {
   sasCallbacks: ShowSasCallbacks | null;
   requestChange: () => void;
   showSas: ((callbacks: ShowSasCallbacks) => void) | null;
+}
+
+interface MediaCacheEntry<T> {
+  promise: Promise<T>;
+  byteLength: number;
+  lastUsed: number;
+  settled: boolean;
+  released: boolean;
+  controller?: AbortController;
+}
+
+interface PosterAsset {
+  url: string;
+  byteLength: number;
+}
+
+interface MediaRequestOptions {
+  width?: number;
+  height?: number;
+  resizeMethod?: "crop" | "scale";
+  cacheKey?: string;
+  expectedKind?: MediaExpectedKind;
 }
 
 async function acquireExclusiveLock(name: string): Promise<(() => void) | null> {
@@ -120,8 +157,12 @@ export class MatrixService {
   private snapshot: MatrixSnapshot;
   private listeners = new Set<Listener>();
   private releaseLock: (() => void) | null = null;
-  private mediaAssets = new Map<string, Promise<MediaAsset>>();
-  private gifPosters = new Map<string, Promise<string | null>>();
+  private mediaAssets = new Map<string, MediaCacheEntry<MediaAsset>>();
+  private gifPosters = new Map<string, MediaCacheEntry<PosterAsset | null>>();
+  private mediaCacheBytes = 0;
+  private mediaCacheClock = 0;
+  private activeMediaLoads = 0;
+  private mediaLoadWaiters: Array<() => void> = [];
   private secretStorageKey: [string, Uint8Array<ArrayBuffer>] | null = null;
   private activeVerification: ActiveVerification | null = null;
   private derivedRefreshFrame: number | null = null;
@@ -155,6 +196,7 @@ export class MatrixService {
   }
 
   private async refreshTokens(refreshToken: string) {
+    this.session.baseUrl = assertAllowedHomeserverUrl(this.session.baseUrl);
     if (this.session.authKind === "oauth" && this.session.oauth) {
       const oauth = new OAuth2(this.session.oauth.metadata, {
         clientId: this.session.oauth.clientId,
@@ -186,6 +228,7 @@ export class MatrixService {
   }
 
   async start(): Promise<void> {
+    this.session.baseUrl = assertAllowedHomeserverUrl(this.session.baseUrl);
     const storeName = stableStoreName(this.session);
     this.releaseLock = await acquireExclusiveLock(`sub-etha-matrix-${storeName}`);
     if (!this.releaseLock) throw new MatrixAlreadyOpenError();
@@ -584,48 +627,101 @@ export class MatrixService {
 
   async getMediaAsset(
     media: MatrixMediaRef,
-    options: { width?: number; height?: number; resizeMethod?: "crop" | "scale"; cacheKey?: string } = {},
+    options: MediaRequestOptions = {},
   ): Promise<MediaAsset> {
-    const key = [options.cacheKey ?? media.mxcUrl, options.width ?? "full", options.height ?? "full", options.resizeMethod ?? "scale"].join("|");
+    assertDeclaredMediaLimits(media);
+    const key = [
+      options.cacheKey ?? media.mxcUrl,
+      options.width ?? "full",
+      options.height ?? "full",
+      options.resizeMethod ?? "scale",
+      options.expectedKind ?? "unknown",
+    ].join("|");
     const existing = this.mediaAssets.get(key);
-    if (existing) return existing;
-    const loading = this.loadMedia(media, options);
-    this.mediaAssets.set(key, loading);
+    if (existing) {
+      this.touchCacheEntry(this.mediaAssets, key, existing);
+      return existing.promise;
+    }
+    this.ensureMediaCacheSlot();
+    const controller = new AbortController();
+    const entry: MediaCacheEntry<MediaAsset> = {
+      promise: Promise.resolve(null as unknown as MediaAsset),
+      byteLength: 0,
+      lastUsed: ++this.mediaCacheClock,
+      settled: false,
+      released: false,
+      controller,
+    };
+    entry.promise = this.withMediaLoadSlot(
+      () => this.loadMedia(media, options, controller.signal),
+      controller.signal,
+    );
+    this.mediaAssets.set(key, entry);
     try {
-      return await loading;
+      const asset = await entry.promise;
+      entry.settled = true;
+      if (this.mediaAssets.get(key) === entry && !entry.released) {
+        entry.byteLength = asset.blob.size;
+        this.mediaCacheBytes += entry.byteLength;
+        this.evictMediaCache("media", key);
+      }
+      return asset;
     } catch (error) {
-      this.mediaAssets.delete(key);
+      if (this.mediaAssets.get(key) === entry) this.mediaAssets.delete(key);
+      entry.released = true;
       throw error;
     }
   }
 
   invalidateMedia(media: MatrixMediaRef, cacheKey?: string): void {
     const prefix = cacheKey ?? media.mxcUrl;
-    for (const [key, promise] of this.mediaAssets) {
+    for (const [key, entry] of this.mediaAssets) {
       if (!key.startsWith(`${prefix}|`)) continue;
-      void promise.then((asset) => URL.revokeObjectURL(asset.url)).catch(() => undefined);
       this.mediaAssets.delete(key);
+      this.releaseMediaEntry(entry);
     }
-    for (const [key, promise] of this.gifPosters) {
+    for (const [key, entry] of this.gifPosters) {
       if (!key.startsWith(`${prefix}|`)) continue;
-      void promise.then((url) => { if (url) URL.revokeObjectURL(url); }).catch(() => undefined);
       this.gifPosters.delete(key);
+      this.releasePosterEntry(entry);
     }
   }
 
   async getGifPoster(media: MatrixMediaRef, cacheKey?: string): Promise<string | null> {
     const key = `${cacheKey ?? media.mxcUrl}|poster`;
     const existing = this.gifPosters.get(key);
-    if (existing) return existing;
-    const loading = this.createGifPoster(media, cacheKey);
-    this.gifPosters.set(key, loading);
-    return loading;
+    if (existing) {
+      this.touchCacheEntry(this.gifPosters, key, existing);
+      return (await existing.promise)?.url ?? null;
+    }
+    this.ensureMediaCacheSlot();
+    const controller = new AbortController();
+    const entry: MediaCacheEntry<PosterAsset | null> = {
+      promise: Promise.resolve(null),
+      byteLength: 0,
+      lastUsed: ++this.mediaCacheClock,
+      settled: false,
+      released: false,
+      controller,
+    };
+    entry.promise = this.createGifPoster(media, cacheKey, controller.signal);
+    this.gifPosters.set(key, entry);
+    const poster = await entry.promise;
+    entry.settled = true;
+    if (this.gifPosters.get(key) === entry && !entry.released) {
+      entry.byteLength = poster?.byteLength ?? 0;
+      this.mediaCacheBytes += entry.byteLength;
+      this.evictMediaCache("poster", key);
+    }
+    return poster?.url ?? null;
   }
 
-  private async createGifPoster(media: MatrixMediaRef, cacheKey?: string): Promise<string | null> {
+  private async createGifPoster(media: MatrixMediaRef, cacheKey?: string, signal?: AbortSignal): Promise<PosterAsset | null> {
     if (typeof document === "undefined") return null;
     try {
-      const asset = await this.getMediaAsset(media, { cacheKey });
+      signal?.throwIfAborted();
+      const asset = await this.getMediaAsset(media, { cacheKey, expectedKind: "image" });
+      signal?.throwIfAborted();
       let source: CanvasImageSource;
       let width: number;
       let height: number;
@@ -651,7 +747,8 @@ export class MatrixService {
       canvas.getContext("2d")?.drawImage(source, 0, 0, canvas.width, canvas.height);
       releaseSource();
       const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, "image/png"));
-      return blob ? URL.createObjectURL(blob) : null;
+      signal?.throwIfAborted();
+      return blob ? { url: URL.createObjectURL(blob), byteLength: blob.size } : null;
     } catch {
       return null;
     }
@@ -659,8 +756,16 @@ export class MatrixService {
 
   private async loadMedia(
     media: MatrixMediaRef,
-    options: { width?: number; height?: number; resizeMethod?: "crop" | "scale" } = {},
+    options: MediaRequestOptions = {},
+    signal?: AbortSignal,
   ): Promise<MediaAsset> {
+    assertDeclaredMediaLimits(media);
+    const deadlineController = new AbortController();
+    const onAbort = () => deadlineController.abort(signal?.reason);
+    signal?.addEventListener("abort", onAbort, { once: true });
+    const deadline = setTimeout(() => {
+      deadlineController.abort(new MediaTimeoutError());
+    }, 30_000);
     const client = this.requireClient();
     const useThumbnail = !media.encryptedFile && options.width && options.height;
     const authenticatedUrl = client.mxcUrlToHttp(
@@ -674,28 +779,139 @@ export class MatrixService {
     );
     if (!authenticatedUrl) throw new Error("The homeserver returned an invalid media address.");
     const token = client.getAccessToken();
-    let response = await fetch(authenticatedUrl, {
-      headers: mediaAuthorizationHeaders(authenticatedUrl, client.getHomeserverUrl(), token),
-      cache: "no-store",
-    });
-    if (shouldTryLegacyMedia(response.status)) {
-      const legacyUrl = client.mxcUrlToHttp(
-        media.mxcUrl,
-        useThumbnail ? options.width : undefined,
-        useThumbnail ? options.height : undefined,
-        useThumbnail ? options.resizeMethod ?? "scale" : undefined,
-        false,
-        false,
-        false,
-      );
-      if (legacyUrl && legacyUrl !== authenticatedUrl) response = await fetch(legacyUrl, { cache: "no-store" });
+    try {
+      let response = await fetch(authenticatedUrl, {
+        headers: mediaAuthorizationHeaders(authenticatedUrl, client.getHomeserverUrl(), token),
+        cache: "no-store",
+        signal: deadlineController.signal,
+      });
+      if (shouldTryLegacyMedia(response.status)) {
+        const legacyUrl = client.mxcUrlToHttp(
+          media.mxcUrl,
+          useThumbnail ? options.width : undefined,
+          useThumbnail ? options.height : undefined,
+          useThumbnail ? options.resizeMethod ?? "scale" : undefined,
+          false,
+          false,
+          false,
+        );
+        if (legacyUrl && legacyUrl !== authenticatedUrl) {
+          await response.body?.cancel().catch(() => undefined);
+          response = await fetch(legacyUrl, { cache: "no-store", signal: deadlineController.signal });
+        }
+      }
+      if (!response.ok) throw new Error(`Media download failed (${response.status}).`);
+      let bytes = await readBoundedResponse(response, MAX_MEDIA_BYTES, { signal: deadlineController.signal });
+      if (media.encryptedFile) bytes = await decryptAttachment(bytes, media.encryptedFile as unknown as IEncryptedFile);
+      deadlineController.signal.throwIfAborted();
+      assertMediaByteLength(bytes.byteLength, MAX_MEDIA_BYTES);
+      const byteView = new Uint8Array(bytes);
+      const imageSafety = options.expectedKind === "image" ? assertSafeImageBytes(byteView) : null;
+      const mimeType = imageSafety?.mimeType
+        ?? media.mimeType
+        ?? response.headers.get("content-type")?.split(";")[0]
+        ?? "application/octet-stream";
+      const blob = new Blob([bytes], { type: mimeType });
+      return { url: URL.createObjectURL(blob), blob, mimeType, animated: imageSafety?.animated ?? false };
+    } catch (error) {
+      if (deadlineController.signal.aborted && deadlineController.signal.reason instanceof MediaTimeoutError) {
+        throw deadlineController.signal.reason;
+      }
+      throw error;
+    } finally {
+      clearTimeout(deadline);
+      signal?.removeEventListener("abort", onAbort);
     }
-    if (!response.ok) throw new Error(`Media download failed (${response.status}).`);
-    let bytes = await response.arrayBuffer();
-    if (media.encryptedFile) bytes = await decryptAttachment(bytes, media.encryptedFile as unknown as IEncryptedFile);
-    const mimeType = media.mimeType || response.headers.get("content-type")?.split(";")[0] || "application/octet-stream";
-    const blob = new Blob([bytes], { type: mimeType });
-    return { url: URL.createObjectURL(blob), blob, mimeType, animated: mimeType === "image/gif" };
+  }
+
+  private async withMediaLoadSlot<T>(operation: () => Promise<T>, signal: AbortSignal): Promise<T> {
+    if (this.activeMediaLoads >= MAX_CONCURRENT_MEDIA_LOADS) {
+      await new Promise<void>((resolve, reject) => {
+        const resume = () => {
+          signal.removeEventListener("abort", abort);
+          resolve();
+        };
+        const abort = () => {
+          const index = this.mediaLoadWaiters.indexOf(resume);
+          if (index >= 0) this.mediaLoadWaiters.splice(index, 1);
+          reject(signal.reason);
+        };
+        signal.addEventListener("abort", abort, { once: true });
+        this.mediaLoadWaiters.push(resume);
+      });
+    }
+    signal.throwIfAborted();
+    this.activeMediaLoads += 1;
+    try {
+      return await operation();
+    } finally {
+      this.activeMediaLoads -= 1;
+      this.mediaLoadWaiters.shift()?.();
+    }
+  }
+
+  private touchCacheEntry<T>(cache: Map<string, MediaCacheEntry<T>>, key: string, entry: MediaCacheEntry<T>): void {
+    entry.lastUsed = ++this.mediaCacheClock;
+    cache.delete(key);
+    cache.set(key, entry);
+  }
+
+  private ensureMediaCacheSlot(): void {
+    while (this.mediaAssets.size + this.gifPosters.size >= MAX_MEDIA_CACHE_ENTRIES) {
+      if (!this.evictOldestSettledEntry()) {
+        throw new MediaLimitError("Too many attachments are already being prepared for preview.");
+      }
+    }
+  }
+
+  private evictMediaCache(protectedKind: "media" | "poster", protectedKey: string): void {
+    while (
+      this.mediaCacheBytes > MAX_MEDIA_CACHE_BYTES
+      || this.mediaAssets.size + this.gifPosters.size > MAX_MEDIA_CACHE_ENTRIES
+    ) {
+      if (!this.evictOldestSettledEntry(protectedKind, protectedKey)) break;
+    }
+  }
+
+  private evictOldestSettledEntry(protectedKind?: "media" | "poster", protectedKey?: string): boolean {
+    let candidate: { kind: "media" | "poster"; key: string; lastUsed: number } | null = null;
+    for (const [key, entry] of this.mediaAssets) {
+      if (protectedKind === "media" && protectedKey === key) continue;
+      if (!candidate || entry.lastUsed < candidate.lastUsed) candidate = { kind: "media", key, lastUsed: entry.lastUsed };
+    }
+    for (const [key, entry] of this.gifPosters) {
+      if (protectedKind === "poster" && protectedKey === key) continue;
+      if (!candidate || entry.lastUsed < candidate.lastUsed) candidate = { kind: "poster", key, lastUsed: entry.lastUsed };
+    }
+    if (!candidate) return false;
+    if (candidate.kind === "media") {
+      const entry = this.mediaAssets.get(candidate.key);
+      if (!entry) return false;
+      this.mediaAssets.delete(candidate.key);
+      this.releaseMediaEntry(entry);
+    } else {
+      const entry = this.gifPosters.get(candidate.key);
+      if (!entry) return false;
+      this.gifPosters.delete(candidate.key);
+      this.releasePosterEntry(entry);
+    }
+    return true;
+  }
+
+  private releaseMediaEntry(entry: MediaCacheEntry<MediaAsset>): void {
+    if (entry.released) return;
+    entry.released = true;
+    entry.controller?.abort();
+    if (entry.settled) this.mediaCacheBytes = Math.max(0, this.mediaCacheBytes - entry.byteLength);
+    void entry.promise.then((asset) => URL.revokeObjectURL(asset.url)).catch(() => undefined);
+  }
+
+  private releasePosterEntry(entry: MediaCacheEntry<PosterAsset | null>): void {
+    if (entry.released) return;
+    entry.released = true;
+    entry.controller?.abort();
+    if (entry.settled) this.mediaCacheBytes = Math.max(0, this.mediaCacheBytes - entry.byteLength);
+    void entry.promise.then((poster) => { if (poster) URL.revokeObjectURL(poster.url); }).catch(() => undefined);
   }
 
   async toggleReaction(eventId: string, key: string): Promise<void> {
@@ -1046,13 +1262,10 @@ export class MatrixService {
   }
 
   private releaseMediaAssets(): void {
-    for (const promise of this.mediaAssets.values()) {
-      void promise.then((asset) => URL.revokeObjectURL(asset.url)).catch(() => undefined);
-    }
-    for (const promise of this.gifPosters.values()) {
-      void promise.then((url) => { if (url) URL.revokeObjectURL(url); }).catch(() => undefined);
-    }
+    for (const entry of this.mediaAssets.values()) this.releaseMediaEntry(entry);
+    for (const entry of this.gifPosters.values()) this.releasePosterEntry(entry);
     this.mediaAssets.clear();
     this.gifPosters.clear();
+    this.mediaCacheBytes = 0;
   }
 }

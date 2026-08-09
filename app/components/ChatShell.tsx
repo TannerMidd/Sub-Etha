@@ -32,9 +32,14 @@ import { Timeline } from "./Timeline";
 type OpenDialog = "new" | "search" | "settings" | "details" | null;
 type RoomScope = "all" | "unread" | "favourites" | "invitations";
 
-function parseRoomHash(): string | null {
-  const match = window.location.hash.match(/^#\/room\/([^/]+)/);
-  return match ? decodeURIComponent(match[1]) : null;
+export function parseRoomHash(hash = window.location.hash): string | null {
+  const match = hash.match(/^#\/room\/([^/]+)/);
+  if (!match) return null;
+  try {
+    return decodeURIComponent(match[1]);
+  } catch {
+    return null;
+  }
 }
 
 function ConnectionPill({ state }: { state: ReturnType<MatrixService["getSnapshot"]>["connection"] }) {

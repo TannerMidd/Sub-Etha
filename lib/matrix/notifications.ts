@@ -2,9 +2,17 @@ import type { MatrixService } from "./client";
 import { randomBase64Url } from "./session-store";
 import type { PushState } from "./types";
 
-const PUSH_KEY_STORAGE = "sub-etha-push-key";
+const LEGACY_PUSH_KEY_STORAGE = "sub-etha-push-key";
+const PUSH_DELIVERY_KEY_STORAGE = "sub-etha-push-delivery-key";
+const PUSH_MANAGEMENT_KEY_STORAGE = "sub-etha-push-management-key";
 const PUSH_APP_ID = "chat.subetha.pwa";
 const LEGACY_PUSH_HOST_SUFFIX = ".chatgpt.site";
+const PUSH_CONFIRMATION_TIMEOUT_MS = 15_000;
+
+interface PushCredentials {
+  deliveryKey: string;
+  managementKey: string;
+}
 
 export function decodeApplicationServerKey(value: string): Uint8Array {
   const normalized = value.replace(/-/g, "+").replace(/_/g, "/");
@@ -61,7 +69,7 @@ async function gatewayRequest(
   method: "POST" | "DELETE",
   body: Record<string, unknown>,
   path = "/api/push/subscriptions",
-): Promise<void> {
+): Promise<Record<string, unknown>> {
   const response = await fetch(path, {
     method,
     headers: { "Content-Type": "application/json" },
@@ -72,6 +80,7 @@ async function gatewayRequest(
     const message = payload?.error;
     throw new Error(message || `Push gateway returned ${response.status}.`);
   }
+  return await response.json().catch(() => ({})) as Record<string, unknown>;
 }
 
 async function publicVapidKey(): Promise<string> {
@@ -94,8 +103,12 @@ export function pushSubscriptionNeedsRepair(
   return currentBytes.length !== expectedBytes.length || currentBytes.some((value, index) => value !== expectedBytes[index]);
 }
 
-function configureServiceWorker(registration: ServiceWorkerRegistration, pushKey: string, publicKey: string): void {
-  registration.active?.postMessage({ type: "SET_PUSH_CONFIG", pushKey, publicKey });
+function configureServiceWorker(
+  registration: ServiceWorkerRegistration,
+  credentials: PushCredentials,
+  publicKey: string,
+): void {
+  registration.active?.postMessage({ type: "SET_PUSH_CONFIG", ...credentials, publicKey });
 }
 
 function clearServiceWorkerPushConfig(registration: ServiceWorkerRegistration | null): void {
@@ -115,6 +128,62 @@ async function currentSubscription(registration: ServiceWorkerRegistration, publ
     });
   }
   return subscription;
+}
+
+function readPushCredentials(create: boolean): PushCredentials | null {
+  const deliveryKey = localStorage.getItem(PUSH_DELIVERY_KEY_STORAGE)
+    ?? localStorage.getItem(LEGACY_PUSH_KEY_STORAGE);
+  const managementKey = localStorage.getItem(PUSH_MANAGEMENT_KEY_STORAGE);
+  if (!deliveryKey && !create) return null;
+  return {
+    deliveryKey: deliveryKey ?? randomBase64Url(32),
+    managementKey: managementKey ?? randomBase64Url(32),
+  };
+}
+
+function persistPushCredentials(credentials: PushCredentials): void {
+  localStorage.setItem(PUSH_DELIVERY_KEY_STORAGE, credentials.deliveryKey);
+  localStorage.setItem(PUSH_MANAGEMENT_KEY_STORAGE, credentials.managementKey);
+  localStorage.removeItem(LEGACY_PUSH_KEY_STORAGE);
+}
+
+function clearPushCredentials(): void {
+  localStorage.removeItem(PUSH_DELIVERY_KEY_STORAGE);
+  localStorage.removeItem(PUSH_MANAGEMENT_KEY_STORAGE);
+  localStorage.removeItem(LEGACY_PUSH_KEY_STORAGE);
+}
+
+async function registerGatewaySubscription(
+  credentials: PushCredentials,
+  subscription: PushSubscription,
+): Promise<void> {
+  let confirmationReceived = false;
+  let resolveConfirmation: () => void = () => undefined;
+  const confirmation = new Promise<void>((resolve) => { resolveConfirmation = resolve; });
+  const onMessage = (event: MessageEvent) => {
+    if (event.data?.type !== "PUSH_SUBSCRIPTION_CONFIRMED") return;
+    confirmationReceived = true;
+    resolveConfirmation();
+  };
+  navigator.serviceWorker.addEventListener("message", onMessage);
+  try {
+    const body = { ...credentials, subscription: subscription.toJSON() };
+    const result = await gatewayRequest("POST", body);
+    if (result.registered === true) return;
+    if (result.pending !== true) throw new Error("The push gateway returned an invalid registration state.");
+    if (!confirmationReceived) {
+      await Promise.race([
+        confirmation,
+        new Promise<void>((_resolve, reject) => {
+          window.setTimeout(() => reject(new Error("The browser did not confirm the push endpoint in time.")), PUSH_CONFIRMATION_TIMEOUT_MS);
+        }),
+      ]);
+    }
+    const confirmed = await gatewayRequest("POST", body);
+    if (confirmed.registered !== true) throw new Error("The browser push endpoint was not confirmed.");
+  } finally {
+    navigator.serviceWorker.removeEventListener("message", onMessage);
+  }
 }
 
 export function isLegacySitesPusher(pusher: { app_id?: string; data?: { url?: string } }): boolean {
@@ -167,15 +236,15 @@ async function reconcileMatrixPusher(service: MatrixService, pushKey: string): P
 export async function refreshPushState(service: MatrixService): Promise<PushState> {
   const initial = readPushState();
   if (!initial.supported) return { ...initial, checking: false };
-  const pushKey = localStorage.getItem(PUSH_KEY_STORAGE);
-  if (!pushKey || Notification.permission !== "granted") {
-    if (pushKey) await service.removePusher(pushKey).catch(() => undefined);
-    if (pushKey) await gatewayRequest("DELETE", { pushKey }).catch(() => undefined);
+  const credentials = readPushCredentials(false);
+  if (!credentials || Notification.permission !== "granted") {
+    if (credentials) await service.removePusher(credentials.deliveryKey).catch(() => undefined);
+    if (credentials) await gatewayRequest("DELETE", { managementKey: credentials.managementKey }).catch(() => undefined);
     const registration = await navigator.serviceWorker.ready.catch(() => null);
     const subscription = await registration?.pushManager.getSubscription();
     await subscription?.unsubscribe().catch(() => undefined);
     clearServiceWorkerPushConfig(registration);
-    localStorage.removeItem(PUSH_KEY_STORAGE);
+    clearPushCredentials();
     return { supported: true, enabled: false, permission: Notification.permission, checking: false };
   }
 
@@ -185,9 +254,10 @@ export async function refreshPushState(service: MatrixService): Promise<PushStat
     const publicKey = await publicVapidKey();
     const subscription = await currentSubscription(registration, publicKey, true);
     if (!subscription) return { ...initial, checking: false, error: "The browser push subscription is unavailable." };
-    await gatewayRequest("POST", { pushKey, subscription: subscription.toJSON() });
-    await reconcileMatrixPusher(service, pushKey);
-    configureServiceWorker(registration, pushKey, publicKey);
+    await registerGatewaySubscription(credentials, subscription);
+    await reconcileMatrixPusher(service, credentials.deliveryKey);
+    persistPushCredentials(credentials);
+    configureServiceWorker(registration, credentials, publicKey);
     await removeLegacySitesPushers(service).catch(() => undefined);
     return { supported: true, enabled: true, permission: "granted", checking: false };
   } catch (error) {
@@ -212,44 +282,45 @@ export async function enablePush(service: MatrixService): Promise<PushState> {
   const publicKey = await publicVapidKey();
   const subscription = await currentSubscription(registration, publicKey, true);
   if (!subscription) throw new Error("The browser push subscription is unavailable.");
-  const pushKey = localStorage.getItem(PUSH_KEY_STORAGE) || randomBase64Url(32);
-  await gatewayRequest("POST", { pushKey, subscription: subscription.toJSON() });
+  const credentials = readPushCredentials(true);
+  if (!credentials) throw new Error("Push credentials could not be created.");
+  await registerGatewaySubscription(credentials, subscription);
 
   try {
-    await registerMatrixPusher(service, pushKey);
+    await registerMatrixPusher(service, credentials.deliveryKey);
   } catch (error) {
-    await gatewayRequest("DELETE", { pushKey }).catch(() => undefined);
+    await gatewayRequest("DELETE", { managementKey: credentials.managementKey }).catch(() => undefined);
     await subscription.unsubscribe().catch(() => undefined);
     throw error;
   }
 
-  localStorage.setItem(PUSH_KEY_STORAGE, pushKey);
-  configureServiceWorker(registration, pushKey, publicKey);
+  persistPushCredentials(credentials);
+  configureServiceWorker(registration, credentials, publicKey);
   await removeLegacySitesPushers(service).catch(() => undefined);
   return { supported: true, enabled: true, permission: "granted", checking: false };
 }
 
 export async function disablePush(service: MatrixService): Promise<PushState> {
-  const pushKey = localStorage.getItem(PUSH_KEY_STORAGE);
-  if (pushKey) {
-    await service.removePusher(pushKey).catch(() => undefined);
-    await gatewayRequest("DELETE", { pushKey }).catch(() => undefined);
+  const credentials = readPushCredentials(false);
+  if (credentials) {
+    await service.removePusher(credentials.deliveryKey).catch(() => undefined);
+    await gatewayRequest("DELETE", { managementKey: credentials.managementKey }).catch(() => undefined);
   }
   const registration = "serviceWorker" in navigator ? await navigator.serviceWorker.ready.catch(() => null) : null;
   const subscription = await registration?.pushManager.getSubscription();
   await subscription?.unsubscribe().catch(() => undefined);
   clearServiceWorkerPushConfig(registration);
-  localStorage.removeItem(PUSH_KEY_STORAGE);
+  clearPushCredentials();
   await syncAppBadge(0);
   return { supported: true, enabled: false, permission: Notification.permission, checking: false };
 }
 
 export async function sendTestPush(): Promise<void> {
-  const pushKey = localStorage.getItem(PUSH_KEY_STORAGE);
-  if (!pushKey) throw new Error("Enable closed-app notifications before sending a test.");
-  await gatewayRequest("POST", { pushKey }, "/api/push/test");
+  const credentials = readPushCredentials(false);
+  if (!credentials) throw new Error("Enable closed-app notifications before sending a test.");
+  await gatewayRequest("POST", { managementKey: credentials.managementKey }, "/api/push/test");
 }
 
 export function getPushKey(): string | null {
-  return localStorage.getItem(PUSH_KEY_STORAGE);
+  return readPushCredentials(false)?.deliveryKey ?? null;
 }
