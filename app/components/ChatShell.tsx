@@ -22,6 +22,7 @@ import {
   X,
 } from "lucide-react";
 import type { MatrixService } from "@/lib/matrix/client";
+import { dismissRoomNotification, syncAppBadge, totalUnreadCount } from "@/lib/matrix/notifications";
 import type { RoomSummary, TimelineItem } from "@/lib/matrix/types";
 import { Avatar, BrandMark } from "./BrandMark";
 import { Composer } from "./Composer";
@@ -84,7 +85,27 @@ export function ChatShell({ service, onLogout }: { service: MatrixService; onLog
   const invitations = filteredRooms.filter((room) => room.membership === "invite");
   const joinedRooms = filteredRooms.filter((room) => room.membership !== "invite" && room.memberCount > 2);
   const directMessages = filteredRooms.filter((room) => room.membership !== "invite" && room.memberCount <= 2);
-  const unreadTotal = snapshot.rooms.reduce((total, room) => total + room.unread, 0);
+  const unreadTotal = totalUnreadCount(snapshot.rooms);
+
+  useEffect(() => {
+    void syncAppBadge(unreadTotal);
+  }, [unreadTotal]);
+
+  useEffect(() => {
+    const acknowledgeActiveRoom = () => {
+      const roomId = service.getSnapshot().activeRoomId;
+      if (!roomId || document.visibilityState !== "visible") return;
+      void service.markRoomRead(roomId);
+      void dismissRoomNotification(roomId);
+    };
+    acknowledgeActiveRoom();
+    document.addEventListener("visibilitychange", acknowledgeActiveRoom);
+    window.addEventListener("focus", acknowledgeActiveRoom);
+    return () => {
+      document.removeEventListener("visibilitychange", acknowledgeActiveRoom);
+      window.removeEventListener("focus", acknowledgeActiveRoom);
+    };
+  }, [service, snapshot.activeRoomId]);
 
   useEffect(() => {
     const selectFromHash = () => {
@@ -208,7 +229,7 @@ export function ChatShell({ service, onLogout }: { service: MatrixService; onLog
             ) : (
               <>
                 <div className="conversation-stage">
-                  <Timeline items={snapshot.timeline} service={service} loadingHistory={snapshot.loadingHistory} unreadCount={activeRoom.unread} onReply={(item) => { setReplyingTo(item); setEditing(null); }} onEdit={(item) => { setEditing(item); setReplyingTo(null); }} />
+                  <Timeline items={snapshot.timeline} service={service} loadingHistory={snapshot.loadingHistory} initializing={snapshot.connection === "starting"} unreadCount={activeRoom.unread} onReply={(item) => { setReplyingTo(item); setEditing(null); }} onEdit={(item) => { setEditing(item); setReplyingTo(null); }} />
                   <aside className="receiver-field-guide" aria-hidden="true">
                     {/* eslint-disable-next-line @next/next/no-img-element -- Generated decorative brand plate. */}
                     <img className="receiver-field-guide__dark" src="/night-receiver-plate.png" alt="" />
@@ -219,7 +240,9 @@ export function ChatShell({ service, onLogout }: { service: MatrixService; onLog
                     <p>FIELD GUIDE&nbsp;&nbsp; VOL. 01 / PAGE 17</p>
                   </aside>
                 </div>
-                <div className="typing-line" aria-live="polite">{snapshot.typingNames.length ? `${snapshot.typingNames.join(", ")} ${snapshot.typingNames.length === 1 ? "is" : "are"} typing…` : "\u00a0"}</div>
+                <div className={`typing-line${snapshot.typingNames.length ? " is-active" : ""}`} aria-live="polite" aria-atomic="true">
+                  {snapshot.typingNames.length ? <><span className="typing-dots" aria-hidden="true"><i /><i /><i /></span><span>{snapshot.typingNames.join(", ")} {snapshot.typingNames.length === 1 ? "is" : "are"} typing…</span></> : null}
+                </div>
                 <Composer key={`${activeRoom.id}:${editing?.id ?? "compose"}`} roomId={activeRoom.id} service={service} replyingTo={replyingTo} editing={editing} onClearContext={() => { setReplyingTo(null); setEditing(null); }} />
                 <footer className="receiver-status" aria-label="Receiver status">
                   <ConnectionPill state={snapshot.connection} />

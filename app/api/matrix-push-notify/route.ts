@@ -1,8 +1,9 @@
-import { relayToPushGateway } from "@/lib/vercel-push-proxy";
+import { pushServer } from "@/lib/push-server";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
+export const maxDuration = 30;
 
 export async function POST(request: Request): Promise<Response> {
-  return relayToPushGateway(request, "/_matrix/push/v1/notify");
+  return pushServer.notify(request);
 }

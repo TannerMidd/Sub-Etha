@@ -4,13 +4,13 @@ import test from "node:test";
 import { humanizeMatrixError, normalizeHomeserverInput, sanitizedCallbackPath } from "../lib/matrix/auth";
 import { base64UrlToBytes, createSession, randomBase64Url } from "../lib/matrix/session-store";
 import type { RoomSummary } from "../lib/matrix/types";
-import { roomAvatarMxcUrl, sortRoomSummaries } from "../lib/matrix/normalize";
+import { eventDecryptionState, roomAvatarMxcUrl, sortRoomSummaries } from "../lib/matrix/normalize";
 import { genericNotificationPayload, validPushEndpoint, validPushKey } from "../lib/push-gateway";
 import { createMediaContent, createTextContent } from "../lib/matrix/message-content";
 import { messageTextSegments, stripPlainReplyFallback } from "../lib/matrix/message-text";
 import { findOwnReactionEventId, mediaAuthorizationHeaders, shouldTryLegacyMedia } from "../lib/matrix/client";
 import { bytesAreGif, firstImageFile, insertAtSelection, normalizeMediaFile } from "../lib/matrix/media";
-import { relayToPushGateway } from "../lib/vercel-push-proxy";
+import { isLegacySitesPusher, pushSubscriptionNeedsRepair } from "../lib/matrix/notifications";
 
 test("homeserver input accepts Matrix IDs, domains, and explicit URLs", () => {
   assert.deepEqual(normalizeHomeserverInput("@arthur:matrix.example"), { serverName: "matrix.example" });
@@ -133,53 +133,45 @@ test("push payload discards Matrix content and identity fields", () => {
     body: "secret text",
     sender: "@ford:example",
   } as Parameters<typeof genericNotificationPayload>[0] & { body: string; sender: string }));
-  assert.deepEqual(payload, { roomId: "!room:example", eventId: "$event", unread: 3 });
+  assert.deepEqual(payload, { kind: "matrix", roomId: "!room:example", eventId: "$event", unread: 3 });
   assert.equal(JSON.stringify(payload).includes("secret"), false);
   assert.equal(JSON.stringify(payload).includes("ford"), false);
 });
 
-test("Vercel push relay forwards only the privacy-minimal request to the established gateway", async () => {
-  const originalFetch = globalThis.fetch;
-  const originalGateway = process.env.SUB_ETHA_PUSH_GATEWAY_ORIGIN;
-  process.env.SUB_ETHA_PUSH_GATEWAY_ORIGIN = "https://push.sub-etha.example";
-  const calls: Array<{ url: string; headers: Headers }> = [];
-  globalThis.fetch = async (input, init) => {
-    calls.push({ url: String(input), headers: new Headers(init?.headers) });
-    return Response.json({ registered: true });
-  };
-  try {
-    const response = await relayToPushGateway(new Request("https://sub-etha.vercel.app/api/push/subscriptions", {
-      method: "POST",
-      headers: {
-        Authorization: "Bearer must-not-travel",
-        "Content-Type": "application/json",
-        Origin: "https://sub-etha.vercel.app",
-      },
-      body: JSON.stringify({ pushKey: "a".repeat(40) }),
-    }), "/api/push/subscriptions");
-    assert.equal(response.status, 200);
-    const observed = calls[0];
-    assert.ok(observed);
-    assert.equal(observed.url, "https://push.sub-etha.example/api/push/subscriptions");
-    assert.equal(observed.headers.get("origin"), "https://push.sub-etha.example");
-    assert.equal(observed.headers.has("authorization"), false);
-  } finally {
-    globalThis.fetch = originalFetch;
-    if (originalGateway === undefined) delete process.env.SUB_ETHA_PUSH_GATEWAY_ORIGIN;
-    else process.env.SUB_ETHA_PUSH_GATEWAY_ORIGIN = originalGateway;
-  }
+test("encrypted events expose pending, failed, and ready decryption states", () => {
+  const event = (values: { type: string; decrypting: boolean; failed: boolean; encrypted: boolean }) => ({
+    getType: () => values.type,
+    isBeingDecrypted: () => values.decrypting,
+    isDecryptionFailure: () => values.failed,
+    isEncrypted: () => values.encrypted,
+  });
+  assert.equal(eventDecryptionState(event({ type: "m.room.encrypted", decrypting: true, failed: false, encrypted: true })), "decrypting");
+  assert.equal(eventDecryptionState(event({ type: "m.room.encrypted", decrypting: false, failed: true, encrypted: true })), "failed");
+  assert.equal(eventDecryptionState(event({ type: "m.room.message", decrypting: false, failed: false, encrypted: true })), "ready");
+  assert.equal(eventDecryptionState(event({ type: "m.room.message", decrypting: false, failed: false, encrypted: false })), "ready");
 });
 
-test("Vercel mirror fails closed when no public push gateway is configured", async () => {
-  const originalGateway = process.env.SUB_ETHA_PUSH_GATEWAY_ORIGIN;
-  delete process.env.SUB_ETHA_PUSH_GATEWAY_ORIGIN;
-  try {
-    const response = await relayToPushGateway(new Request("https://sub-etha.vercel.app/api/push/vapid-key"), "/api/push/vapid-key");
-    assert.equal(response.status, 503);
-    assert.match(await response.text(), /not configured/i);
-  } finally {
-    if (originalGateway !== undefined) process.env.SUB_ETHA_PUSH_GATEWAY_ORIGIN = originalGateway;
-  }
+test("legacy Sites pushers are isolated without matching other Sub-Etha devices", () => {
+  assert.equal(isLegacySitesPusher({
+    app_id: "chat.subetha.pwa",
+    data: { url: "https://sub-etha.example.chatgpt.site/_matrix/push/v1/notify" },
+  }), true);
+  assert.equal(isLegacySitesPusher({
+    app_id: "chat.subetha.pwa",
+    data: { url: "https://sub-etha-matrix.vercel.app/_matrix/push/v1/notify" },
+  }), false);
+  assert.equal(isLegacySitesPusher({
+    app_id: "another.app",
+    data: { url: "https://sub-etha.example.chatgpt.site/_matrix/push/v1/notify" },
+  }), false);
+});
+
+test("browser push reconciliation repairs missing and mismatched application keys", () => {
+  const matching = { options: { applicationServerKey: Uint8Array.from([1, 2, 3]).buffer, userVisibleOnly: true } };
+  const mismatched = { options: { applicationServerKey: Uint8Array.from([1, 2, 4]).buffer, userVisibleOnly: true } };
+  assert.equal(pushSubscriptionNeedsRepair(null, "AQID"), true);
+  assert.equal(pushSubscriptionNeedsRepair(matching, "AQID"), false);
+  assert.equal(pushSubscriptionNeedsRepair(mismatched, "AQID"), true);
 });
 
 test("message content carries Matrix mentions, replies, and edits", () => {

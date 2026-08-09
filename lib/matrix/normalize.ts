@@ -23,6 +23,13 @@ export function sanitizeMatrixHtml(value: string): string {
   });
 }
 
+export function eventDecryptionState(event: Pick<MatrixEvent, "getType" | "isBeingDecrypted" | "isDecryptionFailure" | "isEncrypted">): TimelineItem["decryptionState"] {
+  if (!event.isEncrypted()) return "ready";
+  if (event.isDecryptionFailure()) return "failed";
+  if (event.isBeingDecrypted() || event.getType() === "m.room.encrypted") return "decrypting";
+  return "ready";
+}
+
 function eventBody(event: MatrixEvent): string {
   if (event.isDecryptionFailure()) return "This transmission could not be decrypted on this device.";
   const replacing = event.replacingEvent();
@@ -128,7 +135,7 @@ export function normalizeTimeline(room: Room, client: MatrixClient): TimelineIte
       edited: Boolean(replacing || original["m.new_content"]),
       redacted: Object.keys(original).length === 0 && !event.isDecryptionFailure(),
       encrypted: event.isEncrypted(),
-      decryptionFailed: event.isDecryptionFailure(),
+      decryptionState: eventDecryptionState(event),
       media: mxcUrl ? {
         mxcUrl,
         mimeType: typeof (content.info as Record<string, unknown> | undefined)?.mimetype === "string"
@@ -157,6 +164,7 @@ export function normalizeTimeline(room: Room, client: MatrixClient): TimelineIte
 function lastMessageText(room: Room): string {
   const last = room.getLastLiveEvent();
   if (!last) return room.getMyMembership() === "invite" ? "Invitation waiting" : "No transmissions yet";
+  if (eventDecryptionState(last) === "decrypting") return "Decrypting transmission…";
   const body = eventBody(last);
   if (body) return body;
   if (last.getType() === EventType.RoomMember) return "Room membership changed";

@@ -82,7 +82,7 @@ export interface TimelineItem {
   edited: boolean;
   redacted: boolean;
   encrypted: boolean;
-  decryptionFailed: boolean;
+  decryptionState: "ready" | "decrypting" | "failed";
   media?: MatrixMediaRef;
   replyTo?: string;
   reactions: ReactionSummary[];
@@ -125,6 +125,7 @@ export interface PushState {
   supported: boolean;
   enabled: boolean;
   permission: NotificationPermission | "unsupported";
+  checking?: boolean;
   error?: string;
 }
 

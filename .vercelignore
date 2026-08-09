@@ -1,7 +1,10 @@
-.wrangler
 .next
+.output
 dist
 node_modules
 tests
 showcase
 *.tar.gz
+.env
+.env.*
+!.env.example

@@ -4,7 +4,9 @@ import {
   IndexedDBStore,
   MatrixClient,
   MatrixEvent,
+  MatrixEventEvent,
   MatrixScheduler,
+  NotificationCountType,
   OAuth2,
   RelationType,
   RoomEvent,
@@ -122,6 +124,11 @@ export class MatrixService {
   private gifPosters = new Map<string, Promise<string | null>>();
   private secretStorageKey: [string, Uint8Array<ArrayBuffer>] | null = null;
   private activeVerification: ActiveVerification | null = null;
+  private derivedRefreshFrame: number | null = null;
+  private pendingTimelineRefresh = false;
+  private readMarkerTargets = new Map<string, { event: MatrixEvent; eventId: string }>();
+  private readMarkerTasks = new Map<string, Promise<void>>();
+  private lastReadEventIds = new Map<string, string>();
   private stopped = false;
   private readonly takeoverStorageKey = "sub-etha-account-takeover";
 
@@ -217,6 +224,7 @@ export class MatrixService {
     });
 
     this.client.on(ClientEvent.Sync, this.handleSync);
+    this.client.on(MatrixEventEvent.Decrypted, this.handleDecrypted);
     this.client.on(RoomEvent.Timeline, this.handleTimeline);
     this.client.on(RoomEvent.Name, this.handleRoomChange);
     this.client.on(RoomEvent.Receipt, this.handleRoomChange);
@@ -242,11 +250,23 @@ export class MatrixService {
     else if (state === SyncState.Error) this.emit({ connection: navigator.onLine ? "error" : "offline" });
     else if (state === SyncState.Stopped) this.emit({ connection: "idle" });
     this.refreshDerivedState();
+    if ((state === SyncState.Prepared || state === SyncState.Syncing) && this.snapshot.activeRoomId && document.visibilityState === "visible") {
+      void this.markRoomRead(this.snapshot.activeRoomId);
+    }
   };
 
   private handleTimeline = (_event: MatrixEvent, room: Room | undefined): void => {
     if (this.stopped) return;
-    this.refreshDerivedState(room?.roomId === this.snapshot.activeRoomId);
+    const active = room?.roomId === this.snapshot.activeRoomId;
+    this.refreshDerivedState(active);
+    if (active && room && document.visibilityState === "visible") {
+      void this.markRoomRead(room.roomId);
+    }
+  };
+
+  private handleDecrypted = (event: MatrixEvent): void => {
+    if (this.stopped) return;
+    this.scheduleDerivedRefresh(event.getRoomId() === this.snapshot.activeRoomId);
   };
 
   private handleRoomChange = (): void => {
@@ -256,6 +276,27 @@ export class MatrixService {
   private handleTyping = (): void => {
     if (!this.stopped) this.refreshTyping();
   };
+
+  private scheduleDerivedRefresh(includeTimeline: boolean): void {
+    this.pendingTimelineRefresh ||= includeTimeline;
+    if (this.derivedRefreshFrame !== null) return;
+    this.derivedRefreshFrame = window.requestAnimationFrame(() => {
+      this.derivedRefreshFrame = null;
+      const refreshTimeline = this.pendingTimelineRefresh;
+      this.pendingTimelineRefresh = false;
+      if (!this.stopped) this.refreshDerivedState(refreshTimeline);
+    });
+  }
+
+  private async decryptRoomTimeline(room: Room): Promise<void> {
+    try {
+      await room.decryptAllEvents();
+    } catch {
+      // Individual events expose their failure state and will retry when keys arrive.
+    } finally {
+      if (!this.stopped) this.scheduleDerivedRefresh(room.roomId === this.snapshot.activeRoomId);
+    }
+  }
 
   private handleTakeoverRequest = (event: StorageEvent): void => {
     if (event.key !== this.takeoverStorageKey || !event.newValue || this.stopped) return;
@@ -454,7 +495,10 @@ export class MatrixService {
       error: null,
     });
     this.refreshTyping();
-    if (room) void this.markRoomRead(room.roomId);
+    if (room) {
+      void this.decryptRoomTimeline(room);
+      if (document.visibilityState === "visible") void this.markRoomRead(room.roomId);
+    }
   }
 
   clearError(): void {
@@ -469,6 +513,7 @@ export class MatrixService {
     try {
       await client.scrollback(room, 40);
       this.emit({ timeline: normalizeTimeline(room, client), loadingHistory: false });
+      void this.decryptRoomTimeline(room);
     } catch (error) {
       this.emit({ loadingHistory: false, error: humanizeMatrixError(error) });
     }
@@ -683,8 +728,42 @@ export class MatrixService {
     const client = this.requireClient();
     const room = client.getRoom(roomId);
     const event = room?.getLiveTimeline().getEvents().toReversed().find((candidate) => candidate.getId());
-    if (event?.getId()) {
-      try { await client.setRoomReadMarkers(roomId, event.getId()!, event); } catch { /* best effort */ }
+    const eventId = event?.getId();
+    if (!room || !event || !eventId || this.lastReadEventIds.get(roomId) === eventId) return;
+    this.readMarkerTargets.set(roomId, { event, eventId });
+    const existing = this.readMarkerTasks.get(roomId);
+    if (existing) return existing;
+    const task = this.flushReadMarkers(roomId);
+    this.readMarkerTasks.set(roomId, task);
+    try {
+      await task;
+    } finally {
+      if (this.readMarkerTasks.get(roomId) === task) this.readMarkerTasks.delete(roomId);
+    }
+  }
+
+  private async flushReadMarkers(roomId: string): Promise<void> {
+    while (!this.stopped) {
+      const target = this.readMarkerTargets.get(roomId);
+      if (!target) return;
+      if (this.lastReadEventIds.get(roomId) === target.eventId) {
+        this.readMarkerTargets.delete(roomId);
+        continue;
+      }
+      try {
+        await this.requireClient().setRoomReadMarkers(roomId, target.eventId, target.event);
+      } catch {
+        return;
+      }
+      if (this.stopped) return;
+      this.lastReadEventIds.set(roomId, target.eventId);
+      if (this.readMarkerTargets.get(roomId)?.eventId === target.eventId) {
+        this.readMarkerTargets.delete(roomId);
+      }
+      const room = this.client?.getRoom(roomId);
+      room?.setUnreadNotificationCount(NotificationCountType.Total, 0);
+      room?.setUnreadNotificationCount(NotificationCountType.Highlight, 0);
+      this.refreshDerivedState(roomId === this.snapshot.activeRoomId);
     }
   }
 
@@ -919,8 +998,8 @@ export class MatrixService {
   async logout(): Promise<void> {
     this.stopped = true;
     try { await this.client?.logout(); } catch { /* local cleanup still proceeds */ }
+    this.releaseClientListeners();
     this.client?.stopClient();
-    this.client?.off(CryptoEvent.VerificationRequestReceived, this.handleIncomingVerification);
     window.removeEventListener("storage", this.handleTakeoverRequest);
     try {
       await this.client?.clearStores({ cryptoDatabasePrefix: `sub-etha-crypto-${stableStoreName(this.session)}` });
@@ -935,13 +1014,35 @@ export class MatrixService {
 
   stop(): void {
     this.stopped = true;
+    this.releaseClientListeners();
     this.client?.stopClient();
-    this.client?.off(CryptoEvent.VerificationRequestReceived, this.handleIncomingVerification);
     window.removeEventListener("storage", this.handleTakeoverRequest);
     this.releaseMediaAssets();
     this.releaseVerificationContext();
     this.releaseLock?.();
     this.releaseLock = null;
+  }
+
+  private releaseClientListeners(): void {
+    const client = this.client;
+    if (client) {
+      client.off(ClientEvent.Sync, this.handleSync);
+      client.off(MatrixEventEvent.Decrypted, this.handleDecrypted);
+      client.off(RoomEvent.Timeline, this.handleTimeline);
+      client.off(RoomEvent.Name, this.handleRoomChange);
+      client.off(RoomEvent.Receipt, this.handleRoomChange);
+      client.off(RoomEvent.MyMembership, this.handleRoomChange);
+      client.off(RoomMemberEvent.Typing, this.handleTyping);
+      client.off(CryptoEvent.VerificationRequestReceived, this.handleIncomingVerification);
+    }
+    if (this.derivedRefreshFrame !== null) {
+      window.cancelAnimationFrame(this.derivedRefreshFrame);
+      this.derivedRefreshFrame = null;
+    }
+    this.pendingTimelineRefresh = false;
+    this.readMarkerTargets.clear();
+    this.readMarkerTasks.clear();
+    this.lastReadEventIds.clear();
   }
 
   private releaseMediaAssets(): void {

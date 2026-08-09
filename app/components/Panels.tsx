@@ -23,7 +23,7 @@ import {
   X,
 } from "lucide-react";
 import type { MatrixService } from "@/lib/matrix/client";
-import { disablePush, enablePush, readPushState } from "@/lib/matrix/notifications";
+import { disablePush, enablePush, readPushState, refreshPushState, sendTestPush } from "@/lib/matrix/notifications";
 import type { DeviceSummary, DeviceVerificationState, PushState, RoomSummary, TimelineItem } from "@/lib/matrix/types";
 import { Avatar } from "./BrandMark";
 
@@ -311,6 +311,12 @@ export function SettingsDialog({
     }).catch(() => undefined);
   }, [service]);
 
+  useEffect(() => {
+    let active = true;
+    void refreshPushState(service).then((state) => { if (active) setPushState(state); });
+    return () => { active = false; };
+  }, [service]);
+
   const act = async (name: string, action: () => Promise<void>) => {
     setBusyAction(name);
     setError(null);
@@ -359,10 +365,15 @@ export function SettingsDialog({
           <h3><Bell />Notifications</h3>
           <div className="settings-block">
             <div><strong>Closed-app notifications</strong><p>Generic alerts only. The gateway never receives message text, sender or room names.</p></div>
-            <button className="secondary-button" type="button" disabled={!pushState.supported || busyAction === "push"} onClick={() => void act("push", async () => {
+            <button className="secondary-button" type="button" disabled={!pushState.supported || pushState.checking || busyAction === "push"} onClick={() => void act("push", async () => {
               setPushState(pushState.enabled ? await disablePush(service) : await enablePush(service));
-            })}>{pushState.enabled ? <><BellOff />Disable</> : <><Bell />Enable</>}</button>
+            })}>{pushState.checking ? <><LoaderCircle className="spin" />Checking</> : pushState.enabled ? <><BellOff />Disable</> : <><Bell />Enable</>}</button>
+            {pushState.enabled ? <button className="secondary-button" type="button" disabled={busyAction === "push-test"} onClick={() => void act("push-test", async () => {
+              await sendTestPush();
+              setNotice("Test notification sent. It should appear on this device momentarily.");
+            })}>{busyAction === "push-test" ? <LoaderCircle className="spin" /> : <Bell />}Send test</button> : null}
             {pushState.permission === "denied" ? <p className="inline-error">Notifications are blocked in browser settings.</p> : null}
+            {pushState.error ? <p className="inline-error">{pushState.error}</p> : null}
           </div>
         </section>
 

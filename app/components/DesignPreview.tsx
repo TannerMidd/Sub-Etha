@@ -38,7 +38,7 @@ function previewMessage(id: string, senderName: string, body: string, timestamp:
     edited: false,
     redacted: false,
     encrypted: true,
-    decryptionFailed: false,
+    decryptionState: "ready",
     reactions: [],
     sendingStatus: null,
     readBy: [],
@@ -49,9 +49,11 @@ function previewMessage(id: string, senderName: string, body: string, timestamp:
 
 function createPreviewService(): MatrixService {
   const listeners = new Set<() => void>();
-  const verificationPreview = typeof window === "undefined" ? null : new URLSearchParams(window.location.search).get("verification-preview");
+  const previewParams = typeof window === "undefined" ? null : new URLSearchParams(window.location.search);
+  const verificationPreview = previewParams?.get("verification-preview") ?? null;
+  const uxPreview = previewParams?.get("ux-preview") ?? null;
   let snapshot: MatrixSnapshot = {
-    connection: "ready",
+    connection: uxPreview === "loading" ? "starting" : "ready",
     rooms: [
       previewRoom("signal-watch", "Signal Watch", 7, "Scheduling maintenance for 2100.", at(10, 42), 1, true),
       previewRoom("hab-drift", "Hab Drift Crew", 5, "Sweep complete on the north arc.", at(9, 18), 0, true),
@@ -63,7 +65,7 @@ function createPreviewService(): MatrixService {
       previewRoom("ilya", "Ilya", 2, "Typing…", at(5, 42), 1),
     ],
     activeRoomId: "signal-watch",
-    timeline: [
+    timeline: uxPreview === "loading" ? [] : [
       previewMessage("m1", "Vera", "Weak carrier riding the band. Not our bird.\nLogging and letting it pass.", at(10, 18), false, { reactions: [{ key: "📡", count: 3, mine: true }, { key: "👁", count: 1, mine: false }] }),
       previewMessage("m2", "Sol", "Copy. I’ll continue the sweep on the north arc\nand report any anomalies.", at(10, 21)),
       previewMessage("m3", "Tamsin", "Power fluctuation on Relay 7B at 03:17.\nNothing persistent.", at(10, 24)),
@@ -71,13 +73,13 @@ function createPreviewService(): MatrixService {
       previewMessage("m5", "Sol", "Looks like background ion wash. Within margin.", at(10, 26), true),
       previewMessage("m6", "Rook", "Did we get the new coil batch manifest?\nLogistics said it cleared customs.", at(10, 31)),
       previewMessage("m7", "Vera", "Yes. Dockside locker. Seal intact.", at(10, 33), false, { reactions: [{ key: "👍", count: 2, mine: false }] }),
-      previewMessage("m8", "Tamsin", "Scheduling maintenance window for 2100.\nI’ll drop the calendar invite.", at(10, 42)),
+      previewMessage("m8", "Tamsin", "Scheduling maintenance window for 2100.\nI’ll drop the calendar invite.", at(10, 42), false, uxPreview === "states" ? { decryptionState: "decrypting" } : {}),
       previewMessage("m9", "Vera", "Receiver plate recovered from the archive.", at(10, 44), false, {
         type: "image",
         media: { mxcUrl: "/night-receiver-plate.png", mimeType: "image/png", size: 382_000, width: 1024, height: 1024 },
       }),
     ],
-    typingNames: [],
+    typingNames: uxPreview === "states" ? ["Sol"] : [],
     loadingHistory: false,
     error: null,
     userId: "@rayne:sub-etha.test",
@@ -103,6 +105,7 @@ function createPreviewService(): MatrixService {
     getSnapshot: () => snapshot,
     selectRoom: (roomId: string) => update({ activeRoomId: roomId }),
     clearError: () => update({ error: null }),
+    markRoomRead: async () => undefined,
     paginate: async () => undefined,
     toggleReaction: async (eventId: string, key: string) => {
       update({ timeline: snapshot.timeline.map((item) => item.id === eventId ? { ...item, reactions: [...item.reactions.filter((reaction) => reaction.key !== key), { key, count: (item.reactions.find((reaction) => reaction.key === key)?.count ?? 0) + 1, mine: true }] } : item) });

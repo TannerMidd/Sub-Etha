@@ -4,6 +4,8 @@ export interface MinimalMatrixNotification {
   counts?: { unread?: number; missed_calls?: number };
 }
 
+export type PushNotificationKind = "matrix" | "test";
+
 export function validPushKey(pushKey: unknown): pushKey is string {
   return typeof pushKey === "string" && /^[A-Za-z0-9_-]{40,128}$/.test(pushKey);
 }
@@ -22,8 +24,9 @@ export function validPushEndpoint(raw: unknown): raw is string {
   }
 }
 
-export function genericNotificationPayload(notification: MinimalMatrixNotification): string {
+export function genericNotificationPayload(notification: MinimalMatrixNotification, kind: PushNotificationKind = "matrix"): string {
   return JSON.stringify({
+    kind,
     roomId: notification.room_id ?? null,
     eventId: notification.event_id ?? null,
     unread: Number.isFinite(notification.counts?.unread) ? Math.max(0, Number(notification.counts?.unread)) : 0,

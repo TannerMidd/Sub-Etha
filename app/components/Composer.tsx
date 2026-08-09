@@ -1,6 +1,6 @@
 "use client";
 
-import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { CornerUpLeft, FileText, FileUp, ImageIcon, LoaderCircle, Pencil, Send, SmilePlus, X } from "lucide-react";
 import type { MatrixService } from "@/lib/matrix/client";
 import { firstImageFile, insertAtSelection, normalizeMediaFile } from "@/lib/matrix/media";
@@ -44,6 +44,34 @@ export function Composer({
   const trimmedBody = body.trim();
   const unchangedEdit = Boolean(editing && trimmedBody === editing.body.trim());
   const canSend = Boolean(attachment || trimmedBody) && !unchangedEdit && !sending;
+
+  const syncTextareaHeight = useCallback(() => {
+    const input = textarea.current;
+    if (!input) {
+      return;
+    }
+    const scrollTop = input.scrollTop;
+    const caretAtEnd = document.activeElement === input
+      && input.selectionStart === input.value.length
+      && input.selectionEnd === input.value.length;
+    input.style.height = "auto";
+    input.style.overflowY = "hidden";
+    input.style.height = `${input.scrollHeight}px`;
+    const overflowing = input.scrollHeight > input.clientHeight;
+    input.style.overflowY = overflowing ? "auto" : "hidden";
+    if (overflowing) {
+      input.scrollTop = caretAtEnd ? input.scrollHeight : scrollTop;
+    }
+  }, []);
+
+  useLayoutEffect(() => {
+    syncTextareaHeight();
+  }, [body, syncTextareaHeight]);
+
+  useEffect(() => {
+    window.addEventListener("resize", syncTextareaHeight);
+    return () => window.removeEventListener("resize", syncTextareaHeight);
+  }, [syncTextareaHeight]);
 
   useEffect(() => {
     if (!editing) return;
