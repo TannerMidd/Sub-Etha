@@ -5756,10 +5756,6 @@ textarea::placeholder {
     padding-left: 16px;
 }
 
-.timeline > div > div > div {
-    padding-top: 0 !important;
-}
-
 .typing-line {
     padding-inline: 28px;
 }
@@ -6322,15 +6318,6 @@ textarea::placeholder {
 
     .message-actions-toggle {
         display: none !important;
-    }
-
-    .timeline > div > div > div:has(> .history-loader) {
-        display: none;
-    }
-
-    .timeline > div > div > div:last-child {
-        margin-top: 23px !important;
-        transform: translateY(-8px);
     }
 
     .timeline-scroll-seek {
