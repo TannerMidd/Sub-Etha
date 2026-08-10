@@ -877,6 +877,7 @@ export function ChatShell({
                                             firstItemIndex={snapshot.timelineStartIndex}
                                             service={service}
                                             loadingHistory={snapshot.loadingHistory}
+                                            hasMoreHistory={snapshot.hasMoreHistory}
                                             initializing={snapshot.connection === "starting"}
                                             unreadCount={activeRoom.unread}
                                             onReply={(item) => {

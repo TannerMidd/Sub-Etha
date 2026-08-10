@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { MatrixService } from "../lib/matrix/client";
-import type { PersistedMatrixSession } from "../lib/matrix/types";
+import type { MatrixSnapshot, PersistedMatrixSession, TimelineItem } from "../lib/matrix/types";
 
 const SESSION: PersistedMatrixSession = {
     accessToken: "token",
@@ -11,6 +11,70 @@ const SESSION: PersistedMatrixSession = {
     deviceId: "DEVICE",
     userId: "@arthur:matrix.example",
 };
+
+function timelineItem(id: string): TimelineItem {
+    return {
+        id,
+        type: "message",
+        senderId: "@ford:matrix.example",
+        senderName: "Ford",
+        senderAvatarMxcUrl: null,
+        body: id,
+        timestamp: Date.now(),
+        own: false,
+        edited: false,
+        redacted: false,
+        encrypted: false,
+        decryptionState: "ready",
+        reactions: [],
+        sendingStatus: null,
+        readBy: [],
+        event: timelineEvent(id) as unknown as TimelineItem["event"],
+    };
+}
+
+function timelineEvent(id: string) {
+    return {
+        getType: () => "m.room.message",
+        getRelation: () => undefined,
+        getSender: () => "@ford:matrix.example",
+        replacingEvent: () => undefined,
+        getContent: () => ({ msgtype: "m.text", body: id }),
+        getId: () => id,
+        getTs: () => Date.now(),
+        isDecryptionFailure: () => false,
+        isEncrypted: () => false,
+        isBeingDecrypted: () => false,
+        status: null,
+    };
+}
+
+function timelineRoom(roomId: string, token: string | null, ids: string[]) {
+    const events = ids.map(timelineEvent);
+
+    return {
+        roomId,
+        oldState: { paginationToken: token },
+        events,
+        getLiveTimeline: () => ({ getEvents: () => events }),
+        getMember: () => ({ name: "Ford", getMxcAvatarUrl: () => null }),
+        getMembers: () => [],
+        hasUserReadEvent: () => false,
+        decryptAllEvents: async () => undefined,
+    };
+}
+
+function paginationInternals(service: MatrixService) {
+    return service as unknown as {
+        client: {
+            getRoom: (roomId: string) => ReturnType<typeof timelineRoom> | null;
+            getUserId: () => string;
+            scrollback: (room: ReturnType<typeof timelineRoom>, limit: number) => Promise<void>;
+        };
+        snapshot: MatrixSnapshot;
+        stopped: boolean;
+    };
+}
 
 test("room read markers coalesce duplicates and advance to the newest event", async () => {
     const service = new MatrixService(SESSION);
@@ -120,4 +184,158 @@ test("back-pagination timeline events stay hidden until pagination emits its ato
 
     internals.handleTimeline({}, { roomId: "!other:example" }, true);
     assert.deepEqual(refreshes, [false]);
+});
+
+test("pagination prepends one page, preserves the anchor, and stops at history exhaustion", async () => {
+    const service = new MatrixService(SESSION);
+    const room = timelineRoom("!room:example", "page-1", ["$current-1", "$current-2"]);
+    const internals = paginationInternals(service);
+    let calls = 0;
+    let releaseScrollback: () => void = () => undefined;
+
+    internals.client = {
+        getRoom: (roomId) => (roomId === room.roomId ? room : null),
+        getUserId: () => SESSION.userId,
+        scrollback: async (target, limit) => {
+            calls += 1;
+            assert.equal(limit, 40);
+            await new Promise<void>((resolve) => {
+                releaseScrollback = resolve;
+            });
+            target.events.unshift(timelineEvent("$older-1"), timelineEvent("$older-2"));
+            target.oldState.paginationToken = null;
+        },
+    };
+    internals.snapshot.activeRoomId = room.roomId;
+    internals.snapshot.timeline = [timelineItem("$current-1"), timelineItem("$current-2")];
+    internals.snapshot.hasMoreHistory = true;
+    internals.stopped = true;
+
+    const firstRequest = service.paginate();
+    const duplicateRequest = service.paginate();
+
+    assert.equal(calls, 1);
+    assert.equal(service.getSnapshot().loadingHistory, true);
+    await duplicateRequest;
+    releaseScrollback();
+    await firstRequest;
+
+    const snapshot = service.getSnapshot();
+
+    assert.deepEqual(
+        snapshot.timeline.map((item) => item.id),
+        ["$older-1", "$older-2", "$current-1", "$current-2"],
+    );
+    assert.equal(snapshot.timelineStartIndex, 1_000_000 - 2);
+    assert.equal(snapshot.loadingHistory, false);
+    assert.equal(snapshot.hasMoreHistory, false);
+
+    await service.paginate();
+    assert.equal(calls, 1);
+});
+
+test("failed pagination remains retryable", async () => {
+    const service = new MatrixService(SESSION);
+    const room = timelineRoom("!room:example", "page-1", ["$current"]);
+    const internals = paginationInternals(service);
+    let calls = 0;
+
+    internals.client = {
+        getRoom: () => room,
+        getUserId: () => SESSION.userId,
+        scrollback: async (target) => {
+            calls += 1;
+
+            if (calls === 1) {
+                throw new Error("Receiver unavailable");
+            }
+
+            target.events.unshift(timelineEvent("$older"));
+            target.oldState.paginationToken = null;
+        },
+    };
+    internals.snapshot.activeRoomId = room.roomId;
+    internals.snapshot.timeline = [timelineItem("$current")];
+    internals.snapshot.hasMoreHistory = true;
+    internals.stopped = true;
+
+    await service.paginate();
+    assert.equal(service.getSnapshot().loadingHistory, false);
+    assert.equal(service.getSnapshot().hasMoreHistory, true);
+    assert.match(service.getSnapshot().error ?? "", /Receiver unavailable/);
+
+    await service.paginate();
+    assert.equal(calls, 2);
+    assert.equal(service.getSnapshot().hasMoreHistory, false);
+    assert.equal(service.getSnapshot().error, null);
+    assert.deepEqual(
+        service.getSnapshot().timeline.map((item) => item.id),
+        ["$older", "$current"],
+    );
+});
+
+test("a stale pagination request cannot overwrite a newly selected room", async () => {
+    const service = new MatrixService(SESSION);
+    const oldRoom = timelineRoom("!old:example", "old-page", ["$old-current"]);
+    const newRoom = timelineRoom("!new:example", "new-page", ["$new-current"]);
+    const rooms = new Map([
+        [oldRoom.roomId, oldRoom],
+        [newRoom.roomId, newRoom],
+    ]);
+    const internals = paginationInternals(service);
+    const releases = new Map<string, () => void>();
+    const originalDocument = globalThis.document;
+
+    internals.client = {
+        getRoom: (roomId) => rooms.get(roomId) ?? null,
+        getUserId: () => SESSION.userId,
+        scrollback: async (target) => {
+            await new Promise<void>((resolve) => releases.set(target.roomId, resolve));
+            target.events.unshift(timelineEvent(`${target.roomId}-older`));
+            target.oldState.paginationToken = null;
+        },
+    };
+    internals.snapshot.activeRoomId = oldRoom.roomId;
+    internals.snapshot.timeline = [timelineItem("$old-current")];
+    internals.snapshot.hasMoreHistory = true;
+    internals.stopped = true;
+
+    Object.defineProperty(globalThis, "document", {
+        configurable: true,
+        value: { visibilityState: "hidden" },
+    });
+
+    try {
+        const oldRequest = service.paginate();
+
+        service.selectRoom(newRoom.roomId);
+        const newRequest = service.paginate();
+
+        releases.get(oldRoom.roomId)?.();
+        await oldRequest;
+        assert.equal(service.getSnapshot().activeRoomId, newRoom.roomId);
+        assert.equal(service.getSnapshot().loadingHistory, true);
+        assert.deepEqual(
+            service.getSnapshot().timeline.map((item) => item.id),
+            ["$new-current"],
+        );
+
+        releases.get(newRoom.roomId)?.();
+        await newRequest;
+        assert.deepEqual(
+            service.getSnapshot().timeline.map((item) => item.id),
+            [`${newRoom.roomId}-older`, "$new-current"],
+        );
+        assert.equal(service.getSnapshot().loadingHistory, false);
+        assert.equal(service.getSnapshot().hasMoreHistory, false);
+    } finally {
+        if (originalDocument === undefined) {
+            Reflect.deleteProperty(globalThis, "document");
+        } else {
+            Object.defineProperty(globalThis, "document", {
+                configurable: true,
+                value: originalDocument,
+            });
+        }
+    }
 });

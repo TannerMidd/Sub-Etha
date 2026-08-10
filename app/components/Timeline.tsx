@@ -64,18 +64,37 @@ const TIMELINE_SCROLL_SEEK = {
     enter: (velocity: number) => Math.abs(velocity) > 200,
     exit: (velocity: number) => Math.abs(velocity) < 30,
 };
+const HISTORY_ANCHOR_MIN_CORRECTION_MS = 400;
+const HISTORY_ANCHOR_MAX_CORRECTION_MS = 1_000;
+const HISTORY_ANCHOR_STABLE_FRAMES = 8;
 
 interface TimelineVirtuosoContext {
     loadingHistory: boolean;
-    service: MatrixService;
+    hasMoreHistory: boolean;
+    requestEarlierHistory: () => void;
+}
+
+interface TimelineHistoryAnchor {
+    id: string;
+    index: number;
+    target: "event" | "item";
+    top: number;
 }
 
 function TimelineHistoryHeader({ context }: { context: TimelineVirtuosoContext }) {
+    if (!context.hasMoreHistory) {
+        return (
+            <div className="history-loader" role="status" aria-live="polite">
+                <span className="history-loader__status">Beginning of recorded transmissions</span>
+            </div>
+        );
+    }
+
     return (
-        <div className="history-loader">
+        <div className="history-loader" role="status" aria-live="polite">
             <button
                 type="button"
-                onClick={() => void context.service.paginate()}
+                onClick={context.requestEarlierHistory}
                 disabled={context.loadingHistory}
             >
                 {context.loadingHistory ? (
@@ -83,7 +102,9 @@ function TimelineHistoryHeader({ context }: { context: TimelineVirtuosoContext }
                 ) : (
                     <RefreshCw aria-hidden="true" />
                 )}
-                {context.loadingHistory ? "Consulting earlier pages…" : "Load earlier messages"}
+                {context.loadingHistory
+                    ? "Consulting earlier transmissions…"
+                    : "Load earlier transmissions"}
             </button>
         </div>
     );
@@ -1296,6 +1317,7 @@ export function Timeline({
     firstItemIndex,
     service,
     loadingHistory,
+    hasMoreHistory,
     initializing,
     unreadCount,
     onReply,
@@ -1305,6 +1327,7 @@ export function Timeline({
     firstItemIndex: number;
     service: MatrixService;
     loadingHistory: boolean;
+    hasMoreHistory: boolean;
     initializing: boolean;
     unreadCount: number;
     onReply: (item: TimelineItem) => void;
@@ -1320,6 +1343,10 @@ export function Timeline({
     const previousItems = useRef<Array<{ id: string; own: boolean }>>([]);
     const previousFirstItemIndex = useRef(firstItemIndex);
     const lastScrollMetrics = useRef({ top: 0, height: 0 });
+    const historyAnchor = useRef<TimelineHistoryAnchor | null>(null);
+    const historyAnchorCaptureFrame = useRef<number | null>(null);
+    const historyAnchorFrame = useRef<number | null>(null);
+    const historyPaginationSettling = useRef(false);
     const touchY = useRef<number | null>(null);
     const pointerGesture = useRef<{ id: number; y: number } | null>(null);
     const bottomFrame = useRef<number | null>(null);
@@ -1330,7 +1357,159 @@ export function Timeline({
         () => items.filter((item) => item.type === "image" && item.media && !item.redacted),
         [items],
     );
-    const virtuosoContext = useMemo(() => ({ loadingHistory, service }), [loadingHistory, service]);
+    const firstTimelineItemId = items[0]?.id;
+    const loadEarlierHistory = useCallback(() => {
+        if (!hasMoreHistory || loadingHistory || historyPaginationSettling.current) {
+            return;
+        }
+
+        const anchorElement = firstTimelineItemId
+            ? [...(scroller.current?.querySelectorAll<HTMLElement>("[data-event-id]") ?? [])].find(
+                  (element) => element.dataset.eventId === firstTimelineItemId,
+              )
+            : null;
+        const itemElement = scroller.current?.querySelector<HTMLElement>(
+            `[data-index="${firstItemIndex}"]`,
+        );
+
+        historyAnchor.current =
+            firstTimelineItemId && anchorElement
+                ? {
+                      id: firstTimelineItemId,
+                      index: firstItemIndex,
+                      target: "event",
+                      top: anchorElement.getBoundingClientRect().top,
+                  }
+                : firstTimelineItemId && itemElement
+                  ? {
+                        id: firstTimelineItemId,
+                        index: firstItemIndex,
+                        target: "item",
+                        top: itemElement.getBoundingClientRect().top,
+                    }
+                  : null;
+        historyPaginationSettling.current = true;
+        const requestedFirstItemIndex = firstItemIndex;
+
+        const captureRenderedAnchor = () => {
+            historyAnchorCaptureFrame.current = null;
+
+            if (
+                !historyPaginationSettling.current ||
+                previousFirstItemIndex.current !== requestedFirstItemIndex
+            ) {
+                return;
+            }
+
+            const renderedAnchor = firstTimelineItemId
+                ? [
+                      ...(scroller.current?.querySelectorAll<HTMLElement>("[data-event-id]") ?? []),
+                  ].find((element) => element.dataset.eventId === firstTimelineItemId)
+                : null;
+
+            if (renderedAnchor && firstTimelineItemId) {
+                historyAnchor.current = {
+                    id: firstTimelineItemId,
+                    index: requestedFirstItemIndex,
+                    target: "event",
+                    top: renderedAnchor.getBoundingClientRect().top,
+                };
+            }
+
+            historyAnchorCaptureFrame.current = window.requestAnimationFrame(captureRenderedAnchor);
+        };
+
+        historyAnchorCaptureFrame.current = window.requestAnimationFrame(captureRenderedAnchor);
+
+        void service.paginate().finally(() => {
+            window.requestAnimationFrame(() => {
+                if (
+                    historyAnchorFrame.current === null &&
+                    previousFirstItemIndex.current === requestedFirstItemIndex
+                ) {
+                    if (historyAnchorCaptureFrame.current !== null) {
+                        window.cancelAnimationFrame(historyAnchorCaptureFrame.current);
+                        historyAnchorCaptureFrame.current = null;
+                    }
+
+                    historyAnchor.current = null;
+                    historyPaginationSettling.current = false;
+                }
+            });
+        });
+    }, [firstItemIndex, firstTimelineItemId, hasMoreHistory, loadingHistory, service]);
+
+    const virtuosoContext = useMemo(
+        () => ({ loadingHistory, hasMoreHistory, requestEarlierHistory: loadEarlierHistory }),
+        [hasMoreHistory, loadEarlierHistory, loadingHistory],
+    );
+
+    const restoreHistoryAnchor = useCallback(() => {
+        if (historyAnchorCaptureFrame.current !== null) {
+            window.cancelAnimationFrame(historyAnchorCaptureFrame.current);
+            historyAnchorCaptureFrame.current = null;
+        }
+
+        if (historyAnchorFrame.current !== null) {
+            window.cancelAnimationFrame(historyAnchorFrame.current);
+        }
+
+        const startedAt = window.performance.now();
+        let stableFrames = 0;
+
+        const restore = () => {
+            historyAnchorFrame.current = null;
+            const element = scroller.current;
+            const anchor = historyAnchor.current;
+
+            if (!element || !anchor) {
+                historyAnchor.current = null;
+                historyPaginationSettling.current = false;
+
+                return;
+            }
+
+            const anchorElement =
+                anchor.target === "event"
+                    ? [...element.querySelectorAll<HTMLElement>("[data-event-id]")].find(
+                          (candidate) => candidate.dataset.eventId === anchor.id,
+                      )
+                    : element.querySelector<HTMLElement>(`[data-index="${anchor.index}"]`);
+
+            if (anchorElement) {
+                const delta = anchorElement.getBoundingClientRect().top - anchor.top;
+
+                if (Math.abs(delta) > 0.5) {
+                    programmaticScroll.current = true;
+                    element.scrollTop += delta;
+                    stableFrames = 0;
+                } else {
+                    stableFrames += 1;
+                }
+            } else {
+                stableFrames = 0;
+            }
+
+            const elapsed = window.performance.now() - startedAt;
+            const needsMoreTime = elapsed < HISTORY_ANCHOR_MIN_CORRECTION_MS;
+            const needsStableFrames = stableFrames < HISTORY_ANCHOR_STABLE_FRAMES;
+
+            if (
+                elapsed < HISTORY_ANCHOR_MAX_CORRECTION_MS &&
+                (needsMoreTime || needsStableFrames)
+            ) {
+                historyAnchorFrame.current = window.requestAnimationFrame(restore);
+
+                return;
+            }
+
+            historyAnchor.current = null;
+            historyPaginationSettling.current = false;
+            programmaticScroll.current = false;
+        };
+
+        historyAnchorFrame.current = window.requestAnimationFrame(restore);
+    }, []);
 
     const closeLightbox = () => {
         setLightboxId(null);
@@ -1511,15 +1690,38 @@ export function Timeline({
 
     useLayoutEffect(() => {
         const nextItems = items.map((item) => ({ id: item.id, own: item.own }));
+        const previousStartIndex = previousFirstItemIndex.current;
         const change = classifyTimelineChange(
             previousItems.current,
             nextItems,
-            previousFirstItemIndex.current,
+            previousStartIndex,
             firstItemIndex,
         );
 
         previousItems.current = nextItems;
         previousFirstItemIndex.current = firstItemIndex;
+
+        if (firstItemIndex < previousStartIndex) {
+            if (historyAnchor.current) {
+                restoreHistoryAnchor();
+            } else {
+                historyPaginationSettling.current = false;
+            }
+        } else if (change.kind === "replace" && historyPaginationSettling.current) {
+            if (historyAnchorCaptureFrame.current !== null) {
+                window.cancelAnimationFrame(historyAnchorCaptureFrame.current);
+                historyAnchorCaptureFrame.current = null;
+            }
+
+            if (historyAnchorFrame.current !== null) {
+                window.cancelAnimationFrame(historyAnchorFrame.current);
+                historyAnchorFrame.current = null;
+            }
+
+            historyAnchor.current = null;
+            historyPaginationSettling.current = false;
+            programmaticScroll.current = false;
+        }
 
         if (change.kind === "initial") {
             attachedToBottom.current = true;
@@ -1538,7 +1740,7 @@ export function Timeline({
         }
 
         scheduleBottomPosition(force);
-    }, [firstItemIndex, items, scheduleBottomPosition]);
+    }, [firstItemIndex, items, restoreHistoryAnchor, scheduleBottomPosition]);
 
     useEffect(
         () => () => {
@@ -1551,6 +1753,19 @@ export function Timeline({
             if (programmaticResetFrame.current !== null) {
                 window.cancelAnimationFrame(programmaticResetFrame.current);
             }
+
+            if (historyAnchorFrame.current !== null) {
+                window.cancelAnimationFrame(historyAnchorFrame.current);
+            }
+
+            if (historyAnchorCaptureFrame.current !== null) {
+                window.cancelAnimationFrame(historyAnchorCaptureFrame.current);
+            }
+
+            historyAnchor.current = null;
+            historyAnchorCaptureFrame.current = null;
+            historyPaginationSettling.current = false;
+            programmaticScroll.current = false;
         },
         [],
     );
@@ -1606,7 +1821,14 @@ export function Timeline({
     }
 
     return (
-        <div className="timeline" aria-label="Room messages" aria-busy={loadingHistory}>
+        <div
+            className="timeline"
+            aria-label="Room messages"
+            aria-busy={loadingHistory}
+            data-first-item-index={firstItemIndex}
+            data-item-count={items.length}
+            data-has-more-history={hasMoreHistory}
+        >
             <Virtuoso
                 ref={virtuoso}
                 data={items}
@@ -1616,6 +1838,7 @@ export function Timeline({
                 defaultItemHeight={96}
                 computeItemKey={(_index, item) => item.id}
                 followOutput={false}
+                startReached={loadEarlierHistory}
                 atBottomStateChange={onAtBottomStateChange}
                 scrollerRef={setScroller}
                 totalListHeightChanged={onTotalListHeightChanged}

@@ -118,6 +118,7 @@ export interface MatrixSnapshot {
     timelineStartIndex: number;
     typingNames: string[];
     loadingHistory: boolean;
+    hasMoreHistory: boolean;
     error: string | null;
     userId: string;
     displayName: string;

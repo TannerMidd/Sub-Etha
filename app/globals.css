@@ -5631,7 +5631,34 @@ textarea::placeholder {
 }
 
 .history-loader {
-    display: none;
+    min-height: 56px;
+    display: grid;
+    place-items: center;
+    padding: 10px 28px;
+    color: var(--ink-soft);
+    font: 700 10px/1.2 var(--font-mono);
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+}
+
+.history-loader button,
+.history-loader__status {
+    min-height: 34px;
+}
+
+.history-loader button {
+    border-color: var(--line-strong);
+    border-radius: 0;
+    background: transparent;
+    color: var(--signal);
+    font: inherit;
+    letter-spacing: inherit;
+    text-transform: inherit;
+}
+
+.history-loader__status {
+    display: inline-flex;
+    align-items: center;
 }
 
 .day-divider {
@@ -5791,7 +5818,7 @@ textarea::placeholder {
 
 .composer textarea {
     min-height: 55px;
-    max-height: 55px;
+    max-height: 160px;
     padding: 15px 18px;
     color: var(--ink);
     font-family: var(--font-display);
@@ -6312,14 +6339,6 @@ textarea::placeholder {
         font-size: 11px;
     }
 
-    .message-actions {
-        display: none !important;
-    }
-
-    .message-actions-toggle {
-        display: none !important;
-    }
-
     .timeline-scroll-seek {
         grid-template-columns: 42px 32px minmax(0, 1fr);
         padding: 7px 14px 7px 20px;
@@ -6335,14 +6354,13 @@ textarea::placeholder {
 
     .composer-wrap {
         min-height: 47px;
-        flex: 0 0 47px;
+        flex: 0 0 auto;
         padding: 4px 9px 6px;
         border-top: 1px solid var(--line);
     }
 
     .composer {
         min-height: 37px;
-        height: 37px;
     }
 
     .composer > .icon-button {
@@ -6363,7 +6381,7 @@ textarea::placeholder {
 
     .composer textarea {
         min-height: 35px;
-        max-height: 35px;
+        max-height: 110px;
         padding: 8px 10px;
         font-size: 12px;
         line-height: 1.3;

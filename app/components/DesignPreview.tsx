@@ -260,6 +260,7 @@ function createPreviewService(): MatrixService {
         timelineStartIndex: INITIAL_TIMELINE_ITEM_INDEX,
         typingNames: uxPreview === "states" ? ["Sol"] : [],
         loadingHistory: false,
+        hasMoreHistory: timelineStressPreview,
         error: null,
         userId: "@rayne:sub-etha.test",
         displayName: "Rayne",
@@ -382,11 +383,20 @@ function createPreviewService(): MatrixService {
             };
         },
         getSnapshot: () => snapshot,
-        selectRoom: (roomId: string) => update({ activeRoomId: roomId }),
+        selectRoom: (roomId: string) =>
+            update({
+                activeRoomId: roomId,
+                hasMoreHistory: timelineStressPreview && roomId === "signal-watch",
+            }),
         clearError: () => update({ error: null }),
         markRoomRead: async () => undefined,
         paginate: async () => {
-            if (!timelineStressPreview || snapshot.loadingHistory || nextStressStart <= 0) {
+            if (
+                !timelineStressPreview ||
+                snapshot.loadingHistory ||
+                !snapshot.hasMoreHistory ||
+                nextStressStart <= 0
+            ) {
                 return;
             }
 
@@ -400,6 +410,7 @@ function createPreviewService(): MatrixService {
                 timeline: [...earlierTimeline, ...snapshot.timeline],
                 timelineStartIndex: snapshot.timelineStartIndex - earlierTimeline.length,
                 loadingHistory: false,
+                hasMoreHistory: nextStressStart > 0,
             });
         },
         toggleReaction: async (eventId: string, key: string) => {

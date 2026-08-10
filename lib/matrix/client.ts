@@ -84,6 +84,7 @@ function emptySnapshot(session: PersistedMatrixSession): MatrixSnapshot {
         timelineStartIndex: INITIAL_TIMELINE_ITEM_INDEX,
         typingNames: [],
         loadingHistory: false,
+        hasMoreHistory: false,
         error: null,
         userId: session.userId,
         displayName: session.userId,
@@ -223,6 +224,7 @@ export class MatrixService {
     private derivedRefreshFrame: number | null = null;
     private pendingTimelineRefresh = false;
     private paginatingRoomId: string | null = null;
+    private paginationRequestId = 0;
     private readMarkerTargets = new Map<string, { event: MatrixEvent; eventId: string }>();
     private readMarkerTasks = new Map<string, Promise<void>>();
     private lastReadEventIds = new Map<string, string>();
@@ -714,12 +716,21 @@ export class MatrixService {
             activeRoomId = null;
         }
 
+        const activeRoomChanged = activeRoomId !== this.snapshot.activeRoomId;
+
+        if (activeRoomChanged) {
+            this.paginationRequestId += 1;
+            this.paginatingRoomId = null;
+        }
+
         const room = activeRoomId ? client.getRoom(activeRoomId) : null;
         const shouldRefreshTimeline = includeTimeline && room?.roomId !== this.paginatingRoomId;
 
         this.emit({
             rooms,
             activeRoomId,
+            hasMoreHistory: Boolean(room && room.oldState.paginationToken !== null),
+            loadingHistory: activeRoomChanged ? false : this.snapshot.loadingHistory,
             timeline:
                 shouldRefreshTimeline && room
                     ? normalizeTimeline(room, client)
@@ -776,11 +787,14 @@ export class MatrixService {
         const client = this.requireClient();
         const room = roomId ? client.getRoom(roomId) : null;
 
+        this.paginationRequestId += 1;
+        this.paginatingRoomId = null;
         this.emit({
             activeRoomId: room?.roomId ?? null,
             timeline: room ? normalizeTimeline(room, client) : [],
             timelineStartIndex: INITIAL_TIMELINE_ITEM_INDEX,
             loadingHistory: false,
+            hasMoreHistory: Boolean(room && room.oldState.paginationToken !== null),
             error: null,
         });
         this.refreshTyping();
@@ -804,24 +818,21 @@ export class MatrixService {
         const client = this.requireClient();
         const room = this.snapshot.activeRoomId ? client.getRoom(this.snapshot.activeRoomId) : null;
 
-        if (!room || this.snapshot.loadingHistory) {
+        if (!room || this.snapshot.loadingHistory || !this.snapshot.hasMoreHistory) {
             return;
         }
 
         const roomId = room.roomId;
+        const requestId = ++this.paginationRequestId;
         const previousFirstItemId = this.snapshot.timeline[0]?.id ?? null;
 
         this.paginatingRoomId = roomId;
-        this.emit({ loadingHistory: true });
+        this.emit({ loadingHistory: true, error: null });
 
         try {
             await client.scrollback(room, 40);
 
-            if (roomId !== this.snapshot.activeRoomId) {
-                if (this.snapshot.loadingHistory) {
-                    this.emit({ loadingHistory: false });
-                }
-
+            if (requestId !== this.paginationRequestId || roomId !== this.snapshot.activeRoomId) {
                 return;
             }
 
@@ -835,14 +846,15 @@ export class MatrixService {
                     timeline.map((item) => item.id),
                 ),
                 loadingHistory: false,
+                hasMoreHistory: room.oldState.paginationToken !== null,
             });
             void this.decryptRoomTimeline(room);
         } catch (error) {
-            if (roomId === this.snapshot.activeRoomId) {
+            if (requestId === this.paginationRequestId && roomId === this.snapshot.activeRoomId) {
                 this.emit({ loadingHistory: false, error: humanizeMatrixError(error) });
             }
         } finally {
-            if (this.paginatingRoomId === roomId) {
+            if (requestId === this.paginationRequestId && this.paginatingRoomId === roomId) {
                 this.paginatingRoomId = null;
             }
         }
@@ -1875,12 +1887,16 @@ export class MatrixService {
         this.releaseVerificationContext();
         this.releaseLock?.();
         this.releaseLock = null;
+        this.paginationRequestId += 1;
+        this.paginatingRoomId = null;
         this.emit({
             connection: "idle",
             rooms: [],
             timeline: [],
             timelineStartIndex: INITIAL_TIMELINE_ITEM_INDEX,
             activeRoomId: null,
+            loadingHistory: false,
+            hasMoreHistory: false,
         });
     }
 
