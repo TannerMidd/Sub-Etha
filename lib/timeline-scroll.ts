@@ -56,6 +56,7 @@ export function classifyTimelineChange(
 
     if (sameIdsAtOffset(previous, next, 0)) {
         const appended = next.slice(previous.length);
+
         if (appended.length > 0) {
             return { kind: "append", appendedOwnItem: appended.some((item) => item.own) };
         }

@@ -1,10 +1,10 @@
 {
-  "$schema": "https://openapi.vercel.sh/vercel.json",
-  "buildCommand": "npm run build",
-  "rewrites": [
-    {
-      "source": "/_matrix/push/v1/notify",
-      "destination": "/api/matrix-push-notify"
-    }
-  ]
+    "$schema": "https://openapi.vercel.sh/vercel.json",
+    "buildCommand": "npm run build",
+    "rewrites": [
+        {
+            "source": "/_matrix/push/v1/notify",
+            "destination": "/api/matrix-push-notify"
+        }
+    ]
 }

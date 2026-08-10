@@ -13,6 +13,7 @@ export function containImageSize(image: ViewerSize, viewport: ViewerSize): Viewe
     }
 
     const scale = Math.min(1, viewport.width / image.width, viewport.height / image.height);
+
     return {
         width: image.width * scale,
         height: image.height * scale,
@@ -24,7 +25,7 @@ export function clampViewerZoom(zoom: number): number {
 }
 
 export function stepViewerZoom(zoom: number, direction: -1 | 1): number {
-    return clampViewerZoom(zoom + (VIEWER_ZOOM_STEP * direction));
+    return clampViewerZoom(zoom + VIEWER_ZOOM_STEP * direction);
 }
 
 export function preserveScrollCenter(
@@ -37,9 +38,11 @@ export function preserveScrollCenter(
         return 0;
     }
 
-    const previousCenter = previousContentLength <= viewportLength
-        ? 0.5
-        : (scrollOffset + (viewportLength / 2)) / previousContentLength;
-    const nextOffset = (previousCenter * nextContentLength) - (viewportLength / 2);
+    const previousCenter =
+        previousContentLength <= viewportLength
+            ? 0.5
+            : (scrollOffset + viewportLength / 2) / previousContentLength;
+    const nextOffset = previousCenter * nextContentLength - viewportLength / 2;
+
     return Math.min(nextContentLength - viewportLength, Math.max(0, nextOffset));
 }

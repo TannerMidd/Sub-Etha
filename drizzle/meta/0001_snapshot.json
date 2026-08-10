@@ -1,382 +1,379 @@
 {
-  "id": "40d70c77-d8b8-4902-84ec-d4f5dcd9c4d8",
-  "prevId": "b15f8072-d92d-4820-b1bc-497ea3f2e5d7",
-  "version": "7",
-  "dialect": "postgresql",
-  "tables": {
-    "public.push_deliveries": {
-      "name": "push_deliveries",
-      "schema": "",
-      "columns": {
-        "push_key_hash": {
-          "name": "push_key_hash",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
+    "id": "40d70c77-d8b8-4902-84ec-d4f5dcd9c4d8",
+    "prevId": "b15f8072-d92d-4820-b1bc-497ea3f2e5d7",
+    "version": "7",
+    "dialect": "postgresql",
+    "tables": {
+        "public.push_deliveries": {
+            "name": "push_deliveries",
+            "schema": "",
+            "columns": {
+                "push_key_hash": {
+                    "name": "push_key_hash",
+                    "type": "text",
+                    "primaryKey": false,
+                    "notNull": true
+                },
+                "event_id": {
+                    "name": "event_id",
+                    "type": "text",
+                    "primaryKey": false,
+                    "notNull": true
+                },
+                "status": {
+                    "name": "status",
+                    "type": "text",
+                    "primaryKey": false,
+                    "notNull": true
+                },
+                "updated_at": {
+                    "name": "updated_at",
+                    "type": "bigint",
+                    "primaryKey": false,
+                    "notNull": true
+                }
+            },
+            "indexes": {
+                "idx_push_deliveries_updated_at": {
+                    "name": "idx_push_deliveries_updated_at",
+                    "columns": [
+                        {
+                            "expression": "updated_at",
+                            "isExpression": false,
+                            "asc": true,
+                            "nulls": "last"
+                        }
+                    ],
+                    "isUnique": false,
+                    "concurrently": false,
+                    "method": "btree",
+                    "with": {}
+                }
+            },
+            "foreignKeys": {},
+            "compositePrimaryKeys": {
+                "push_deliveries_push_key_hash_event_id_pk": {
+                    "name": "push_deliveries_push_key_hash_event_id_pk",
+                    "columns": ["push_key_hash", "event_id"]
+                }
+            },
+            "uniqueConstraints": {},
+            "policies": {},
+            "checkConstraints": {},
+            "isRLSEnabled": false
         },
-        "event_id": {
-          "name": "event_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
+        "public.push_gateway_state": {
+            "name": "push_gateway_state",
+            "schema": "",
+            "columns": {
+                "id": {
+                    "name": "id",
+                    "type": "integer",
+                    "primaryKey": true,
+                    "notNull": true
+                },
+                "subscription_count": {
+                    "name": "subscription_count",
+                    "type": "bigint",
+                    "primaryKey": false,
+                    "notNull": true,
+                    "default": 0
+                }
+            },
+            "indexes": {},
+            "foreignKeys": {},
+            "compositePrimaryKeys": {},
+            "uniqueConstraints": {},
+            "policies": {},
+            "checkConstraints": {},
+            "isRLSEnabled": false
         },
-        "status": {
-          "name": "status",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
+        "public.push_global_rate_budgets": {
+            "name": "push_global_rate_budgets",
+            "schema": "",
+            "columns": {
+                "name": {
+                    "name": "name",
+                    "type": "text",
+                    "primaryKey": true,
+                    "notNull": true
+                },
+                "window_start": {
+                    "name": "window_start",
+                    "type": "bigint",
+                    "primaryKey": false,
+                    "notNull": true,
+                    "default": 0
+                },
+                "request_count": {
+                    "name": "request_count",
+                    "type": "bigint",
+                    "primaryKey": false,
+                    "notNull": true,
+                    "default": 0
+                }
+            },
+            "indexes": {},
+            "foreignKeys": {},
+            "compositePrimaryKeys": {},
+            "uniqueConstraints": {},
+            "policies": {},
+            "checkConstraints": {},
+            "isRLSEnabled": false
         },
-        "updated_at": {
-          "name": "updated_at",
-          "type": "bigint",
-          "primaryKey": false,
-          "notNull": true
+        "public.push_pending_subscriptions": {
+            "name": "push_pending_subscriptions",
+            "schema": "",
+            "columns": {
+                "management_key_hash": {
+                    "name": "management_key_hash",
+                    "type": "text",
+                    "primaryKey": true,
+                    "notNull": true
+                },
+                "delivery_key_hash": {
+                    "name": "delivery_key_hash",
+                    "type": "text",
+                    "primaryKey": false,
+                    "notNull": true
+                },
+                "challenge_hash": {
+                    "name": "challenge_hash",
+                    "type": "text",
+                    "primaryKey": false,
+                    "notNull": true
+                },
+                "endpoint": {
+                    "name": "endpoint",
+                    "type": "text",
+                    "primaryKey": false,
+                    "notNull": true
+                },
+                "p256dh": {
+                    "name": "p256dh",
+                    "type": "text",
+                    "primaryKey": false,
+                    "notNull": true
+                },
+                "auth": {
+                    "name": "auth",
+                    "type": "text",
+                    "primaryKey": false,
+                    "notNull": true
+                },
+                "created_at": {
+                    "name": "created_at",
+                    "type": "bigint",
+                    "primaryKey": false,
+                    "notNull": true
+                },
+                "expires_at": {
+                    "name": "expires_at",
+                    "type": "bigint",
+                    "primaryKey": false,
+                    "notNull": true
+                }
+            },
+            "indexes": {
+                "uq_push_pending_delivery_key": {
+                    "name": "uq_push_pending_delivery_key",
+                    "columns": [
+                        {
+                            "expression": "delivery_key_hash",
+                            "isExpression": false,
+                            "asc": true,
+                            "nulls": "last"
+                        }
+                    ],
+                    "isUnique": true,
+                    "concurrently": false,
+                    "method": "btree",
+                    "with": {}
+                },
+                "uq_push_pending_challenge": {
+                    "name": "uq_push_pending_challenge",
+                    "columns": [
+                        {
+                            "expression": "challenge_hash",
+                            "isExpression": false,
+                            "asc": true,
+                            "nulls": "last"
+                        }
+                    ],
+                    "isUnique": true,
+                    "concurrently": false,
+                    "method": "btree",
+                    "with": {}
+                },
+                "uq_push_pending_endpoint": {
+                    "name": "uq_push_pending_endpoint",
+                    "columns": [
+                        {
+                            "expression": "endpoint",
+                            "isExpression": false,
+                            "asc": true,
+                            "nulls": "last"
+                        }
+                    ],
+                    "isUnique": true,
+                    "concurrently": false,
+                    "method": "btree",
+                    "with": {}
+                },
+                "idx_push_pending_expires_at": {
+                    "name": "idx_push_pending_expires_at",
+                    "columns": [
+                        {
+                            "expression": "expires_at",
+                            "isExpression": false,
+                            "asc": true,
+                            "nulls": "last"
+                        }
+                    ],
+                    "isUnique": false,
+                    "concurrently": false,
+                    "method": "btree",
+                    "with": {}
+                }
+            },
+            "foreignKeys": {},
+            "compositePrimaryKeys": {},
+            "uniqueConstraints": {},
+            "policies": {},
+            "checkConstraints": {},
+            "isRLSEnabled": false
+        },
+        "public.push_subscriptions": {
+            "name": "push_subscriptions",
+            "schema": "",
+            "columns": {
+                "push_key_hash": {
+                    "name": "push_key_hash",
+                    "type": "text",
+                    "primaryKey": true,
+                    "notNull": true
+                },
+                "management_key_hash": {
+                    "name": "management_key_hash",
+                    "type": "text",
+                    "primaryKey": false,
+                    "notNull": false
+                },
+                "endpoint": {
+                    "name": "endpoint",
+                    "type": "text",
+                    "primaryKey": false,
+                    "notNull": true
+                },
+                "p256dh": {
+                    "name": "p256dh",
+                    "type": "text",
+                    "primaryKey": false,
+                    "notNull": true
+                },
+                "auth": {
+                    "name": "auth",
+                    "type": "text",
+                    "primaryKey": false,
+                    "notNull": true
+                },
+                "created_at": {
+                    "name": "created_at",
+                    "type": "bigint",
+                    "primaryKey": false,
+                    "notNull": true
+                },
+                "updated_at": {
+                    "name": "updated_at",
+                    "type": "bigint",
+                    "primaryKey": false,
+                    "notNull": true
+                },
+                "last_success_at": {
+                    "name": "last_success_at",
+                    "type": "bigint",
+                    "primaryKey": false,
+                    "notNull": false
+                },
+                "rate_window_start": {
+                    "name": "rate_window_start",
+                    "type": "bigint",
+                    "primaryKey": false,
+                    "notNull": true,
+                    "default": 0
+                },
+                "rate_count": {
+                    "name": "rate_count",
+                    "type": "bigint",
+                    "primaryKey": false,
+                    "notNull": true,
+                    "default": 0
+                }
+            },
+            "indexes": {
+                "idx_push_subscriptions_updated_at": {
+                    "name": "idx_push_subscriptions_updated_at",
+                    "columns": [
+                        {
+                            "expression": "updated_at",
+                            "isExpression": false,
+                            "asc": true,
+                            "nulls": "last"
+                        }
+                    ],
+                    "isUnique": false,
+                    "concurrently": false,
+                    "method": "btree",
+                    "with": {}
+                },
+                "uq_push_subscriptions_endpoint": {
+                    "name": "uq_push_subscriptions_endpoint",
+                    "columns": [
+                        {
+                            "expression": "endpoint",
+                            "isExpression": false,
+                            "asc": true,
+                            "nulls": "last"
+                        }
+                    ],
+                    "isUnique": true,
+                    "concurrently": false,
+                    "method": "btree",
+                    "with": {}
+                },
+                "uq_push_subscriptions_management_key": {
+                    "name": "uq_push_subscriptions_management_key",
+                    "columns": [
+                        {
+                            "expression": "management_key_hash",
+                            "isExpression": false,
+                            "asc": true,
+                            "nulls": "last"
+                        }
+                    ],
+                    "isUnique": true,
+                    "concurrently": false,
+                    "method": "btree",
+                    "with": {}
+                }
+            },
+            "foreignKeys": {},
+            "compositePrimaryKeys": {},
+            "uniqueConstraints": {},
+            "policies": {},
+            "checkConstraints": {},
+            "isRLSEnabled": false
         }
-      },
-      "indexes": {
-        "idx_push_deliveries_updated_at": {
-          "name": "idx_push_deliveries_updated_at",
-          "columns": [
-            {
-              "expression": "updated_at",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
-      "foreignKeys": {},
-      "compositePrimaryKeys": {
-        "push_deliveries_push_key_hash_event_id_pk": {
-          "name": "push_deliveries_push_key_hash_event_id_pk",
-          "columns": [
-            "push_key_hash",
-            "event_id"
-          ]
-        }
-      },
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {},
-      "isRLSEnabled": false
     },
-    "public.push_gateway_state": {
-      "name": "push_gateway_state",
-      "schema": "",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "integer",
-          "primaryKey": true,
-          "notNull": true
-        },
-        "subscription_count": {
-          "name": "subscription_count",
-          "type": "bigint",
-          "primaryKey": false,
-          "notNull": true,
-          "default": 0
-        }
-      },
-      "indexes": {},
-      "foreignKeys": {},
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {},
-      "isRLSEnabled": false
-    },
-    "public.push_global_rate_budgets": {
-      "name": "push_global_rate_budgets",
-      "schema": "",
-      "columns": {
-        "name": {
-          "name": "name",
-          "type": "text",
-          "primaryKey": true,
-          "notNull": true
-        },
-        "window_start": {
-          "name": "window_start",
-          "type": "bigint",
-          "primaryKey": false,
-          "notNull": true,
-          "default": 0
-        },
-        "request_count": {
-          "name": "request_count",
-          "type": "bigint",
-          "primaryKey": false,
-          "notNull": true,
-          "default": 0
-        }
-      },
-      "indexes": {},
-      "foreignKeys": {},
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {},
-      "isRLSEnabled": false
-    },
-    "public.push_pending_subscriptions": {
-      "name": "push_pending_subscriptions",
-      "schema": "",
-      "columns": {
-        "management_key_hash": {
-          "name": "management_key_hash",
-          "type": "text",
-          "primaryKey": true,
-          "notNull": true
-        },
-        "delivery_key_hash": {
-          "name": "delivery_key_hash",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "challenge_hash": {
-          "name": "challenge_hash",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "endpoint": {
-          "name": "endpoint",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "p256dh": {
-          "name": "p256dh",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "auth": {
-          "name": "auth",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "bigint",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "expires_at": {
-          "name": "expires_at",
-          "type": "bigint",
-          "primaryKey": false,
-          "notNull": true
-        }
-      },
-      "indexes": {
-        "uq_push_pending_delivery_key": {
-          "name": "uq_push_pending_delivery_key",
-          "columns": [
-            {
-              "expression": "delivery_key_hash",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": true,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "uq_push_pending_challenge": {
-          "name": "uq_push_pending_challenge",
-          "columns": [
-            {
-              "expression": "challenge_hash",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": true,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "uq_push_pending_endpoint": {
-          "name": "uq_push_pending_endpoint",
-          "columns": [
-            {
-              "expression": "endpoint",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": true,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "idx_push_pending_expires_at": {
-          "name": "idx_push_pending_expires_at",
-          "columns": [
-            {
-              "expression": "expires_at",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
-      "foreignKeys": {},
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {},
-      "isRLSEnabled": false
-    },
-    "public.push_subscriptions": {
-      "name": "push_subscriptions",
-      "schema": "",
-      "columns": {
-        "push_key_hash": {
-          "name": "push_key_hash",
-          "type": "text",
-          "primaryKey": true,
-          "notNull": true
-        },
-        "management_key_hash": {
-          "name": "management_key_hash",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "endpoint": {
-          "name": "endpoint",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "p256dh": {
-          "name": "p256dh",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "auth": {
-          "name": "auth",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "bigint",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "updated_at": {
-          "name": "updated_at",
-          "type": "bigint",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "last_success_at": {
-          "name": "last_success_at",
-          "type": "bigint",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "rate_window_start": {
-          "name": "rate_window_start",
-          "type": "bigint",
-          "primaryKey": false,
-          "notNull": true,
-          "default": 0
-        },
-        "rate_count": {
-          "name": "rate_count",
-          "type": "bigint",
-          "primaryKey": false,
-          "notNull": true,
-          "default": 0
-        }
-      },
-      "indexes": {
-        "idx_push_subscriptions_updated_at": {
-          "name": "idx_push_subscriptions_updated_at",
-          "columns": [
-            {
-              "expression": "updated_at",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "uq_push_subscriptions_endpoint": {
-          "name": "uq_push_subscriptions_endpoint",
-          "columns": [
-            {
-              "expression": "endpoint",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": true,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "uq_push_subscriptions_management_key": {
-          "name": "uq_push_subscriptions_management_key",
-          "columns": [
-            {
-              "expression": "management_key_hash",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": true,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
-      "foreignKeys": {},
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {},
-      "isRLSEnabled": false
-    }
-  },
-  "enums": {},
-  "schemas": {},
-  "sequences": {},
-  "roles": {},
-  "policies": {},
-  "views": {},
-  "_meta": {
-    "columns": {},
+    "enums": {},
     "schemas": {},
-    "tables": {}
-  }
+    "sequences": {},
+    "roles": {},
+    "policies": {},
+    "views": {},
+    "_meta": {
+        "columns": {},
+        "schemas": {},
+        "tables": {}
+    }
 }

@@ -9,6 +9,7 @@ export function countPrependedTimelineItems(
     }
 
     const previousItemIndex = nextItemIds.indexOf(previousFirstItemId);
+
     return Math.max(0, previousItemIndex);
 }
 
@@ -18,5 +19,6 @@ export function timelineStartIndexAfterPrepend(
     nextItemIds: readonly string[],
 ): number {
     const prependedCount = countPrependedTimelineItems(previousFirstItemId, nextItemIds);
+
     return Math.max(0, currentStartIndex - prependedCount);
 }
