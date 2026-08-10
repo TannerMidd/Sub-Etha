@@ -231,7 +231,6 @@ export function ChatShell({
         service.getSnapshot,
     );
     const [roomFilter, setRoomFilter] = useState("");
-    const [roomFilterOpen, setRoomFilterOpen] = useState(false);
     const [roomScope, setRoomScope] = useState<RoomScope>("all");
     const deferredFilter = useDeferredValue(roomFilter);
     const [dialog, setDialog] = useState<OpenDialog>(null);
@@ -451,7 +450,6 @@ export function ChatShell({
         const shortcut = (event: KeyboardEvent) => {
             if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "k") {
                 event.preventDefault();
-                setRoomFilterOpen(true);
                 window.requestAnimationFrame(() => roomSearchInput.current?.focus());
             } else if (event.key === "Escape" && mobileRoomsOpen && isMobileLayout()) {
                 event.preventDefault();
@@ -645,30 +643,6 @@ export function ChatShell({
                                     {filteredRooms.length === 1 ? "entry" : "entries"}
                                 </small>
                             </span>
-                            <div>
-                                <button
-                                    type="button"
-                                    aria-label="Filter rooms"
-                                    title="Filter rooms"
-                                    onClick={() => {
-                                        setRoomFilterOpen((value) => !value);
-                                        window.requestAnimationFrame(() =>
-                                            roomSearchInput.current?.focus(),
-                                        );
-                                    }}
-                                >
-                                    <Search />
-                                </button>
-                                <button
-                                    className="new-room-button"
-                                    type="button"
-                                    aria-label="New conversation"
-                                    title="New conversation"
-                                    onClick={() => setDialog("new")}
-                                >
-                                    <MessageSquarePlus />
-                                </button>
-                            </div>
                         </div>
                         <nav className="room-scope-tabs" aria-label="Room views">
                             {(
@@ -693,22 +667,6 @@ export function ChatShell({
                                 </button>
                             ))}
                         </nav>
-                        {roomFilterOpen || roomFilter ? (
-                            <div className="room-filter">
-                                <Search aria-hidden="true" />
-                                <label className="sr-only" htmlFor="room-filter">
-                                    Filter rooms
-                                </label>
-                                <input
-                                    ref={roomSearchInput}
-                                    id="room-filter"
-                                    value={roomFilter}
-                                    onChange={(event) => setRoomFilter(event.target.value)}
-                                    placeholder="Find a room"
-                                />
-                                <kbd>⌘K</kbd>
-                            </div>
-                        ) : null}
                         <nav className="room-list" aria-label="Your Matrix rooms">
                             {roomGroup("Invitations", invitations)}
                             {roomGroup(
@@ -983,7 +941,7 @@ export function ChatShell({
                                     <div className="room-guide-diagram__plate">
                                         {/* eslint-disable-next-line @next/next/no-img-element -- Original receiver diagram supplied with the app. */}
                                         <img
-                                            src="/night-receiver-plate.png"
+                                            src="/night-receiver-linework.png"
                                             alt="Abstract receiver diagram with orbit and signal traces"
                                             loading="lazy"
                                             decoding="async"

@@ -1,0 +1,41 @@
+html,
+body {
+    width: 100%;
+    min-height: 100%;
+    overflow: hidden;
+    background: var(--paper);
+}
+
+body {
+    margin: 0;
+    color: var(--ink);
+    font-family: var(--font-ui);
+    font-size: 15px;
+    line-height: 1.5;
+    text-rendering: optimizeLegibility;
+    -webkit-font-smoothing: antialiased;
+}
+
+button,
+input,
+textarea,
+select {
+    font: inherit;
+}
+
+button,
+a {
+    -webkit-tap-highlight-color: transparent;
+}
+
+button,
+input,
+textarea,
+select {
+    color: inherit;
+}
+
+::selection {
+    background: color-mix(in srgb, var(--teal) 32%, transparent);
+    color: var(--ink);
+}

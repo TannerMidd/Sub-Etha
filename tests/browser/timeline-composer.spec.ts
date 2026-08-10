@@ -2,6 +2,8 @@ import { expect, test, type Locator, type Page } from "@playwright/test";
 
 const PREVIEW_URL = "/?design-preview#/room/signal-watch";
 const STRESS_PREVIEW_URL = "/?design-preview&ux-preview=timeline-stress#/room/signal-watch";
+const FAILURE_PREVIEW_URL =
+    "/?design-preview&ux-preview=timeline-stress-failure#/room/signal-watch";
 
 interface TextareaMetrics {
     height: number;
@@ -35,49 +37,165 @@ async function textareaMetrics(textarea: Locator): Promise<TextareaMetrics> {
     });
 }
 
+async function wheelTimeline(scroller: Locator, deltaY: number): Promise<void> {
+    const bounds = await scroller.boundingBox();
+
+    expect(bounds).not.toBeNull();
+    await scroller
+        .page()
+        .mouse.move(
+            (bounds?.x ?? 0) + (bounds?.width ?? 0) / 2,
+            (bounds?.y ?? 0) + (bounds?.height ?? 0) / 2,
+        );
+    await scroller.page().mouse.wheel(0, deltaY);
+    await scroller.page().evaluate(
+        () =>
+            new Promise<void>((resolve) => {
+                window.requestAnimationFrame(() => window.requestAnimationFrame(() => resolve()));
+            }),
+    );
+}
+
 async function scrollTimelineTo(scroller: Locator, position: "top" | "bottom"): Promise<void> {
-    await scroller.evaluate((element, nextPosition) => {
-        if (nextPosition === "top") {
-            window.dispatchEvent(new KeyboardEvent("keydown", { key: "Home" }));
-            element.dispatchEvent(new WheelEvent("wheel", { bubbles: true, deltaY: -100 }));
-            element.dispatchEvent(
-                new PointerEvent("pointerdown", {
-                    bubbles: true,
-                    clientY: 100,
-                    pointerId: 1,
-                    pointerType: "touch",
-                }),
-            );
-            element.dispatchEvent(
-                new PointerEvent("pointermove", {
-                    bubbles: true,
-                    clientY: 120,
-                    pointerId: 1,
-                    pointerType: "touch",
-                }),
-            );
-            element.dispatchEvent(
-                new PointerEvent("pointerup", {
-                    bubbles: true,
-                    clientY: 120,
-                    pointerId: 1,
-                    pointerType: "touch",
-                }),
-            );
+    const direction = position === "top" ? -1 : 1;
+
+    for (let attempt = 0; attempt < 60; attempt += 1) {
+        const reached = await scroller.evaluate((element, nextPosition) => {
+            const threshold = nextPosition === "top" ? 2 : 14;
+
+            return nextPosition === "top"
+                ? element.scrollTop <= threshold
+                : element.scrollHeight - element.clientHeight - element.scrollTop <= threshold;
+        }, position);
+
+        if (reached) {
+            return;
         }
 
-        element.scrollTop = nextPosition === "top" ? 0 : element.scrollHeight;
-        element.dispatchEvent(new Event("scroll", { bubbles: true }));
-    }, position);
+        await wheelTimeline(scroller, direction * 2_000);
+        await scroller.page().waitForTimeout(20);
+    }
+
+    await expect
+        .poll(() =>
+            scroller.evaluate((element, nextPosition) => {
+                const threshold = nextPosition === "top" ? 2 : 14;
+
+                return nextPosition === "top"
+                    ? element.scrollTop <= threshold
+                    : element.scrollHeight - element.clientHeight - element.scrollTop <= threshold;
+            }, position),
+        )
+        .toBe(true);
+}
+
+async function visibleEventAnchor(scroller: Locator): Promise<{ id: string; top: number }> {
+    return scroller.evaluate((element) => {
+        const scrollerBounds = element.getBoundingClientRect();
+        const candidates = [...element.querySelectorAll<HTMLElement>("[data-event-id]")]
+            .map((row) => {
+                const bounds = row.getBoundingClientRect();
+
+                return {
+                    id: row.dataset.eventId ?? "",
+                    top: bounds.top,
+                    bottom: bounds.bottom,
+                };
+            })
+            .filter(
+                (row) =>
+                    row.id && row.bottom > scrollerBounds.top && row.top < scrollerBounds.bottom,
+            )
+            .sort((left, right) => left.top - right.top);
+
+        if (!candidates[0]) {
+            throw new Error("No visible timeline event could be used as an anchor.");
+        }
+
+        return candidates[0];
+    });
+}
+
+async function expectNewestMessageClearOfComposer(page: Page, eventId: string): Promise<void> {
+    await expect
+        .poll(async () => {
+            const row = await page.locator(`[data-event-id="${eventId}"]`).boundingBox();
+            const scroller = await page.locator('[data-virtuoso-scroller="true"]').boundingBox();
+
+            if (!row || !scroller) {
+                return Number.POSITIVE_INFINITY;
+            }
+
+            return row.y + row.height - (scroller.y + scroller.height - 12);
+        })
+        .toBeLessThanOrEqual(0);
 }
 
 async function openMessageActions(row: Locator): Promise<void> {
+    await row.evaluate(
+        () =>
+            new Promise<void>((resolve) => {
+                window.requestAnimationFrame(() => window.requestAnimationFrame(() => resolve()));
+            }),
+    );
+
     const toggle = row.locator(".message-actions-toggle");
 
     if (await toggle.isVisible()) {
         await toggle.click();
+        await expect(row).toHaveClass(/is-actions-open/);
     } else {
         await row.hover();
+    }
+
+    const reply = row.getByRole("button", { name: "Reply" });
+
+    try {
+        await expect
+            .poll(() =>
+                reply.evaluate((button) => {
+                    const bounds = button.getBoundingClientRect();
+                    const hit = document.elementFromPoint(
+                        bounds.left + bounds.width / 2,
+                        bounds.top + bounds.height / 2,
+                    );
+
+                    return hit === button || button.contains(hit);
+                }),
+            )
+            .toBe(true);
+    } catch (cause) {
+        const diagnostics = await reply.evaluate((button) => {
+            const actions = button.closest<HTMLElement>(".message-actions");
+            const messageRow = button.closest<HTMLElement>(".message-row");
+            const bounds = button.getBoundingClientRect();
+            const hit = document.elementFromPoint(
+                bounds.left + bounds.width / 2,
+                bounds.top + bounds.height / 2,
+            );
+
+            return {
+                actionsBounds: actions?.getBoundingClientRect().toJSON(),
+                actionsStyle: actions
+                    ? {
+                          display: getComputedStyle(actions).display,
+                          opacity: getComputedStyle(actions).opacity,
+                          pointerEvents: getComputedStyle(actions).pointerEvents,
+                          position: getComputedStyle(actions).position,
+                          zIndex: getComputedStyle(actions).zIndex,
+                      }
+                    : null,
+                hit: hit?.outerHTML.slice(0, 180),
+                replyBounds: bounds.toJSON(),
+                rowBounds: messageRow?.getBoundingClientRect().toJSON(),
+                rowClass: messageRow?.className,
+                rowPaddingTop: messageRow ? getComputedStyle(messageRow).paddingTop : null,
+            };
+        });
+
+        throw new Error(`Message actions never became reachable: ${JSON.stringify(diagnostics)}`, {
+            cause,
+        });
     }
 }
 
@@ -102,10 +220,10 @@ test.describe("composer regression coverage", () => {
         context,
         page,
     }) => {
-        await context.grantPermissions(["clipboard-read", "clipboard-write"], {
-            origin: "http://localhost:4173",
-        });
         await openPreview(page);
+        await context.grantPermissions(["clipboard-read", "clipboard-write"], {
+            origin: new URL(page.url()).origin,
+        });
 
         const textarea = page.locator("#message-composer");
         const status = page.locator('footer[aria-label="Receiver status"]');
@@ -154,6 +272,34 @@ test.describe("composer regression coverage", () => {
         expect(cleared.overflowY).toBe("hidden");
     });
 
+    test("keeps the newest row clear while attached and preserves a detached anchor", async ({
+        page,
+    }) => {
+        await openPreview(page, STRESS_PREVIEW_URL);
+
+        const timeline = page.locator(".timeline");
+        const scroller = page.locator('[data-virtuoso-scroller="true"]');
+        const textarea = page.locator("#message-composer");
+
+        await expect(timeline).toHaveAttribute("data-item-count", "121");
+        await expect(timeline).toHaveAttribute("data-scroll-mode", "attached");
+        await expect(page.locator('[data-event-id="stress-remote-append"]')).toBeVisible();
+        await textarea.fill(
+            Array.from({ length: 8 }, (_, index) => `Line ${index + 1}`).join("\n"),
+        );
+        await expectNewestMessageClearOfComposer(page, "stress-remote-append");
+
+        await wheelTimeline(scroller, -1_800);
+        await expect(timeline).toHaveAttribute("data-scroll-mode", "detached");
+        const before = await visibleEventAnchor(scroller);
+
+        await textarea.fill("One line");
+        await page.waitForTimeout(300);
+        const after = await waitForMessageTop(page, before.id);
+
+        expect(Math.abs(after - before.top)).toBeLessThanOrEqual(2);
+    });
+
     test("reply, edit cancellation, and send preserve composer sizing", async ({ page }) => {
         await openPreview(page);
 
@@ -193,6 +339,134 @@ test.describe("composer regression coverage", () => {
     });
 });
 
+test("rapid real scrolling never swaps messages for seek skeletons or reattaches", async ({
+    page,
+}) => {
+    await openPreview(page, STRESS_PREVIEW_URL);
+
+    const timeline = page.locator(".timeline");
+    const scroller = page.locator('[data-virtuoso-scroller="true"]');
+
+    await page.evaluate(() => {
+        const root = document.querySelector(".timeline");
+
+        if (!root) {
+            throw new Error("Timeline root is missing.");
+        }
+
+        (window as typeof window & { __timelineSkeletonsSeen?: number }).__timelineSkeletonsSeen =
+            root.querySelectorAll(".timeline-scroll-seek").length;
+        new MutationObserver(() => {
+            const skeletons = root.querySelectorAll(".timeline-scroll-seek").length;
+            const testWindow = window as typeof window & { __timelineSkeletonsSeen?: number };
+
+            testWindow.__timelineSkeletonsSeen = Math.max(
+                testWindow.__timelineSkeletonsSeen ?? 0,
+                skeletons,
+            );
+        }).observe(root, { childList: true, subtree: true });
+    });
+
+    for (let pass = 0; pass < 8; pass += 1) {
+        await wheelTimeline(scroller, pass % 2 === 0 ? -2_400 : 1_800);
+    }
+
+    await expect(timeline).toHaveAttribute("data-scroll-mode", "detached");
+    expect(
+        await page.evaluate(
+            () =>
+                (window as typeof window & { __timelineSkeletonsSeen?: number })
+                    .__timelineSkeletonsSeen ?? 0,
+        ),
+    ).toBe(0);
+});
+
+test("twenty asynchronous message updates preserve a detached reading anchor", async ({ page }) => {
+    await openPreview(page, STRESS_PREVIEW_URL);
+
+    const timeline = page.locator(".timeline");
+    const scroller = page.locator('[data-virtuoso-scroller="true"]');
+
+    await expect(timeline).toHaveAttribute("data-scroll-mode", "attached");
+
+    for (let attempt = 0; attempt < 4; attempt += 1) {
+        await wheelTimeline(scroller, -1_200);
+
+        if ((await timeline.getAttribute("data-scroll-mode")) === "detached") {
+            break;
+        }
+    }
+
+    await expect(timeline).toHaveAttribute("data-scroll-mode", "detached");
+    const before = await visibleEventAnchor(scroller);
+
+    await expect
+        .poll(() =>
+            page.evaluate(
+                () =>
+                    (window as typeof window & { __previewTimelineMutationCount?: number })
+                        .__previewTimelineMutationCount ?? 0,
+            ),
+        )
+        .toBe(20);
+    await expect(timeline).toHaveAttribute("data-item-count", "121");
+    const after = await waitForMessageTop(page, before.id);
+
+    expect(
+        Math.abs(after - before.top),
+        `async updates moved ${before.id} from ${before.top}px to ${after}px`,
+    ).toBeLessThanOrEqual(2);
+    await expect(timeline).toHaveAttribute("data-scroll-mode", "detached");
+});
+
+test("failed history loading exposes retry without concurrent pagination", async ({ page }) => {
+    await openPreview(page, FAILURE_PREVIEW_URL);
+
+    const timeline = page.locator(".timeline");
+    const scroller = page.locator('[data-virtuoso-scroller="true"]');
+
+    await scrollTimelineTo(scroller, "top");
+    await expect(page.getByRole("alert")).toContainText(
+        "The earlier transmission index could not be reached",
+    );
+    await expect(timeline).toHaveAttribute("data-pagination-state", "idle");
+    await expect(timeline).toHaveAttribute("data-first-item-index", "1000000");
+    await expect
+        .poll(() =>
+            page.evaluate(
+                () =>
+                    (window as typeof window & { __previewPaginationRequests?: number })
+                        .__previewPaginationRequests ?? 0,
+            ),
+        )
+        .toBe(1);
+
+    const anchorBefore = await visibleEventAnchor(scroller);
+    const retry = page.getByRole("button", { name: "Load earlier transmissions" });
+
+    await retry.evaluate((button) => {
+        const retryButton = button as HTMLButtonElement;
+
+        retryButton.click();
+        retryButton.click();
+        retryButton.click();
+    });
+    await expect(timeline).toHaveAttribute("data-first-item-index", "999960");
+    await expect
+        .poll(() =>
+            page.evaluate(
+                () =>
+                    (window as typeof window & { __previewPaginationRequests?: number })
+                        .__previewPaginationRequests ?? 0,
+            ),
+        )
+        .toBe(2);
+    await page.waitForTimeout(300);
+    const anchorAfter = await waitForMessageTop(page, anchorBefore.id);
+
+    expect(Math.abs(anchorAfter - anchorBefore.top)).toBeLessThanOrEqual(2);
+});
+
 test("top pagination preserves the reading anchor, exhausts history, and keeps the newest message reachable", async ({
     page,
 }) => {
@@ -213,7 +487,10 @@ test("top pagination preserves the reading anchor, exhausts history, and keeps t
     await page.waitForTimeout(500);
     const anchorAfter = await waitForMessageTop(page, "stress-80");
 
-    expect(Math.abs(anchorAfter - anchorBefore)).toBeLessThanOrEqual(2);
+    expect(
+        Math.abs(anchorAfter - anchorBefore),
+        `history anchor moved from ${anchorBefore}px to ${anchorAfter}px`,
+    ).toBeLessThanOrEqual(2);
 
     await scrollTimelineTo(scroller, "top");
     await expect(timeline).toHaveAttribute("data-first-item-index", "999920");
@@ -231,4 +508,5 @@ test("top pagination preserves the reading anchor, exhausts history, and keeps t
 
     await scrollTimelineTo(scroller, "bottom");
     await expect(page.locator('[data-event-id="stress-remote-append"]')).toBeVisible();
+    await expectNewestMessageClearOfComposer(page, "stress-remote-append");
 });

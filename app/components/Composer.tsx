@@ -12,6 +12,7 @@ import {
     X,
 } from "lucide-react";
 import type { MatrixService } from "@/lib/matrix/client";
+import { resolveComposerTextareaSize } from "@/lib/composer-size";
 import { firstImageFile, insertAtSelection, normalizeMediaFile } from "@/lib/matrix/media";
 import type { TimelineItem } from "@/lib/matrix/types";
 
@@ -77,12 +78,23 @@ export function Composer({
 
         input.style.height = "auto";
         input.style.overflowY = "hidden";
-        input.style.height = `${input.scrollHeight}px`;
-        const overflowing = input.scrollHeight > input.clientHeight;
+        const styles = window.getComputedStyle(input);
+        const minimumHeight = Number.parseFloat(styles.minHeight) || 0;
+        const maximumHeight = Number.parseFloat(styles.maxHeight) || Number.POSITIVE_INFINITY;
+        const borderHeight =
+            (Number.parseFloat(styles.borderTopWidth) || 0) +
+            (Number.parseFloat(styles.borderBottomWidth) || 0);
+        const size = resolveComposerTextareaSize(
+            input.scrollHeight,
+            minimumHeight,
+            maximumHeight,
+            borderHeight,
+        );
 
-        input.style.overflowY = overflowing ? "auto" : "hidden";
+        input.style.height = `${size.height}px`;
+        input.style.overflowY = size.overflowing ? "auto" : "hidden";
 
-        if (overflowing) {
+        if (size.overflowing) {
             input.scrollTop = caretAtEnd ? input.scrollHeight : scrollTop;
         }
     }, []);

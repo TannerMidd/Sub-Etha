@@ -2,8 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
     classifyTimelineChange,
-    shouldScrollTimelineToBottom,
-    timelineAttachmentAfterBottomStateChange,
+    shouldFollowTimelineChange,
+    transitionTimelineScrollMode,
     type TimelineIdentity,
 } from "../lib/timeline-scroll";
 
@@ -15,8 +15,8 @@ test("initial and replacement timelines position at the bottom", () => {
 
     assert.equal(initial.kind, "initial");
     assert.equal(replacement.kind, "replace");
-    assert.equal(shouldScrollTimelineToBottom(initial, false), true);
-    assert.equal(shouldScrollTimelineToBottom(replacement, false), true);
+    assert.equal(shouldFollowTimelineChange(initial, "detached"), true);
+    assert.equal(shouldFollowTimelineChange(replacement, "detached"), true);
 });
 
 test("prepending history preserves the current anchor", () => {
@@ -28,7 +28,7 @@ test("prepending history preserves the current anchor", () => {
     );
 
     assert.equal(change.kind, "prepend");
-    assert.equal(shouldScrollTimelineToBottom(change, true), false);
+    assert.equal(shouldFollowTimelineChange(change, "attached"), false);
 });
 
 test("remote appends follow only while attached", () => {
@@ -41,8 +41,8 @@ test("remote appends follow only while attached", () => {
 
     assert.equal(change.kind, "append");
     assert.equal(change.appendedOwnItem, false);
-    assert.equal(shouldScrollTimelineToBottom(change, true), true);
-    assert.equal(shouldScrollTimelineToBottom(change, false), false);
+    assert.equal(shouldFollowTimelineChange(change, "attached"), true);
+    assert.equal(shouldFollowTimelineChange(change, "detached"), false);
 });
 
 test("local appends always reveal the sent message", () => {
@@ -55,7 +55,7 @@ test("local appends always reveal the sent message", () => {
 
     assert.equal(change.kind, "append");
     assert.equal(change.appendedOwnItem, true);
-    assert.equal(shouldScrollTimelineToBottom(change, false), true);
+    assert.equal(shouldFollowTimelineChange(change, "detached"), true);
 });
 
 test("same-id updates preserve detached history and follow while attached", () => {
@@ -67,14 +67,47 @@ test("same-id updates preserve detached history and follow while attached", () =
     );
 
     assert.equal(change.kind, "items-change");
-    assert.equal(shouldScrollTimelineToBottom(change, false), false);
-    assert.equal(shouldScrollTimelineToBottom(change, true), true);
+    assert.equal(shouldFollowTimelineChange(change, "detached"), false);
+    assert.equal(shouldFollowTimelineChange(change, "attached"), true);
 });
 
-test("returning to the bottom re-enables following without layout changes detaching it", () => {
-    assert.equal(timelineAttachmentAfterBottomStateChange(false, true), true);
-    assert.equal(timelineAttachmentAfterBottomStateChange(true, false), true);
-    assert.equal(timelineAttachmentAfterBottomStateChange(false, false), false);
+test("bottom-state changes are authoritative", () => {
+    assert.equal(
+        transitionTimelineScrollMode("detached", { type: "bottom-state", atBottom: true }),
+        "attached",
+    );
+    assert.equal(
+        transitionTimelineScrollMode("attached", { type: "bottom-state", atBottom: false }),
+        "detached",
+    );
+});
+
+test("user intent cancels following and history restoration", () => {
+    assert.equal(transitionTimelineScrollMode("attached", { type: "user-detach" }), "detached");
+    assert.equal(
+        transitionTimelineScrollMode("restoring-history", { type: "user-detach" }),
+        "detached",
+    );
+});
+
+test("history restoration returns to detached reading while local sends attach", () => {
+    assert.equal(
+        transitionTimelineScrollMode("detached", { type: "history-start" }),
+        "restoring-history",
+    );
+    assert.equal(
+        transitionTimelineScrollMode("restoring-history", { type: "history-complete" }),
+        "detached",
+    );
+    assert.equal(transitionTimelineScrollMode("detached", { type: "local-append" }), "attached");
+});
+
+test("room changes initialize once before attaching", () => {
+    assert.equal(transitionTimelineScrollMode("detached", { type: "room-change" }), "initializing");
+    assert.equal(
+        transitionTimelineScrollMode("initializing", { type: "initial-positioned" }),
+        "attached",
+    );
 });
 
 test("an unrelated same-length timeline is a replacement", () => {

@@ -14,7 +14,7 @@ import {
 } from "react";
 import type { CSSProperties, PointerEvent as ReactPointerEvent } from "react";
 import { Virtuoso } from "react-virtuoso";
-import type { ScrollSeekPlaceholderProps, VirtuosoHandle } from "react-virtuoso";
+import type { VirtuosoHandle } from "react-virtuoso";
 import {
     CheckCheck,
     ChevronLeft,
@@ -50,8 +50,10 @@ import { messageTextSegments } from "@/lib/matrix/message-text";
 import type { MediaAsset, TimelineItem } from "@/lib/matrix/types";
 import {
     classifyTimelineChange,
-    shouldScrollTimelineToBottom,
-    timelineAttachmentAfterBottomStateChange,
+    shouldFollowTimelineChange,
+    transitionTimelineScrollMode,
+    type TimelineScrollEvent,
+    type TimelineScrollMode,
 } from "@/lib/timeline-scroll";
 
 const EmojiPickerPanel = lazy(() =>
@@ -59,14 +61,10 @@ const EmojiPickerPanel = lazy(() =>
 );
 const QUICK_REACTIONS = ["👍", "❤️", "😂", "😮", "😢", "🎉"];
 const INITIAL_TIMELINE_LOCATION = { index: "LAST" as const, align: "end" as const };
-const TIMELINE_VIEWPORT_PADDING = { top: 600, bottom: 300 };
-const TIMELINE_SCROLL_SEEK = {
-    enter: (velocity: number) => Math.abs(velocity) > 200,
-    exit: (velocity: number) => Math.abs(velocity) < 30,
-};
-const HISTORY_ANCHOR_MIN_CORRECTION_MS = 400;
-const HISTORY_ANCHOR_MAX_CORRECTION_MS = 1_000;
-const HISTORY_ANCHOR_STABLE_FRAMES = 8;
+const TIMELINE_VIEWPORT_PADDING = { top: 0, bottom: 300 };
+const HISTORY_ANCHOR_MAX_CORRECTION_MS = 250;
+const HISTORY_ANCHOR_MAX_CORRECTIONS = 2;
+const HISTORY_ANCHOR_SECOND_CORRECTION_MS = 180;
 
 interface TimelineVirtuosoContext {
     loadingHistory: boolean;
@@ -110,21 +108,13 @@ function TimelineHistoryHeader({ context }: { context: TimelineVirtuosoContext }
     );
 }
 
-function TimelineScrollSeekPlaceholder({ height }: ScrollSeekPlaceholderProps) {
-    return (
-        <div className="timeline-scroll-seek" style={{ height }} aria-hidden="true">
-            <span className="timeline-scroll-seek__avatar" />
-            <span className="timeline-scroll-seek__body">
-                <i />
-                <i />
-            </span>
-        </div>
-    );
+function TimelineFooter() {
+    return <div className="timeline-footer-inset" aria-hidden="true" />;
 }
 
 const TIMELINE_COMPONENTS = {
     Header: TimelineHistoryHeader,
-    ScrollSeekPlaceholder: TimelineScrollSeekPlaceholder,
+    Footer: TimelineFooter,
 };
 
 function isEditableKeyboardTarget(target: EventTarget | null): boolean {
@@ -1334,110 +1324,221 @@ export function Timeline({
     onEdit: (item: TimelineItem) => void;
 }) {
     const [lightboxId, setLightboxId] = useState<string | null>(null);
-    const [hasRenderedItems, setHasRenderedItems] = useState(false);
+    const [scrollMode, setScrollMode] = useState<TimelineScrollMode>("initializing");
     const lightboxOpener = useRef<HTMLElement | null>(null);
     const virtuoso = useRef<VirtuosoHandle>(null);
     const scroller = useRef<HTMLElement | null>(null);
     const removeScrollerListeners = useRef<(() => void) | null>(null);
-    const attachedToBottom = useRef(true);
+    const scrollModeRef = useRef<TimelineScrollMode>("initializing");
     const previousItems = useRef<Array<{ id: string; own: boolean }>>([]);
     const previousFirstItemIndex = useRef(firstItemIndex);
-    const lastScrollMetrics = useRef({ top: 0, height: 0 });
     const historyAnchor = useRef<TimelineHistoryAnchor | null>(null);
-    const historyAnchorCaptureFrame = useRef<number | null>(null);
     const historyAnchorFrame = useRef<number | null>(null);
-    const historyPaginationSettling = useRef(false);
+    const detachedViewportAnchor = useRef<TimelineHistoryAnchor | null>(null);
+    const detachedAnchorFrame = useRef<number | null>(null);
+    const detachedRestoreFrame = useRef<number | null>(null);
+    const historyRequestInFlight = useRef(false);
+    const historyRequestGeneration = useRef(0);
     const touchY = useRef<number | null>(null);
     const pointerGesture = useRef<{ id: number; y: number } | null>(null);
+    const scrollbarPointerActive = useRef(false);
     const bottomFrame = useRef<number | null>(null);
     const programmaticResetFrame = useRef<number | null>(null);
     const forcePendingBottom = useRef(false);
     const programmaticScroll = useRef(false);
+    const userScrollIntentUntil = useRef(0);
+    const transitionScrollMode = useCallback((event: TimelineScrollEvent) => {
+        const nextMode = transitionTimelineScrollMode(scrollModeRef.current, event);
+
+        if (nextMode === "attached" || nextMode === "initializing") {
+            detachedViewportAnchor.current = null;
+        }
+
+        scrollModeRef.current = nextMode;
+        setScrollMode((current) => (current === nextMode ? current : nextMode));
+    }, []);
+    const captureDetachedAnchor = useCallback(() => {
+        const element = scroller.current;
+        const bounds = element?.getBoundingClientRect();
+
+        if (!element || !bounds) {
+            return;
+        }
+
+        const visibleEvent = [...element.querySelectorAll<HTMLElement>("[data-event-id]")]
+            .filter((candidate) => {
+                const candidateBounds = candidate.getBoundingClientRect();
+
+                return candidateBounds.bottom > bounds.top && candidateBounds.top < bounds.bottom;
+            })
+            .sort(
+                (left, right) =>
+                    left.getBoundingClientRect().top - right.getBoundingClientRect().top,
+            )[0];
+
+        if (!visibleEvent?.dataset.eventId) {
+            return;
+        }
+
+        detachedViewportAnchor.current = {
+            id: visibleEvent.dataset.eventId,
+            index: Number.parseInt(
+                visibleEvent.closest<HTMLElement>("[data-index]")?.dataset.index ?? "0",
+                10,
+            ),
+            target: "event",
+            top: visibleEvent.getBoundingClientRect().top,
+        };
+    }, []);
+    const scheduleDetachedAnchorCapture = useCallback(() => {
+        if (detachedRestoreFrame.current !== null) {
+            window.cancelAnimationFrame(detachedRestoreFrame.current);
+            detachedRestoreFrame.current = null;
+        }
+
+        if (detachedAnchorFrame.current !== null) {
+            window.cancelAnimationFrame(detachedAnchorFrame.current);
+        }
+
+        detachedAnchorFrame.current = window.requestAnimationFrame(() => {
+            detachedAnchorFrame.current = window.requestAnimationFrame(() => {
+                detachedAnchorFrame.current = null;
+                captureDetachedAnchor();
+            });
+        });
+    }, [captureDetachedAnchor]);
+    const scheduleDetachedAnchorRestore = useCallback(() => {
+        if (detachedRestoreFrame.current !== null) {
+            window.cancelAnimationFrame(detachedRestoreFrame.current);
+        }
+
+        detachedRestoreFrame.current = window.requestAnimationFrame(() => {
+            detachedRestoreFrame.current = window.requestAnimationFrame(() => {
+                detachedRestoreFrame.current = null;
+
+                if (
+                    scrollModeRef.current !== "detached" ||
+                    window.performance.now() <= userScrollIntentUntil.current
+                ) {
+                    return;
+                }
+
+                const element = scroller.current;
+                const anchor = detachedViewportAnchor.current;
+                const anchorElement = anchor
+                    ? [...(element?.querySelectorAll<HTMLElement>("[data-event-id]") ?? [])].find(
+                          (candidate) => candidate.dataset.eventId === anchor.id,
+                      )
+                    : null;
+
+                if (!element || !anchor || !anchorElement) {
+                    return;
+                }
+
+                const correction = anchorElement.getBoundingClientRect().top - anchor.top;
+
+                if (Math.abs(correction) <= 0.5) {
+                    return;
+                }
+
+                programmaticScroll.current = true;
+                element.scrollTop += correction;
+                window.requestAnimationFrame(() => {
+                    programmaticScroll.current = false;
+                });
+            });
+        });
+    }, []);
+    const cancelHistoryRestoration = useCallback(() => {
+        if (historyAnchorFrame.current !== null) {
+            window.cancelAnimationFrame(historyAnchorFrame.current);
+            historyAnchorFrame.current = null;
+        }
+
+        historyAnchor.current = null;
+
+        if (scrollModeRef.current === "restoring-history") {
+            transitionScrollMode({ type: "user-detach" });
+        }
+    }, [transitionScrollMode]);
     const imageItems = useMemo(
         () => items.filter((item) => item.type === "image" && item.media && !item.redacted),
         [items],
     );
-    const firstTimelineItemId = items[0]?.id;
     const loadEarlierHistory = useCallback(() => {
-        if (!hasMoreHistory || loadingHistory || historyPaginationSettling.current) {
+        if (!hasMoreHistory || loadingHistory || historyRequestInFlight.current) {
             return;
         }
 
-        const anchorElement = firstTimelineItemId
-            ? [...(scroller.current?.querySelectorAll<HTMLElement>("[data-event-id]") ?? [])].find(
-                  (element) => element.dataset.eventId === firstTimelineItemId,
-              )
-            : null;
-        const itemElement = scroller.current?.querySelector<HTMLElement>(
-            `[data-index="${firstItemIndex}"]`,
-        );
+        cancelHistoryRestoration();
+        const element = scroller.current;
+        const scrollerBounds = element?.getBoundingClientRect();
+        const visibleEvent =
+            element && scrollerBounds
+                ? [...element.querySelectorAll<HTMLElement>("[data-event-id]")]
+                      .filter((candidate) => {
+                          const bounds = candidate.getBoundingClientRect();
 
-        historyAnchor.current =
-            firstTimelineItemId && anchorElement
-                ? {
-                      id: firstTimelineItemId,
-                      index: firstItemIndex,
-                      target: "event",
-                      top: anchorElement.getBoundingClientRect().top,
-                  }
-                : firstTimelineItemId && itemElement
-                  ? {
-                        id: firstTimelineItemId,
-                        index: firstItemIndex,
-                        target: "item",
-                        top: itemElement.getBoundingClientRect().top,
-                    }
-                  : null;
-        historyPaginationSettling.current = true;
+                          return (
+                              bounds.bottom > scrollerBounds.top &&
+                              bounds.top < scrollerBounds.bottom
+                          );
+                      })
+                      .sort(
+                          (left, right) =>
+                              left.getBoundingClientRect().top - right.getBoundingClientRect().top,
+                      )[0]
+                : null;
+        const firstRenderedItem = element?.querySelector<HTMLElement>("[data-index]") ?? null;
+
+        historyAnchor.current = visibleEvent?.dataset.eventId
+            ? {
+                  id: visibleEvent.dataset.eventId,
+                  index: Number.parseInt(
+                      visibleEvent.closest<HTMLElement>("[data-index]")?.dataset.index ??
+                          `${firstItemIndex}`,
+                      10,
+                  ),
+                  target: "event",
+                  top: visibleEvent.getBoundingClientRect().top,
+              }
+            : firstRenderedItem
+              ? {
+                    id: items[0]?.id ?? "",
+                    index: Number.parseInt(
+                        firstRenderedItem.dataset.index ?? `${firstItemIndex}`,
+                        10,
+                    ),
+                    target: "item",
+                    top: firstRenderedItem.getBoundingClientRect().top,
+                }
+              : null;
+        historyRequestInFlight.current = true;
+        const requestGeneration = ++historyRequestGeneration.current;
         const requestedFirstItemIndex = firstItemIndex;
 
-        const captureRenderedAnchor = () => {
-            historyAnchorCaptureFrame.current = null;
-
-            if (
-                !historyPaginationSettling.current ||
-                previousFirstItemIndex.current !== requestedFirstItemIndex
-            ) {
+        void service.paginate().finally(() => {
+            if (historyRequestGeneration.current !== requestGeneration) {
                 return;
             }
 
-            const renderedAnchor = firstTimelineItemId
-                ? [
-                      ...(scroller.current?.querySelectorAll<HTMLElement>("[data-event-id]") ?? []),
-                  ].find((element) => element.dataset.eventId === firstTimelineItemId)
-                : null;
-
-            if (renderedAnchor && firstTimelineItemId) {
-                historyAnchor.current = {
-                    id: firstTimelineItemId,
-                    index: requestedFirstItemIndex,
-                    target: "event",
-                    top: renderedAnchor.getBoundingClientRect().top,
-                };
-            }
-
-            historyAnchorCaptureFrame.current = window.requestAnimationFrame(captureRenderedAnchor);
-        };
-
-        historyAnchorCaptureFrame.current = window.requestAnimationFrame(captureRenderedAnchor);
-
-        void service.paginate().finally(() => {
+            historyRequestInFlight.current = false;
             window.requestAnimationFrame(() => {
-                if (
-                    historyAnchorFrame.current === null &&
-                    previousFirstItemIndex.current === requestedFirstItemIndex
-                ) {
-                    if (historyAnchorCaptureFrame.current !== null) {
-                        window.cancelAnimationFrame(historyAnchorCaptureFrame.current);
-                        historyAnchorCaptureFrame.current = null;
-                    }
-
+                if (previousFirstItemIndex.current === requestedFirstItemIndex) {
                     historyAnchor.current = null;
-                    historyPaginationSettling.current = false;
+                    transitionScrollMode({ type: "history-complete" });
                 }
             });
         });
-    }, [firstItemIndex, firstTimelineItemId, hasMoreHistory, loadingHistory, service]);
+    }, [
+        cancelHistoryRestoration,
+        firstItemIndex,
+        hasMoreHistory,
+        items,
+        loadingHistory,
+        service,
+        transitionScrollMode,
+    ]);
 
     const virtuosoContext = useMemo(
         () => ({ loadingHistory, hasMoreHistory, requestEarlierHistory: loadEarlierHistory }),
@@ -1445,17 +1546,13 @@ export function Timeline({
     );
 
     const restoreHistoryAnchor = useCallback(() => {
-        if (historyAnchorCaptureFrame.current !== null) {
-            window.cancelAnimationFrame(historyAnchorCaptureFrame.current);
-            historyAnchorCaptureFrame.current = null;
-        }
-
         if (historyAnchorFrame.current !== null) {
             window.cancelAnimationFrame(historyAnchorFrame.current);
         }
 
+        transitionScrollMode({ type: "history-start" });
         const startedAt = window.performance.now();
-        let stableFrames = 0;
+        let corrections = 0;
 
         const restore = () => {
             historyAnchorFrame.current = null;
@@ -1464,7 +1561,7 @@ export function Timeline({
 
             if (!element || !anchor) {
                 historyAnchor.current = null;
-                historyPaginationSettling.current = false;
+                transitionScrollMode({ type: "history-complete" });
 
                 return;
             }
@@ -1478,25 +1575,26 @@ export function Timeline({
 
             if (anchorElement) {
                 const delta = anchorElement.getBoundingClientRect().top - anchor.top;
+                const elapsed = window.performance.now() - startedAt;
+                const correctionReady =
+                    corrections === 0 || elapsed >= HISTORY_ANCHOR_SECOND_CORRECTION_MS;
 
-                if (Math.abs(delta) > 0.5) {
+                if (
+                    Math.abs(delta) > 0.5 &&
+                    correctionReady &&
+                    corrections < HISTORY_ANCHOR_MAX_CORRECTIONS
+                ) {
                     programmaticScroll.current = true;
                     element.scrollTop += delta;
-                    stableFrames = 0;
-                } else {
-                    stableFrames += 1;
+                    corrections += 1;
                 }
-            } else {
-                stableFrames = 0;
             }
 
             const elapsed = window.performance.now() - startedAt;
-            const needsMoreTime = elapsed < HISTORY_ANCHOR_MIN_CORRECTION_MS;
-            const needsStableFrames = stableFrames < HISTORY_ANCHOR_STABLE_FRAMES;
 
             if (
                 elapsed < HISTORY_ANCHOR_MAX_CORRECTION_MS &&
-                (needsMoreTime || needsStableFrames)
+                corrections < HISTORY_ANCHOR_MAX_CORRECTIONS
             ) {
                 historyAnchorFrame.current = window.requestAnimationFrame(restore);
 
@@ -1504,52 +1602,92 @@ export function Timeline({
             }
 
             historyAnchor.current = null;
-            historyPaginationSettling.current = false;
             programmaticScroll.current = false;
+            transitionScrollMode({ type: "history-complete" });
         };
 
         historyAnchorFrame.current = window.requestAnimationFrame(restore);
-    }, []);
+    }, [transitionScrollMode]);
 
     const closeLightbox = () => {
         setLightboxId(null);
         window.requestAnimationFrame(() => lightboxOpener.current?.focus());
     };
 
-    const detachFromBottom = useCallback(() => {
-        attachedToBottom.current = false;
+    const markUserScrollIntent = useCallback(() => {
+        userScrollIntentUntil.current = window.performance.now() + 120;
     }, []);
 
-    const scheduleBottomPosition = useCallback((force = false) => {
-        forcePendingBottom.current ||= force;
+    const detachFromBottom = useCallback(() => {
+        markUserScrollIntent();
+        cancelHistoryRestoration();
+        transitionScrollMode({ type: "user-detach" });
+        scheduleDetachedAnchorCapture();
+    }, [
+        cancelHistoryRestoration,
+        markUserScrollIntent,
+        scheduleDetachedAnchorCapture,
+        transitionScrollMode,
+    ]);
 
-        if (bottomFrame.current !== null) {
-            return;
-        }
+    const scheduleBottomPosition = useCallback(
+        (force = false) => {
+            forcePendingBottom.current ||= force;
 
-        bottomFrame.current = window.requestAnimationFrame(() => {
-            bottomFrame.current = null;
-            const forced = forcePendingBottom.current;
-
-            forcePendingBottom.current = false;
-
-            if (!forced && !attachedToBottom.current) {
+            if (bottomFrame.current !== null) {
                 return;
             }
 
-            programmaticScroll.current = true;
-            virtuoso.current?.scrollToIndex(INITIAL_TIMELINE_LOCATION);
+            bottomFrame.current = window.requestAnimationFrame(() => {
+                bottomFrame.current = null;
+                const forced = forcePendingBottom.current;
 
-            if (programmaticResetFrame.current !== null) {
-                window.cancelAnimationFrame(programmaticResetFrame.current);
-            }
+                forcePendingBottom.current = false;
 
-            programmaticResetFrame.current = window.requestAnimationFrame(() => {
-                programmaticScroll.current = false;
-                programmaticResetFrame.current = null;
+                if (!forced && scrollModeRef.current !== "attached") {
+                    return;
+                }
+
+                programmaticScroll.current = true;
+                virtuoso.current?.scrollToIndex(INITIAL_TIMELINE_LOCATION);
+
+                if (programmaticResetFrame.current !== null) {
+                    window.cancelAnimationFrame(programmaticResetFrame.current);
+                }
+
+                programmaticResetFrame.current = window.requestAnimationFrame(() => {
+                    const element = scroller.current;
+                    const renderedEvents =
+                        element?.querySelectorAll<HTMLElement>("[data-event-id]");
+                    const newestEvent = renderedEvents?.[renderedEvents.length - 1];
+
+                    if (
+                        element &&
+                        newestEvent &&
+                        (forced || scrollModeRef.current === "attached")
+                    ) {
+                        const scrollerBottom = element.getBoundingClientRect().bottom;
+                        const eventBottom = newestEvent.getBoundingClientRect().bottom;
+                        const correction = eventBottom - (scrollerBottom - 12);
+
+                        if (Math.abs(correction) > 0.5) {
+                            element.scrollTop += correction;
+                        }
+                    }
+
+                    programmaticResetFrame.current = window.requestAnimationFrame(() => {
+                        programmaticScroll.current = false;
+                        programmaticResetFrame.current = null;
+
+                        if (scrollModeRef.current === "initializing") {
+                            transitionScrollMode({ type: "initial-positioned" });
+                        }
+                    });
+                });
             });
-        });
-    }, []);
+        },
+        [transitionScrollMode],
+    );
 
     const setScroller = useCallback(
         (value: HTMLElement | Window | null) => {
@@ -1562,30 +1700,33 @@ export function Timeline({
                 return;
             }
 
-            lastScrollMetrics.current = { top: element.scrollTop, height: element.scrollHeight };
-
             const onScroll = () => {
-                const nextTop = element.scrollTop;
-                const nextHeight = element.scrollHeight;
-                const previous = lastScrollMetrics.current;
-                const atBottom = nextHeight - element.clientHeight - nextTop <= 2;
+                const atBottom =
+                    element.scrollHeight - element.clientHeight - element.scrollTop <= 2;
+                const hasUserIntent = window.performance.now() <= userScrollIntentUntil.current;
 
                 if (atBottom) {
-                    attachedToBottom.current = true;
-                } else if (
-                    !programmaticScroll.current &&
-                    nextHeight === previous.height &&
-                    nextTop < previous.top - 1
-                ) {
+                    if (scrollModeRef.current !== "detached" || hasUserIntent) {
+                        transitionScrollMode({ type: "bottom-state", atBottom: true });
+                    }
+                } else if (scrollbarPointerActive.current) {
                     detachFromBottom();
+                } else if (
+                    hasUserIntent &&
+                    !programmaticScroll.current &&
+                    scrollModeRef.current === "detached"
+                ) {
+                    scheduleDetachedAnchorCapture();
                 }
-
-                lastScrollMetrics.current = { top: nextTop, height: nextHeight };
             };
 
             const onWheel = (event: WheelEvent) => {
+                markUserScrollIntent();
+
                 if (event.deltaY < 0) {
                     detachFromBottom();
+                } else if (scrollModeRef.current === "detached") {
+                    scheduleDetachedAnchorCapture();
                 }
             };
 
@@ -1600,8 +1741,14 @@ export function Timeline({
                     return;
                 }
 
+                if (touchY.current !== null && Math.abs(nextY - touchY.current) > 1) {
+                    markUserScrollIntent();
+                }
+
                 if (touchY.current !== null && nextY > touchY.current + 3) {
                     detachFromBottom();
+                } else if (scrollModeRef.current === "detached") {
+                    scheduleDetachedAnchorCapture();
                 }
 
                 touchY.current = nextY;
@@ -1613,6 +1760,14 @@ export function Timeline({
 
             const onPointerDown = (event: PointerEvent) => {
                 if (event.pointerType === "mouse") {
+                    const bounds = element.getBoundingClientRect();
+
+                    scrollbarPointerActive.current = event.clientX >= bounds.right - 24;
+
+                    if (scrollbarPointerActive.current) {
+                        markUserScrollIntent();
+                    }
+
                     return;
                 }
 
@@ -1620,6 +1775,15 @@ export function Timeline({
             };
 
             const onPointerMove = (event: PointerEvent) => {
+                if (event.pointerType === "mouse") {
+                    if (scrollbarPointerActive.current) {
+                        markUserScrollIntent();
+                        detachFromBottom();
+                    }
+
+                    return;
+                }
+
                 const current = pointerGesture.current;
 
                 if (!current || current.id !== event.pointerId) {
@@ -1628,16 +1792,38 @@ export function Timeline({
 
                 if (event.clientY > current.y + 3) {
                     detachFromBottom();
+                } else if (Math.abs(event.clientY - current.y) > 1) {
+                    markUserScrollIntent();
+
+                    if (scrollModeRef.current === "detached") {
+                        scheduleDetachedAnchorCapture();
+                    }
                 }
 
                 pointerGesture.current = { id: event.pointerId, y: event.clientY };
             };
 
             const clearPointer = (event: PointerEvent) => {
+                if (event.pointerType === "mouse") {
+                    scrollbarPointerActive.current = false;
+                }
+
                 if (pointerGesture.current?.id === event.pointerId) {
                     pointerGesture.current = null;
                 }
             };
+
+            const resizeObserver = new ResizeObserver(() => {
+                if (scrollModeRef.current === "attached") {
+                    scheduleBottomPosition();
+
+                    return;
+                }
+
+                if (scrollModeRef.current === "detached" && detachedViewportAnchor.current) {
+                    scheduleDetachedAnchorRestore();
+                }
+            });
 
             element.addEventListener("scroll", onScroll, { passive: true });
             element.addEventListener("wheel", onWheel, { passive: true });
@@ -1649,8 +1835,14 @@ export function Timeline({
             element.addEventListener("pointermove", onPointerMove, { passive: true });
             element.addEventListener("pointerup", clearPointer, { passive: true });
             element.addEventListener("pointercancel", clearPointer, { passive: true });
+            resizeObserver.observe(element);
+
+            if (element.firstElementChild instanceof HTMLElement) {
+                resizeObserver.observe(element.firstElementChild);
+            }
 
             removeScrollerListeners.current = () => {
+                resizeObserver.disconnect();
                 element.removeEventListener("scroll", onScroll);
                 element.removeEventListener("wheel", onWheel);
                 element.removeEventListener("touchstart", onTouchStart);
@@ -1663,7 +1855,14 @@ export function Timeline({
                 element.removeEventListener("pointercancel", clearPointer);
             };
         },
-        [detachFromBottom],
+        [
+            detachFromBottom,
+            markUserScrollIntent,
+            scheduleBottomPosition,
+            scheduleDetachedAnchorCapture,
+            scheduleDetachedAnchorRestore,
+            transitionScrollMode,
+        ],
     );
 
     useEffect(() => {
@@ -1677,16 +1876,28 @@ export function Timeline({
                 event.key === "PageUp" ||
                 event.key === "Home" ||
                 (event.key === " " && event.shiftKey);
+            const scrollKey =
+                upwardKey ||
+                event.key === "ArrowDown" ||
+                event.key === "PageDown" ||
+                event.key === "End" ||
+                event.key === " ";
 
             if (upwardKey && scroller.current) {
                 detachFromBottom();
+            } else if (scrollKey && scroller.current) {
+                markUserScrollIntent();
+
+                if (scrollModeRef.current === "detached") {
+                    scheduleDetachedAnchorCapture();
+                }
             }
         };
 
         window.addEventListener("keydown", onKeyDown);
 
         return () => window.removeEventListener("keydown", onKeyDown);
-    }, [detachFromBottom]);
+    }, [detachFromBottom, markUserScrollIntent, scheduleDetachedAnchorCapture]);
 
     useLayoutEffect(() => {
         const nextItems = items.map((item) => ({ id: item.id, own: item.own }));
@@ -1705,42 +1916,52 @@ export function Timeline({
             if (historyAnchor.current) {
                 restoreHistoryAnchor();
             } else {
-                historyPaginationSettling.current = false;
+                transitionScrollMode({ type: "history-complete" });
             }
-        } else if (change.kind === "replace" && historyPaginationSettling.current) {
-            if (historyAnchorCaptureFrame.current !== null) {
-                window.cancelAnimationFrame(historyAnchorCaptureFrame.current);
-                historyAnchorCaptureFrame.current = null;
-            }
-
-            if (historyAnchorFrame.current !== null) {
-                window.cancelAnimationFrame(historyAnchorFrame.current);
-                historyAnchorFrame.current = null;
-            }
-
-            historyAnchor.current = null;
-            historyPaginationSettling.current = false;
+        } else if (change.kind === "replace") {
+            cancelHistoryRestoration();
+            historyRequestGeneration.current += 1;
+            historyRequestInFlight.current = false;
+            userScrollIntentUntil.current = 0;
             programmaticScroll.current = false;
+            transitionScrollMode({ type: "room-change" });
         }
 
         if (change.kind === "initial") {
-            attachedToBottom.current = true;
+            scheduleBottomPosition(true);
 
             return;
         }
 
-        if (!shouldScrollTimelineToBottom(change, attachedToBottom.current)) {
+        if (!shouldFollowTimelineChange(change, scrollMode)) {
+            if (scrollMode === "detached") {
+                scheduleDetachedAnchorRestore();
+            }
+
             return;
         }
 
-        const force = change.kind === "replace" || change.appendedOwnItem;
+        const wasAttachedRemoteAppend = change.kind === "append" && scrollMode === "attached";
+        const force =
+            change.kind === "replace" || change.appendedOwnItem || wasAttachedRemoteAppend;
 
-        if (force) {
-            attachedToBottom.current = true;
+        if (change.appendedOwnItem) {
+            transitionScrollMode({ type: "local-append" });
+        } else if (wasAttachedRemoteAppend) {
+            transitionScrollMode({ type: "bottom-state", atBottom: true });
         }
 
         scheduleBottomPosition(force);
-    }, [firstItemIndex, items, restoreHistoryAnchor, scheduleBottomPosition]);
+    }, [
+        cancelHistoryRestoration,
+        firstItemIndex,
+        items,
+        restoreHistoryAnchor,
+        scheduleBottomPosition,
+        scheduleDetachedAnchorRestore,
+        scrollMode,
+        transitionScrollMode,
+    ]);
 
     useEffect(
         () => () => {
@@ -1758,36 +1979,55 @@ export function Timeline({
                 window.cancelAnimationFrame(historyAnchorFrame.current);
             }
 
-            if (historyAnchorCaptureFrame.current !== null) {
-                window.cancelAnimationFrame(historyAnchorCaptureFrame.current);
+            if (detachedAnchorFrame.current !== null) {
+                window.cancelAnimationFrame(detachedAnchorFrame.current);
+            }
+
+            if (detachedRestoreFrame.current !== null) {
+                window.cancelAnimationFrame(detachedRestoreFrame.current);
             }
 
             historyAnchor.current = null;
-            historyAnchorCaptureFrame.current = null;
-            historyPaginationSettling.current = false;
+            detachedViewportAnchor.current = null;
+            historyRequestGeneration.current += 1;
+            historyRequestInFlight.current = false;
             programmaticScroll.current = false;
         },
         [],
     );
 
-    const onAtBottomStateChange = useCallback((atBottom: boolean) => {
-        attachedToBottom.current = timelineAttachmentAfterBottomStateChange(
-            attachedToBottom.current,
-            atBottom,
-        );
-    }, []);
+    const onAtBottomStateChange = useCallback(
+        (atBottom: boolean) => {
+            if (!atBottom) {
+                if (window.performance.now() <= userScrollIntentUntil.current) {
+                    transitionScrollMode({ type: "bottom-state", atBottom: false });
+                }
 
-    const onTotalListHeightChanged = useCallback(() => {
-        if (attachedToBottom.current) {
-            scheduleBottomPosition();
-        }
-    }, [scheduleBottomPosition]);
+                return;
+            }
 
-    const onItemsRendered = useCallback((renderedItems: readonly unknown[]) => {
-        const next = renderedItems.length > 0;
+            if (
+                scrollModeRef.current === "detached" &&
+                window.performance.now() > userScrollIntentUntil.current
+            ) {
+                return;
+            }
 
-        setHasRenderedItems((current) => (current === next ? current : next));
-    }, []);
+            transitionScrollMode({ type: "bottom-state", atBottom });
+        },
+        [transitionScrollMode],
+    );
+
+    const onItemsRendered = useCallback(
+        (renderedItems: readonly unknown[]) => {
+            if (renderedItems.length > 0 && scrollModeRef.current === "initializing") {
+                scheduleBottomPosition(true);
+            }
+        },
+        [scheduleBottomPosition],
+    );
+
+    const paginationState = loadingHistory ? "loading" : hasMoreHistory ? "idle" : "exhausted";
 
     if (initializing) {
         return (
@@ -1828,6 +2068,8 @@ export function Timeline({
             data-first-item-index={firstItemIndex}
             data-item-count={items.length}
             data-has-more-history={hasMoreHistory}
+            data-scroll-mode={scrollMode}
+            data-pagination-state={paginationState}
         >
             <Virtuoso
                 ref={virtuoso}
@@ -1841,9 +2083,7 @@ export function Timeline({
                 startReached={loadEarlierHistory}
                 atBottomStateChange={onAtBottomStateChange}
                 scrollerRef={setScroller}
-                totalListHeightChanged={onTotalListHeightChanged}
                 itemsRendered={onItemsRendered}
-                scrollSeekConfiguration={TIMELINE_SCROLL_SEEK}
                 increaseViewportBy={TIMELINE_VIEWPORT_PADDING}
                 components={TIMELINE_COMPONENTS}
                 context={virtuosoContext}
@@ -1873,13 +2113,6 @@ export function Timeline({
                     );
                 }}
             />
-            {!hasRenderedItems ? (
-                <div className="timeline-measuring" aria-hidden="true">
-                    <TimelineScrollSeekPlaceholder height={96} index={0} type="item" />
-                    <TimelineScrollSeekPlaceholder height={96} index={1} type="item" />
-                    <span>Measuring room history…</span>
-                </div>
-            ) : null}
             {lightboxId && imageItems.length ? (
                 <Lightbox
                     key={lightboxId}

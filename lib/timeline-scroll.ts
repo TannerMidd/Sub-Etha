@@ -10,6 +10,17 @@ export interface TimelineChange {
     appendedOwnItem: boolean;
 }
 
+export type TimelineScrollMode = "initializing" | "attached" | "detached" | "restoring-history";
+
+export type TimelineScrollEvent =
+    | { type: "room-change" }
+    | { type: "initial-positioned" }
+    | { type: "bottom-state"; atBottom: boolean }
+    | { type: "user-detach" }
+    | { type: "history-start" }
+    | { type: "history-complete" }
+    | { type: "local-append" };
+
 function sameIdsAtOffset(
     previous: readonly TimelineIdentity[],
     next: readonly TimelineIdentity[],
@@ -67,9 +78,9 @@ export function classifyTimelineChange(
     return { kind: "replace", appendedOwnItem: next.some((item) => item.own) };
 }
 
-export function shouldScrollTimelineToBottom(
+export function shouldFollowTimelineChange(
     change: TimelineChange,
-    attachedToBottom: boolean,
+    mode: TimelineScrollMode,
 ): boolean {
     if (change.kind === "prepend") {
         return false;
@@ -83,12 +94,27 @@ export function shouldScrollTimelineToBottom(
         return true;
     }
 
-    return attachedToBottom;
+    return mode === "attached";
 }
 
-export function timelineAttachmentAfterBottomStateChange(
-    attachedToBottom: boolean,
-    reachedBottom: boolean,
-): boolean {
-    return reachedBottom ? true : attachedToBottom;
+export function transitionTimelineScrollMode(
+    mode: TimelineScrollMode,
+    event: TimelineScrollEvent,
+): TimelineScrollMode {
+    switch (event.type) {
+        case "room-change":
+            return "initializing";
+        case "initial-positioned":
+        case "local-append":
+            return "attached";
+        case "bottom-state":
+            return event.atBottom ? "attached" : "detached";
+        case "user-detach":
+        case "history-complete":
+            return "detached";
+        case "history-start":
+            return "restoring-history";
+        default:
+            return mode;
+    }
 }

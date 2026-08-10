@@ -117,7 +117,8 @@ function createPreviewService(): MatrixService {
         typeof window === "undefined" ? null : new URLSearchParams(window.location.search);
     const verificationPreview = previewParams?.get("verification-preview") ?? null;
     const uxPreview = previewParams?.get("ux-preview") ?? null;
-    const timelineStressPreview = uxPreview === "timeline-stress";
+    const timelineStressPreview = uxPreview?.startsWith("timeline-stress") ?? false;
+    let failNextStressPagination = uxPreview === "timeline-stress-failure";
     let nextStressStart = STRESS_INITIAL_START;
     let localStressSequence = 0;
     let stopTimelineStress: (() => void) | null = null;
@@ -310,7 +311,34 @@ function createPreviewService(): MatrixService {
             return;
         }
 
+        const mutationTimers = Array.from({ length: 20 }, (_value, round) =>
+            window.setTimeout(
+                () => {
+                    const eventId = `stress-${150 + round}`;
+
+                    (
+                        window as typeof window & { __previewTimelineMutationCount?: number }
+                    ).__previewTimelineMutationCount = round + 1;
+                    update({
+                        timeline: snapshot.timeline.map((item) =>
+                            item.id === eventId
+                                ? {
+                                      ...item,
+                                      edited: round % 2 === 0,
+                                      reactions: [
+                                          ...item.reactions,
+                                          { key: "📡", count: round + 1, mine: round % 3 === 0 },
+                                      ],
+                                  }
+                                : item,
+                        ),
+                    });
+                },
+                320 + round * 55,
+            ),
+        );
         const timers = [
+            ...mutationTimers,
             window.setTimeout(() => {
                 update({
                     timeline: snapshot.timeline.map((item) => {
@@ -400,8 +428,25 @@ function createPreviewService(): MatrixService {
                 return;
             }
 
+            const previewWindow = window as typeof window & {
+                __previewPaginationRequests?: number;
+            };
+
+            previewWindow.__previewPaginationRequests =
+                (previewWindow.__previewPaginationRequests ?? 0) + 1;
             update({ loadingHistory: true });
             await new Promise((resolve) => window.setTimeout(resolve, 250));
+
+            if (failNextStressPagination) {
+                failNextStressPagination = false;
+                update({
+                    loadingHistory: false,
+                    error: "The earlier transmission index could not be reached. Retry when ready.",
+                });
+
+                return;
+            }
+
             const pageStart = Math.max(0, nextStressStart - STRESS_PAGE_SIZE);
             const earlierTimeline = stressTimeline(pageStart, nextStressStart - pageStart, true);
 
@@ -411,6 +456,7 @@ function createPreviewService(): MatrixService {
                 timelineStartIndex: snapshot.timelineStartIndex - earlierTimeline.length,
                 loadingHistory: false,
                 hasMoreHistory: nextStressStart > 0,
+                error: null,
             });
         },
         toggleReaction: async (eventId: string, key: string) => {
