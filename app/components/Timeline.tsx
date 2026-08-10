@@ -53,7 +53,6 @@ import {
     shouldScrollTimelineToBottom,
     timelineAttachmentAfterBottomStateChange,
 } from "@/lib/timeline-scroll";
-import { Avatar } from "./BrandMark";
 
 const EmojiPickerPanel = lazy(() =>
     import("./EmojiPickerPanel").then((module) => ({ default: module.EmojiPickerPanel })),
@@ -1076,9 +1075,10 @@ function MessageRow({
     const [reactionOpen, setReactionOpen] = useState(false);
     const [actionsOpen, setActionsOpen] = useState(false);
     const rowRef = useRef<HTMLElement>(null);
-    const newDay =
-        !previous ||
-        new Date(previous.timestamp).toDateString() !== new Date(item.timestamp).toDateString();
+    const newDay = Boolean(
+        previous &&
+        new Date(previous.timestamp).toDateString() !== new Date(item.timestamp).toDateString(),
+    );
     const actionable = item.decryptionState === "ready" && !item.redacted && !item.sendingStatus;
     const editable = actionable && item.own && item.type === "message" && !item.media;
 
@@ -1131,13 +1131,16 @@ function MessageRow({
                 data-event-id={item.id}
                 aria-label={`Message from ${item.senderName}`}
             >
-                <Avatar name={item.senderName} mxcUrl={item.senderAvatarMxcUrl} service={service} />
+                <time
+                    className="message-row__time"
+                    dateTime={new Date(item.timestamp).toISOString()}
+                >
+                    {formatTime(item.timestamp)}
+                </time>
+                <span className="message-row__marker" aria-hidden="true" />
                 <div className="message-row__main">
                     <header>
                         <strong>{item.senderName}</strong>
-                        <time dateTime={new Date(item.timestamp).toISOString()}>
-                            {formatTime(item.timestamp)}
-                        </time>
                         {item.edited ? <span className="edited-label">edited</span> : null}
                         {item.encrypted ? (
                             <span className="encrypted-label" title="Encrypted message">
@@ -1629,7 +1632,7 @@ export function Timeline({
                             {unreadCount > 0 &&
                             itemIndex === Math.max(0, items.length - unreadCount) ? (
                                 <div className="unread-divider" role="separator">
-                                    <span>New messages</span>
+                                    <span>New transmissions</span>
                                 </div>
                             ) : null}
                             <MessageRow

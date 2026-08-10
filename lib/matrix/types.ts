@@ -33,6 +33,9 @@ export interface LoginCapabilities {
 export interface RoomSummary {
     id: string;
     name: string;
+    guideCode?: string;
+    topic?: string | null;
+    classification?: string;
     avatarMxcUrl: string | null;
     membership: string;
     lastMessage: string;

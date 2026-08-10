@@ -371,10 +371,13 @@ export function normalizeRooms(client: MatrixClient): RoomSummary[] {
         .filter((room) => ["join", "invite"].includes(room.getMyMembership()))
         .map((room) => {
             const mutedRule = client.getRoomPushRule("global", room.roomId);
+            const topicEvent = room.currentState.getStateEvents(EventType.RoomTopic, "");
+            const topic = String(topicEvent?.getContent().topic ?? "").trim() || null;
 
             return {
                 id: room.roomId,
                 name: room.name || room.getDefaultRoomName(client.getUserId() ?? ""),
+                topic,
                 avatarMxcUrl: roomAvatarMxcUrl(room),
                 membership: room.getMyMembership(),
                 lastMessage: lastMessageText(room),

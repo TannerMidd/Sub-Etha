@@ -14,9 +14,23 @@ import { DesignPreview } from "./DesignPreview";
 import { LoginScreen } from "./LoginScreen";
 
 type BootState = "booting" | "login" | "connected" | "duplicate" | "error";
-const subscribeToPreviewFlag = () => () => undefined;
+
+const subscribeToPreviewFlag = (onStoreChange: () => void) => {
+    const refresh = () => onStoreChange();
+    const hydrationTimer = window.setTimeout(refresh, 0);
+
+    window.addEventListener("popstate", refresh);
+    window.addEventListener("hashchange", refresh);
+
+    return () => {
+        window.clearTimeout(hydrationTimer);
+        window.removeEventListener("popstate", refresh);
+        window.removeEventListener("hashchange", refresh);
+    };
+};
+
 const readPreviewFlag = () =>
-    process.env.NODE_ENV !== "production" &&
+    ["localhost", "127.0.0.1", "[::1]"].includes(window.location.hostname) &&
     new URLSearchParams(window.location.search).has("design-preview");
 
 export function SubEthaApp() {
@@ -109,17 +123,16 @@ export function SubEthaApp() {
     }, []);
 
     useEffect(() => {
-        if (
-            process.env.NODE_ENV !== "production" &&
-            new URLSearchParams(window.location.search).has("design-preview")
-        ) {
+        if (readPreviewFlag()) {
             return;
         }
 
         const storedTheme = localStorage.getItem("sub-etha-theme");
 
-        if (storedTheme === "light" || storedTheme === "dark") {
+        if (storedTheme === "light" || storedTheme === "dark" || storedTheme === "system") {
             document.documentElement.dataset.theme = storedTheme;
+        } else {
+            document.documentElement.dataset.theme = "dark";
         }
 
         let registration: ServiceWorkerRegistration | null = null;

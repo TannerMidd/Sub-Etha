@@ -660,7 +660,7 @@ export function SettingsDialog({
     const snapshot = service.getSnapshot();
     const [displayName, setDisplayName] = useState(snapshot.displayName);
     const [avatar, setAvatar] = useState<File | undefined>();
-    const [theme, setTheme] = useState(() => localStorage.getItem("sub-etha-theme") ?? "system");
+    const [theme, setTheme] = useState(() => localStorage.getItem("sub-etha-theme") ?? "dark");
     const [pushState, setPushState] = useState<PushState>(() => readPushState());
     const [devices, setDevices] = useState<DeviceSummary[]>([]);
     const [cryptoStatus, setCryptoStatus] = useState<{
@@ -717,7 +717,7 @@ export function SettingsDialog({
         localStorage.setItem("sub-etha-theme", value);
 
         if (value === "system") {
-            document.documentElement.removeAttribute("data-theme");
+            document.documentElement.setAttribute("data-theme", "system");
         } else {
             document.documentElement.setAttribute("data-theme", value);
         }

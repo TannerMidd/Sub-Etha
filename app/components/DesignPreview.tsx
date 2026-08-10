@@ -14,15 +14,21 @@ const STRESS_PAGE_SIZE = 40;
 function previewRoom(
     id: string,
     name: string,
+    guideCode: string,
     memberCount: number,
     lastMessage: string,
     timestamp: number,
     unread = 0,
     favourite = false,
+    topic: string | null = null,
+    classification?: string,
 ): RoomSummary {
     return {
         id,
         name,
+        guideCode,
+        topic,
+        classification,
         avatarMxcUrl: id === "signal-watch" ? "mxc://preview/night-receiver-plate" : null,
         membership: "join",
         lastMessage,
@@ -168,23 +174,27 @@ function createPreviewService(): MatrixService {
             false,
             uxPreview === "states" ? { decryptionState: "decrypting" } : {},
         ),
-        previewMessage(
-            "m9",
-            "Vera",
-            "Receiver plate recovered from the archive.",
-            at(10, 44),
-            false,
-            {
-                type: "image",
-                media: {
-                    mxcUrl: "/night-receiver-plate.png",
-                    mimeType: "image/png",
-                    size: 382_000,
-                    width: 1024,
-                    height: 1024,
-                },
-            },
-        ),
+        ...(uxPreview === "media"
+            ? [
+                  previewMessage(
+                      "m9",
+                      "Vera",
+                      "Receiver plate recovered from the archive.",
+                      at(10, 44),
+                      false,
+                      {
+                          type: "image",
+                          media: {
+                              mxcUrl: "/night-receiver-plate.png",
+                              mimeType: "image/png",
+                              size: 382_000,
+                              width: 1024,
+                              height: 1024,
+                          },
+                      },
+                  ),
+              ]
+            : []),
     ];
     let snapshot: MatrixSnapshot = {
         connection: uxPreview === "loading" ? "starting" : "ready",
@@ -192,15 +202,19 @@ function createPreviewService(): MatrixService {
             previewRoom(
                 "signal-watch",
                 "Signal Watch",
+                "42-B",
                 7,
                 "Scheduling maintenance for 2100.",
                 at(10, 42),
                 1,
                 true,
+                "Sweep coordination and carrier anomalies",
+                "FIELD OBSERVATIONS · SWEEP OPERATIONS",
             ),
             previewRoom(
                 "hab-drift",
                 "Hab Drift Crew",
+                "17-A",
                 5,
                 "Sweep complete on the north arc.",
                 at(9, 18),
@@ -210,6 +224,7 @@ function createPreviewService(): MatrixService {
             previewRoom(
                 "archive-echoes",
                 "Archive — Echoes",
+                "08-C",
                 12,
                 "The old relay notes are indexed.",
                 at(8, 7),
@@ -218,6 +233,7 @@ function createPreviewService(): MatrixService {
             previewRoom(
                 "observatory",
                 "Observatory",
+                "29-D",
                 3,
                 "Clear skies on the western array.",
                 at(7, 36),
@@ -225,13 +241,14 @@ function createPreviewService(): MatrixService {
             previewRoom(
                 "grid-maintenance",
                 "Grid Maintenance",
+                "11-E",
                 9,
                 "Coil batch cleared customs.",
                 at(6, 51),
             ),
-            previewRoom("quiet-room", "Quiet Room", 2, "No new transmissions.", at(6, 12)),
-            previewRoom("maris", "Maris", 2, "See you on the far side.", at(5, 48)),
-            previewRoom("ilya", "Ilya", 2, "Typing…", at(5, 42), 1),
+            previewRoom("quiet-room", "Quiet Room", "QR", 2, "No new transmissions.", at(6, 12)),
+            previewRoom("maris", "Maris", "M", 2, "See you on the far side.", at(5, 48)),
+            previewRoom("ilya", "Ilya", "I", 2, "Typing…", at(5, 42), 1),
         ],
         activeRoomId: "signal-watch",
         timeline:

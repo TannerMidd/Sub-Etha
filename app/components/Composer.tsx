@@ -4,12 +4,11 @@ import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useRef, useSta
 import {
     CornerUpLeft,
     FileText,
-    FileUp,
+    Paperclip,
     ImageIcon,
     LoaderCircle,
     Pencil,
-    Send,
-    SmilePlus,
+    Smile,
     X,
 } from "lucide-react";
 import type { MatrixService } from "@/lib/matrix/client";
@@ -373,33 +372,8 @@ export function Composer({
                     onClick={() => fileInput.current?.click()}
                     disabled={sending || Boolean(editing)}
                 >
-                    <FileUp />
+                    <Paperclip />
                 </button>
-                <div className="emoji-control" ref={emojiWrap}>
-                    <button
-                        type="button"
-                        className="icon-button"
-                        aria-label="Choose an emoji"
-                        title="Choose an emoji"
-                        aria-expanded={emojiOpen}
-                        onClick={() => setEmojiOpen((open) => !open)}
-                    >
-                        <SmilePlus />
-                    </button>
-                    {emojiOpen ? (
-                        <div className="emoji-popover emoji-popover--composer">
-                            <Suspense
-                                fallback={
-                                    <div className="emoji-loading">
-                                        <LoaderCircle className="spin" /> Indexing pictograms…
-                                    </div>
-                                }
-                            >
-                                <EmojiPickerPanel onSelect={insertEmoji} />
-                            </Suspense>
-                        </div>
-                    ) : null}
-                </div>
                 <label className="sr-only" htmlFor="message-composer">
                     {attachment ? "Attachment caption" : "Message"}
                 </label>
@@ -445,10 +419,35 @@ export function Composer({
                             ? "Revise this message…"
                             : attachment
                               ? "Add a caption…"
-                              : "Transmit a message…"
+                              : "Add an observation…"
                     }
                     rows={1}
                 />
+                <div className="emoji-control" ref={emojiWrap}>
+                    <button
+                        type="button"
+                        className="icon-button"
+                        aria-label="Choose an emoji"
+                        title="Choose an emoji"
+                        aria-expanded={emojiOpen}
+                        onClick={() => setEmojiOpen((open) => !open)}
+                    >
+                        <Smile />
+                    </button>
+                    {emojiOpen ? (
+                        <div className="emoji-popover emoji-popover--composer">
+                            <Suspense
+                                fallback={
+                                    <div className="emoji-loading">
+                                        <LoaderCircle className="spin" /> Indexing pictograms…
+                                    </div>
+                                }
+                            >
+                                <EmojiPickerPanel onSelect={insertEmoji} />
+                            </Suspense>
+                        </div>
+                    ) : null}
+                </div>
                 <button
                     type="button"
                     className="send-button"
@@ -463,7 +462,8 @@ export function Composer({
                     onClick={() => void send()}
                     disabled={!canSend}
                 >
-                    {sending ? <LoaderCircle className="spin" /> : <Send />}
+                    {sending ? <LoaderCircle className="spin" /> : null}
+                    <span>{editing ? "Save" : "Send"}</span>
                 </button>
             </div>
             {error ? (
