@@ -4,6 +4,10 @@ Sub-Etha is a fast, installable Matrix client with Rust-backed end-to-end encryp
 
 Matrix access tokens, encryption keys, message bodies, sender names, room names, and synced history remain between the browser and the selected Matrix homeserver. The deployment backend stores only separately hashed delivery and browser-management capabilities, Web Push subscription material, short-lived endpoint-confirmation challenges, timestamps, aggregate gateway counters, and seven-day delivery-deduplication records. It does not store Matrix identities or client IP addresses.
 
+## Architecture
+
+Start with the [architecture map](./docs/architecture.md), then use the [ADR index](./docs/adr/README.md) for the decisions, constraints, trade-offs, and enforcement anchors behind the stack. New cross-cutting or difficult-to-reverse changes should follow the ADR process documented there.
+
 ## Local development
 
 Requirements: Node.js 22.13 or later.
