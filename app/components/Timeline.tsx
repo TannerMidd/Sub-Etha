@@ -3,6 +3,7 @@
 import { Fragment, lazy, Suspense, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties, PointerEvent as ReactPointerEvent } from "react";
 import { Virtuoso } from "react-virtuoso";
+import type { ScrollSeekPlaceholderProps, VirtuosoHandle } from "react-virtuoso";
 import {
   CheckCheck,
   ChevronLeft,
@@ -36,10 +37,56 @@ import {
 } from "@/lib/image-viewer";
 import { messageTextSegments } from "@/lib/matrix/message-text";
 import type { MediaAsset, TimelineItem } from "@/lib/matrix/types";
+import {
+  classifyTimelineChange,
+  shouldScrollTimelineToBottom,
+  timelineAttachmentAfterBottomStateChange,
+} from "@/lib/timeline-scroll";
 import { Avatar } from "./BrandMark";
 
 const EmojiPickerPanel = lazy(() => import("./EmojiPickerPanel").then((module) => ({ default: module.EmojiPickerPanel })));
 const QUICK_REACTIONS = ["👍", "❤️", "😂", "😮", "😢", "🎉"];
+const INITIAL_TIMELINE_LOCATION = { index: "LAST" as const, align: "end" as const };
+const TIMELINE_VIEWPORT_PADDING = { top: 600, bottom: 300 };
+const TIMELINE_SCROLL_SEEK = {
+  enter: (velocity: number) => Math.abs(velocity) > 200,
+  exit: (velocity: number) => Math.abs(velocity) < 30,
+};
+
+interface TimelineVirtuosoContext {
+  loadingHistory: boolean;
+  service: MatrixService;
+}
+
+function TimelineHistoryHeader({ context }: { context: TimelineVirtuosoContext }) {
+  return (
+    <div className="history-loader">
+      <button type="button" onClick={() => void context.service.paginate()} disabled={context.loadingHistory}>
+        {context.loadingHistory ? <LoaderCircle className="spin" aria-hidden="true" /> : <RefreshCw aria-hidden="true" />}
+        {context.loadingHistory ? "Consulting earlier pages…" : "Load earlier messages"}
+      </button>
+    </div>
+  );
+}
+
+function TimelineScrollSeekPlaceholder({ height }: ScrollSeekPlaceholderProps) {
+  return (
+    <div className="timeline-scroll-seek" style={{ height }} aria-hidden="true">
+      <span className="timeline-scroll-seek__avatar" />
+      <span className="timeline-scroll-seek__body"><i /><i /></span>
+    </div>
+  );
+}
+
+const TIMELINE_COMPONENTS = {
+  Header: TimelineHistoryHeader,
+  ScrollSeekPlaceholder: TimelineScrollSeekPlaceholder,
+};
+
+function isEditableKeyboardTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) return false;
+  return target.isContentEditable || ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName);
+}
 
 function formatTime(timestamp: number): string {
   return new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" }).format(timestamp);
@@ -56,10 +103,12 @@ function formatSize(size?: number): string {
   return `${(size / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-function timelineImageFrameStyle(item: TimelineItem): CSSProperties | undefined {
+function timelineVisualFrameStyle(item: TimelineItem): CSSProperties {
   const width = item.media?.width;
   const height = item.media?.height;
-  if (!width || !height || width <= 0 || height <= 0) return undefined;
+  if (!width || !height || width <= 0 || height <= 0) {
+    return { width: "min(520px, 100%)", aspectRatio: "4 / 3" };
+  }
   const size = containImageSize({ width, height }, { width: 620, height: 520 });
   return { width: `${size.width}px`, aspectRatio: `${width} / ${height}` };
 }
@@ -150,7 +199,9 @@ function AnimatedImage({ item, service, asset, className, loading = "lazy", onIm
 function MediaAttachment({ item, service, onOpen }: { item: TimelineItem; service: MatrixService; onOpen: (item: TimelineItem, opener: HTMLElement) => void }) {
   const [retryToken, setRetryToken] = useState(0);
   const { asset, error, retryable } = useTimelineMedia(item, service, retryToken);
-  const imageFrameStyle = item.type === "image" ? timelineImageFrameStyle(item) : undefined;
+  const visual = item.type === "image" || item.type === "video";
+  const visualFrameStyle = visual ? timelineVisualFrameStyle(item) : undefined;
+  const visualFrameClass = item.type === "video" ? "video-attachment-frame" : "image-attachment";
 
   const retry = () => {
     if (item.media) service.invalidateMedia(item.media, item.id);
@@ -158,20 +209,20 @@ function MediaAttachment({ item, service, onOpen }: { item: TimelineItem; servic
   };
 
   if (error) {
-    if (item.type === "image" && imageFrameStyle) {
-      return <div className="image-attachment image-attachment--reserved" style={imageFrameStyle}><div className="media-error media-error--visual"><ShieldAlert aria-hidden="true" /><span>{error}</span>{retryable ? <button type="button" onClick={retry}><RefreshCw />Retry</button> : null}</div></div>;
+    if (visual) {
+      return <div className={`${visualFrameClass} media-frame--reserved`} style={visualFrameStyle}><div className="media-error media-error--visual"><ShieldAlert aria-hidden="true" /><span>{error}</span>{retryable ? <button type="button" onClick={retry}><RefreshCw />Retry</button> : null}</div></div>;
     }
-    return <div className="media-error"><ShieldAlert aria-hidden="true" /><span>{error}</span>{retryable ? <button type="button" onClick={retry}><RefreshCw />Retry</button> : null}</div>;
+    return <div className={`media-error media-error--${item.type}`}><ShieldAlert aria-hidden="true" /><span>{error}</span>{retryable ? <button type="button" onClick={retry}><RefreshCw />Retry</button> : null}</div>;
   }
   if (!asset) {
-    if (item.type === "image" && imageFrameStyle) {
-      return <div className="image-attachment image-attachment--reserved" style={imageFrameStyle}><div className="media-loading media-loading--visual"><LoaderCircle className="spin" aria-hidden="true" /> Decrypting attachment…</div></div>;
+    if (visual) {
+      return <div className={`${visualFrameClass} media-frame--reserved`} style={visualFrameStyle}><div className="media-loading media-loading--visual"><LoaderCircle className="spin" aria-hidden="true" /> Decrypting attachment…</div></div>;
     }
-    return <div className="media-loading"><LoaderCircle className="spin" aria-hidden="true" /> Decrypting attachment…</div>;
+    return <div className={`media-loading media-loading--${item.type}`}><LoaderCircle className="spin" aria-hidden="true" /> Decrypting attachment…</div>;
   }
   if (item.type === "image") {
     return (
-      <div className={`image-attachment${imageFrameStyle ? " image-attachment--reserved" : ""}`} style={imageFrameStyle}>
+      <div className="image-attachment media-frame--reserved" style={visualFrameStyle}>
         <AnimatedImage item={item} service={service} asset={asset} onOpen={(opener) => onOpen(item, opener)} />
         <span className="image-attachment__hint" aria-hidden="true"><Maximize2 />View</span>
       </div>
@@ -180,7 +231,7 @@ function MediaAttachment({ item, service, onOpen }: { item: TimelineItem; servic
   if (item.type === "video") {
     // Matrix attachments do not include a caption track URL.
     // eslint-disable-next-line jsx-a11y/media-has-caption
-    return <video className="video-attachment" src={asset.url} controls preload="metadata" />;
+    return <div className="video-attachment-frame media-frame--reserved" style={visualFrameStyle}><video className="video-attachment" src={asset.url} controls preload="metadata" /></div>;
   }
   if (item.type === "audio") {
     // Matrix attachments do not include a caption track URL.
@@ -698,15 +749,186 @@ export function Timeline({ items, firstItemIndex, service, loadingHistory, initi
   onEdit: (item: TimelineItem) => void;
 }) {
   const [lightboxId, setLightboxId] = useState<string | null>(null);
-  // A function-valued followOutput stays enabled while Virtuoso remeasures growing rows.
-  // Toggle the prop itself so late decryption and media layout cannot override manual scrolling.
-  const [shouldFollowOutput, setShouldFollowOutput] = useState(true);
+  const [hasRenderedItems, setHasRenderedItems] = useState(false);
   const lightboxOpener = useRef<HTMLElement | null>(null);
+  const virtuoso = useRef<VirtuosoHandle>(null);
+  const scroller = useRef<HTMLElement | null>(null);
+  const removeScrollerListeners = useRef<(() => void) | null>(null);
+  const attachedToBottom = useRef(true);
+  const previousItems = useRef<Array<{ id: string; own: boolean }>>([]);
+  const previousFirstItemIndex = useRef(firstItemIndex);
+  const lastScrollMetrics = useRef({ top: 0, height: 0 });
+  const touchY = useRef<number | null>(null);
+  const pointerGesture = useRef<{ id: number; y: number } | null>(null);
+  const bottomFrame = useRef<number | null>(null);
+  const programmaticResetFrame = useRef<number | null>(null);
+  const forcePendingBottom = useRef(false);
+  const programmaticScroll = useRef(false);
   const imageItems = useMemo(() => items.filter((item) => item.type === "image" && item.media && !item.redacted), [items]);
+  const virtuosoContext = useMemo(() => ({ loadingHistory, service }), [loadingHistory, service]);
   const closeLightbox = () => {
     setLightboxId(null);
     window.requestAnimationFrame(() => lightboxOpener.current?.focus());
   };
+
+  const detachFromBottom = useCallback(() => {
+    attachedToBottom.current = false;
+  }, []);
+
+  const scheduleBottomPosition = useCallback((force = false) => {
+    forcePendingBottom.current ||= force;
+    if (bottomFrame.current !== null) return;
+
+    bottomFrame.current = window.requestAnimationFrame(() => {
+      bottomFrame.current = null;
+      const forced = forcePendingBottom.current;
+      forcePendingBottom.current = false;
+      if (!forced && !attachedToBottom.current) return;
+
+      programmaticScroll.current = true;
+      virtuoso.current?.scrollToIndex(INITIAL_TIMELINE_LOCATION);
+      if (programmaticResetFrame.current !== null) {
+        window.cancelAnimationFrame(programmaticResetFrame.current);
+      }
+      programmaticResetFrame.current = window.requestAnimationFrame(() => {
+        programmaticScroll.current = false;
+        programmaticResetFrame.current = null;
+      });
+    });
+  }, []);
+
+  const setScroller = useCallback((value: HTMLElement | Window | null) => {
+    removeScrollerListeners.current?.();
+    removeScrollerListeners.current = null;
+    scroller.current = value instanceof HTMLElement ? value : null;
+    const element = scroller.current;
+    if (!element) return;
+
+    lastScrollMetrics.current = { top: element.scrollTop, height: element.scrollHeight };
+
+    const onScroll = () => {
+      const nextTop = element.scrollTop;
+      const nextHeight = element.scrollHeight;
+      const previous = lastScrollMetrics.current;
+      const atBottom = nextHeight - element.clientHeight - nextTop <= 2;
+
+      if (atBottom) {
+        attachedToBottom.current = true;
+      }
+      else if (
+        !programmaticScroll.current &&
+        nextHeight === previous.height &&
+        nextTop < previous.top - 1
+      ) {
+        detachFromBottom();
+      }
+
+      lastScrollMetrics.current = { top: nextTop, height: nextHeight };
+    };
+    const onWheel = (event: WheelEvent) => {
+      if (event.deltaY < 0) detachFromBottom();
+    };
+    const onTouchStart = (event: TouchEvent) => {
+      touchY.current = event.touches[0]?.clientY ?? null;
+    };
+    const onTouchMove = (event: TouchEvent) => {
+      const nextY = event.touches[0]?.clientY;
+      if (nextY === undefined) return;
+      if (touchY.current !== null && nextY > touchY.current + 3) detachFromBottom();
+      touchY.current = nextY;
+    };
+    const clearTouch = () => {
+      touchY.current = null;
+    };
+    const onPointerDown = (event: PointerEvent) => {
+      if (event.pointerType === "mouse") return;
+      pointerGesture.current = { id: event.pointerId, y: event.clientY };
+    };
+    const onPointerMove = (event: PointerEvent) => {
+      const current = pointerGesture.current;
+      if (!current || current.id !== event.pointerId) return;
+      if (event.clientY > current.y + 3) detachFromBottom();
+      pointerGesture.current = { id: event.pointerId, y: event.clientY };
+    };
+    const clearPointer = (event: PointerEvent) => {
+      if (pointerGesture.current?.id === event.pointerId) pointerGesture.current = null;
+    };
+
+    element.addEventListener("scroll", onScroll, { passive: true });
+    element.addEventListener("wheel", onWheel, { passive: true });
+    element.addEventListener("touchstart", onTouchStart, { passive: true });
+    element.addEventListener("touchmove", onTouchMove, { passive: true });
+    element.addEventListener("touchend", clearTouch, { passive: true });
+    element.addEventListener("touchcancel", clearTouch, { passive: true });
+    element.addEventListener("pointerdown", onPointerDown, { passive: true });
+    element.addEventListener("pointermove", onPointerMove, { passive: true });
+    element.addEventListener("pointerup", clearPointer, { passive: true });
+    element.addEventListener("pointercancel", clearPointer, { passive: true });
+
+    removeScrollerListeners.current = () => {
+      element.removeEventListener("scroll", onScroll);
+      element.removeEventListener("wheel", onWheel);
+      element.removeEventListener("touchstart", onTouchStart);
+      element.removeEventListener("touchmove", onTouchMove);
+      element.removeEventListener("touchend", clearTouch);
+      element.removeEventListener("touchcancel", clearTouch);
+      element.removeEventListener("pointerdown", onPointerDown);
+      element.removeEventListener("pointermove", onPointerMove);
+      element.removeEventListener("pointerup", clearPointer);
+      element.removeEventListener("pointercancel", clearPointer);
+    };
+  }, [detachFromBottom]);
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.defaultPrevented || isEditableKeyboardTarget(event.target)) return;
+      const upwardKey = event.key === "ArrowUp" || event.key === "PageUp" || event.key === "Home" || (event.key === " " && event.shiftKey);
+      if (upwardKey && scroller.current) detachFromBottom();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [detachFromBottom]);
+
+  useLayoutEffect(() => {
+    const nextItems = items.map((item) => ({ id: item.id, own: item.own }));
+    const change = classifyTimelineChange(
+      previousItems.current,
+      nextItems,
+      previousFirstItemIndex.current,
+      firstItemIndex,
+    );
+    previousItems.current = nextItems;
+    previousFirstItemIndex.current = firstItemIndex;
+
+    if (change.kind === "initial") {
+      attachedToBottom.current = true;
+      return;
+    }
+
+    if (!shouldScrollTimelineToBottom(change, attachedToBottom.current)) return;
+    const force = change.kind === "replace" || change.appendedOwnItem;
+    if (force) attachedToBottom.current = true;
+    scheduleBottomPosition(force);
+  }, [firstItemIndex, items, scheduleBottomPosition]);
+
+  useEffect(() => () => {
+    removeScrollerListeners.current?.();
+    if (bottomFrame.current !== null) window.cancelAnimationFrame(bottomFrame.current);
+    if (programmaticResetFrame.current !== null) window.cancelAnimationFrame(programmaticResetFrame.current);
+  }, []);
+
+  const onAtBottomStateChange = useCallback((atBottom: boolean) => {
+    attachedToBottom.current = timelineAttachmentAfterBottomStateChange(attachedToBottom.current, atBottom);
+  }, []);
+
+  const onTotalListHeightChanged = useCallback(() => {
+    if (attachedToBottom.current) scheduleBottomPosition();
+  }, [scheduleBottomPosition]);
+
+  const onItemsRendered = useCallback((renderedItems: readonly unknown[]) => {
+    const next = renderedItems.length > 0;
+    setHasRenderedItems((current) => current === next ? current : next);
+  }, []);
 
   if (initializing) {
     return (
@@ -733,24 +955,22 @@ export function Timeline({ items, firstItemIndex, service, loadingHistory, initi
   return (
     <div className="timeline" aria-label="Room messages" aria-busy={loadingHistory}>
       <Virtuoso
+        ref={virtuoso}
         data={items}
         firstItemIndex={firstItemIndex}
-        initialTopMostItemIndex={{ index: "LAST", align: "end" }}
+        initialTopMostItemIndex={INITIAL_TIMELINE_LOCATION}
         alignToBottom
+        defaultItemHeight={96}
         computeItemKey={(_index, item) => item.id}
-        followOutput={shouldFollowOutput ? "auto" : false}
-        atBottomStateChange={setShouldFollowOutput}
-        increaseViewportBy={{ top: 600, bottom: 300 }}
-        components={{
-          Header: () => (
-            <div className="history-loader">
-              <button type="button" onClick={() => void service.paginate()} disabled={loadingHistory}>
-                {loadingHistory ? <LoaderCircle className="spin" aria-hidden="true" /> : <RefreshCw aria-hidden="true" />}
-                {loadingHistory ? "Consulting earlier pages…" : "Load earlier messages"}
-              </button>
-            </div>
-          ),
-        }}
+        followOutput={false}
+        atBottomStateChange={onAtBottomStateChange}
+        scrollerRef={setScroller}
+        totalListHeightChanged={onTotalListHeightChanged}
+        itemsRendered={onItemsRendered}
+        scrollSeekConfiguration={TIMELINE_SCROLL_SEEK}
+        increaseViewportBy={TIMELINE_VIEWPORT_PADDING}
+        components={TIMELINE_COMPONENTS}
+        context={virtuosoContext}
         itemContent={(index, item) => {
           const itemIndex = index - firstItemIndex;
           return (
@@ -768,6 +988,13 @@ export function Timeline({ items, firstItemIndex, service, loadingHistory, initi
           );
         }}
       />
+      {!hasRenderedItems ? (
+        <div className="timeline-measuring" aria-hidden="true">
+          <TimelineScrollSeekPlaceholder height={96} index={0} type="item" />
+          <TimelineScrollSeekPlaceholder height={96} index={1} type="item" />
+          <span>Measuring room history…</span>
+        </div>
+      ) : null}
       {lightboxId && imageItems.length ? <Lightbox key={lightboxId} items={imageItems} selectedId={lightboxId} service={service} onSelect={setLightboxId} onClose={closeLightbox} /> : null}
     </div>
   );

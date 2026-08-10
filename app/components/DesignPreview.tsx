@@ -51,29 +51,33 @@ function previewMessage(id: string, senderName: string, body: string, timestamp:
   };
 }
 
-function stressTimeline(start: number, count: number): TimelineItem[] {
+function stressBody(index: number): string {
+  const details = "Carrier trace remains inside the expected margin. ".repeat(1 + (index % 3)).trim();
+  return `Transmission ${index}. ${details}`;
+}
+
+function stressTimeline(start: number, count: number, settled = false): TimelineItem[] {
   const senders = ["Vera", "Sol", "Tamsin", "Rook"];
   return Array.from({ length: count }, (_value, offset) => {
     const index = start + offset;
     const sender = senders[index % senders.length];
-    const details = "Carrier trace remains inside the expected margin. ".repeat(1 + (index % 3)).trim();
-    const media = index % 17 === 0 ? {
+    const delayedDecryption = !settled && index % 13 === 0;
+    const media = index % 17 === 0 || index % 19 === 0 ? {
       type: "image" as const,
       media: {
         mxcUrl: "/night-receiver-plate.png",
         mimeType: "image/png",
         size: 382_000,
-        width: 1024,
-        height: 1024,
+        ...(index % 19 === 0 ? {} : { width: 1024, height: 1024 }),
       },
     } : {};
     return previewMessage(
       `stress-${index}`,
       sender,
-      `Transmission ${index}. ${details}`,
+      delayedDecryption ? "" : stressBody(index),
       at(7, 0) + (index * 60_000),
       index % 5 === 0,
-      media,
+      { ...media, decryptionState: delayedDecryption ? "decrypting" : "ready" },
     );
   });
 }
@@ -85,6 +89,8 @@ function createPreviewService(): MatrixService {
   const uxPreview = previewParams?.get("ux-preview") ?? null;
   const timelineStressPreview = uxPreview === "timeline-stress";
   let nextStressStart = STRESS_INITIAL_START;
+  let localStressSequence = 0;
+  let stopTimelineStress: (() => void) | null = null;
   const standardTimeline = [
     previewMessage("m1", "Vera", "Weak carrier riding the band. Not our bird.\nLogging and letting it pass.", at(10, 18), false, { reactions: [{ key: "📡", count: 3, mine: true }, { key: "👁", count: 1, mine: false }] }),
     previewMessage("m2", "Sol", "Copy. I’ll continue the sweep on the north arc\nand report any anomalies.", at(10, 21)),
@@ -134,9 +140,56 @@ function createPreviewService(): MatrixService {
 
   const emit = () => listeners.forEach((listener) => listener());
   const update = (next: Partial<MatrixSnapshot>) => { snapshot = { ...snapshot, ...next }; emit(); };
+  const startTimelineStress = () => {
+    if (!timelineStressPreview || stopTimelineStress) return;
+    const timers = [
+      window.setTimeout(() => {
+        update({
+          timeline: snapshot.timeline.map((item) => {
+            if (item.decryptionState !== "decrypting" || !item.id.startsWith("stress-")) return item;
+            const index = Number.parseInt(item.id.slice("stress-".length), 10);
+            return { ...item, body: stressBody(index), decryptionState: "ready" };
+          }),
+        });
+      }, 900),
+      window.setTimeout(() => {
+        update({
+          timeline: snapshot.timeline.map((item) => item.id === "stress-192" ? {
+            ...item,
+            body: `${item.body}\nDelayed receiver plate resolved without Matrix dimensions.`,
+            type: "image",
+            media: {
+              mxcUrl: "/night-receiver-plate.png",
+              mimeType: "image/png",
+              size: 382_000,
+            },
+          } : item),
+        });
+      }, 1_400),
+      window.setTimeout(() => {
+        update({
+          timeline: [
+            ...snapshot.timeline,
+            previewMessage("stress-remote-append", "Vera", "Live carrier update: remote append received.", at(11, 1)),
+          ],
+        });
+      }, 1_900),
+    ];
+    stopTimelineStress = () => {
+      timers.forEach((timer) => window.clearTimeout(timer));
+      stopTimelineStress = null;
+    };
+  };
 
   const service = {
-    subscribe: (listener: () => void) => { listeners.add(listener); return () => listeners.delete(listener); },
+    subscribe: (listener: () => void) => {
+      listeners.add(listener);
+      if (listeners.size === 1) startTimelineStress();
+      return () => {
+        listeners.delete(listener);
+        if (listeners.size === 0) stopTimelineStress?.();
+      };
+    },
     getSnapshot: () => snapshot,
     selectRoom: (roomId: string) => update({ activeRoomId: roomId }),
     clearError: () => update({ error: null }),
@@ -146,7 +199,7 @@ function createPreviewService(): MatrixService {
       update({ loadingHistory: true });
       await new Promise((resolve) => window.setTimeout(resolve, 250));
       const pageStart = Math.max(0, nextStressStart - STRESS_PAGE_SIZE);
-      const earlierTimeline = stressTimeline(pageStart, nextStressStart - pageStart);
+      const earlierTimeline = stressTimeline(pageStart, nextStressStart - pageStart, true);
       nextStressStart = pageStart;
       update({
         timeline: [...earlierTimeline, ...snapshot.timeline],
@@ -160,11 +213,27 @@ function createPreviewService(): MatrixService {
     retry: async () => undefined,
     redact: async (eventId: string) => update({ timeline: snapshot.timeline.map((item) => item.id === eventId ? { ...item, redacted: true, body: "" } : item) }),
     setTyping: async (typing: boolean) => update({ typingNames: typing ? ["Sol"] : [] }),
-    sendText: async (body: string, options: { replyTo?: string; editEventId?: string } = {}) => update({
-      timeline: options.editEventId
-        ? snapshot.timeline.map((item) => item.id === options.editEventId ? { ...item, body, formattedBody: undefined, edited: true } : item)
-        : [...snapshot.timeline, previewMessage(`m${Date.now()}`, "Rayne", body, Date.now(), true, { readBy: ["Vera"], replyTo: options.replyTo })],
-    }),
+    sendText: async (body: string, options: { replyTo?: string; editEventId?: string } = {}) => {
+      if (options.editEventId) {
+        update({ timeline: snapshot.timeline.map((item) => item.id === options.editEventId ? { ...item, body, formattedBody: undefined, edited: true } : item) });
+        return;
+      }
+
+      localStressSequence += 1;
+      const eventId = timelineStressPreview ? `stress-local-${localStressSequence}` : `m${Date.now()}`;
+      update({
+        timeline: [...snapshot.timeline, previewMessage(eventId, "Rayne", body, Date.now(), true, {
+          readBy: timelineStressPreview ? [] : ["Vera"],
+          replyTo: options.replyTo,
+          sendingStatus: timelineStressPreview ? "sending" : null,
+        })],
+      });
+      if (!timelineStressPreview) return;
+      await new Promise((resolve) => window.setTimeout(resolve, 220));
+      update({
+        timeline: snapshot.timeline.map((item) => item.id === eventId ? { ...item, sendingStatus: null, readBy: ["Vera"] } : item),
+      });
+    },
     sendFile: async () => undefined,
     getMediaAsset: async (media: MatrixMediaRef) => {
       if (timelineStressPreview) await new Promise((resolve) => window.setTimeout(resolve, 350));

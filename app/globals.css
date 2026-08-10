@@ -265,8 +265,15 @@ input::placeholder, textarea::placeholder { color: color-mix(in srgb, var(--ink-
 .mobile-menu-button { display: none; width: 38px; height: 38px; place-items: center; border: 0; background: transparent; }
 .mobile-menu-button svg { width: 19px; }
 
-.timeline { flex: 1; min-height: 0; }
+.timeline { position: relative; flex: 1; min-height: 0; }
 .timeline > div { height: 100%; }
+.timeline-scroll-seek { box-sizing: border-box; display: grid; grid-template-columns: 38px minmax(0, 1fr); align-items: start; gap: 11px; padding: 12px max(24px, 5vw); overflow: hidden; }
+.timeline-scroll-seek__avatar { width: 38px; height: 38px; border-radius: 9px; background: var(--paper-deep); }
+.timeline-scroll-seek__body { display: grid; gap: 9px; padding-top: 3px; }
+.timeline-scroll-seek__body i { width: min(180px, 48%); height: 10px; border-radius: 5px; background: var(--paper-deep); }
+.timeline-scroll-seek__body i:last-child { width: min(560px, 88%); height: 13px; }
+.timeline-measuring { position: absolute; z-index: 2; inset: 0; height: 100%; display: flex; flex-direction: column; justify-content: center; overflow: hidden; background: var(--paper); pointer-events: none; }
+.timeline-measuring > span:last-child { align-self: center; color: var(--ink-soft); font: 700 9px var(--font-mono); letter-spacing: .06em; text-transform: uppercase; }
 .history-loader { display: grid; place-items: center; padding: 18px; }
 .history-loader button { display: inline-flex; align-items: center; gap: 7px; padding: 7px 11px; border: 1px solid var(--line); border-radius: 16px; background: var(--paper-raised); color: var(--ink-soft); font-size: 10px; cursor: pointer; }
 .history-loader svg { width: 13px; }
@@ -316,6 +323,8 @@ input::placeholder, textarea::placeholder { color: color-mix(in srgb, var(--ink-
 .message-row--notice .message-body, .message-row--notice .formatted-body { color: var(--ink-soft); }
 .media-loading, .media-error { margin-top: 7px; display: flex; align-items: center; gap: 7px; color: var(--ink-soft); font-size: 10px; }.media-loading svg, .media-error svg { width: 14px; }.media-error { color: var(--signal-dark); }
 .media-loading--visual, .media-error--visual { width: 100%; height: 100%; margin: 0; padding: 18px; justify-content: center; align-content: center; flex-wrap: wrap; text-align: center; }
+.media-loading--audio, .media-error--audio { width: min(520px, 100%); min-height: 54px; padding: 8px 12px; border: 1px solid var(--line); border-radius: 9px; background: var(--paper-deep); }
+.media-loading--file, .media-error--file { width: min(460px, 100%); min-height: 60px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 9px; background: var(--paper-deep); }
 .decryption-state {
   min-height: 25px;
   margin-top: 2px;
@@ -330,7 +339,8 @@ input::placeholder, textarea::placeholder { color: color-mix(in srgb, var(--ink-
 .decryption-state--failed svg { color: currentColor; }
 .image-attachment { display: block; width: min(520px, 100%); margin-top: 8px; border: 1px solid var(--line); border-radius: 10px; overflow: hidden; background: var(--paper-deep); }
 .image-attachment img { display: block; max-width: 100%; max-height: 460px; object-fit: contain; }
-.video-attachment { width: min(620px, 100%); max-height: 480px; margin-top: 8px; border-radius: 10px; background: #000; }.audio-attachment { width: min(520px, 100%); margin-top: 8px; }
+.video-attachment-frame { display: block; max-width: min(620px, 100%); margin-top: 8px; overflow: hidden; border: 1px solid var(--line); border-radius: 10px; background: #000; }
+.video-attachment { display: block; width: 100%; height: 100%; object-fit: contain; background: #000; }.audio-attachment { width: min(520px, 100%); min-height: 54px; margin-top: 8px; }
 .file-attachment { width: min(460px, 100%); margin-top: 8px; padding: 10px; display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 10px; border: 1px solid var(--line); border-radius: 9px; background: var(--paper-raised); color: var(--ink); text-decoration: none; }
 .file-attachment > span:first-child { width: 38px; height: 38px; display: grid; place-items: center; background: var(--teal-soft); color: var(--teal); border-radius: 7px; }.file-attachment svg { width: 18px; }.file-attachment > span:nth-child(2) { min-width: 0; display: flex; flex-direction: column; }.file-attachment strong { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: 12px; }.file-attachment small { color: var(--ink-soft); }
 .timeline-empty { height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; padding: 30px; }
@@ -742,13 +752,13 @@ input::placeholder, textarea::placeholder { color: color-mix(in srgb, var(--ink-
 .media-error button { min-height: 26px; padding: 3px 8px; display: inline-flex; align-items: center; gap: 4px; border: 1px solid currentColor; border-radius: 5px; background: transparent; color: inherit; cursor: pointer; font: 750 9px var(--font-ui); }
 .media-error button svg { width: 12px; height: 12px; }
 .image-attachment { position: relative; width: fit-content; max-width: min(620px, 100%); }
-.image-attachment--reserved { width: min(620px, 100%); }
-.image-attachment--reserved .animated-image { width: 100%; height: 100%; min-height: 0; }
-.image-attachment--reserved img { width: 100%; height: 100%; min-width: 0; max-width: none; max-height: none; }
+.media-frame--reserved { width: min(620px, 100%); }
+.media-frame--reserved .animated-image { width: 100%; height: 100%; min-height: 0; }
 .image-attachment .animated-image { display: block; }
 .image-attachment .animated-image[role="button"] { cursor: zoom-in; }
 .image-attachment .animated-image[role="button"]:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }
 .image-attachment img { width: auto; min-width: 120px; max-width: min(620px, 100%); max-height: 520px; }
+.image-attachment.media-frame--reserved img { width: 100%; height: 100%; min-width: 0; max-width: none; max-height: none; object-fit: contain; }
 .image-attachment__hint { position: absolute; right: 8px; bottom: 8px; min-height: 30px; padding: 0 9px; display: flex; align-items: center; gap: 5px; border: 1px solid rgba(255,255,255,.34); border-radius: 7px; background: rgba(8,15,14,.8); color: white; opacity: 0; transform: translateY(3px); transition: opacity .15s ease, transform .15s ease; pointer-events: none; font: 750 9px var(--font-ui); }
 .image-attachment__hint svg { width: 13px; }
 .image-attachment:hover .image-attachment__hint, .image-attachment:focus-within .image-attachment__hint { opacity: 1; transform: none; }
