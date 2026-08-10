@@ -38,6 +38,7 @@ import type {
     TimelineItem,
 } from "@/lib/matrix/types";
 import { Avatar } from "./BrandMark";
+import { classes } from "../styles/appStyles";
 
 export function Dialog({
     title,
@@ -70,7 +71,8 @@ export function Dialog({
 
     return (
         <div
-            className="dialog-backdrop"
+            className={classes("dialog-backdrop")}
+            data-ui="dialog-backdrop"
             role="presentation"
             onMouseDown={(event) => {
                 if (event.target === event.currentTarget) {
@@ -80,18 +82,19 @@ export function Dialog({
         >
             <section
                 ref={dialogRef}
-                className={`dialog-card${wide ? " dialog-card--wide" : ""}`}
+                className={classes(`dialog-card${wide ? " dialog-card--wide" : ""}`)}
+                data-ui="dialog-card"
                 role="dialog"
                 aria-modal="true"
                 aria-labelledby={titleId}
             >
-                <header className="dialog-card__header">
+                <header className={classes("dialog-card__header")}>
                     <div>
-                        {eyebrow ? <p className="eyebrow">{eyebrow}</p> : null}
+                        {eyebrow ? <p className={classes("eyebrow")}>{eyebrow}</p> : null}
                         <h2 id={titleId}>{title}</h2>
                     </div>
                     <button
-                        className="icon-button"
+                        className={classes("icon-button")}
                         type="button"
                         aria-label="Close"
                         onClick={onClose}
@@ -159,16 +162,16 @@ export function VerificationDialog({
             onClose={close}
         >
             <div
-                className={`verification-flow verification-flow--${verification.stage}`}
+                className={classes(`verification-flow verification-flow--${verification.stage}`)}
                 aria-live="polite"
             >
-                <div className="verification-flow__signal" aria-hidden="true">
+                <div className={classes("verification-flow__signal")} aria-hidden="true">
                     {verification.stage === "complete" ? (
                         <ShieldCheck />
                     ) : verification.stage === "error" || verification.stage === "cancelled" ? (
                         <ShieldAlert />
                     ) : busy || verification.stage === "waiting" ? (
-                        <LoaderCircle className="spin" />
+                        <LoaderCircle className={classes("spin")} />
                     ) : (
                         <ShieldCheck />
                     )}
@@ -181,16 +184,16 @@ export function VerificationDialog({
                             Another Sub-Etha receiver signed in as{" "}
                             <strong>{verification.otherUserId}</strong> wants to verify this device.
                         </p>
-                        <div className="verification-device">
+                        <div className={classes("verification-device")}>
                             <span>REQUESTING DEVICE</span>
                             <code>{deviceLabel}</code>
                         </div>
-                        <p className="verification-warning">
+                        <p className={classes("verification-warning")}>
                             Accept only if you just started this from Sub-Etha on your other device.
                         </p>
-                        <div className="verification-actions">
+                        <div className={classes("verification-actions")}>
                             <button
-                                className="secondary-button"
+                                className={classes("secondary-button")}
                                 type="button"
                                 disabled={busy}
                                 onClick={() => void act(() => service.cancelDeviceVerification())}
@@ -198,14 +201,18 @@ export function VerificationDialog({
                                 Decline
                             </button>
                             <button
-                                className="primary-button"
+                                className={classes("primary-button")}
                                 data-dialog-autofocus
                                 type="button"
                                 disabled={busy}
                                 onClick={() => void act(() => service.acceptDeviceVerification())}
                             >
-                                {busy ? <LoaderCircle className="spin" /> : <ShieldCheck />}Accept
-                                &amp; compare
+                                {busy ? (
+                                    <LoaderCircle className={classes("spin")} />
+                                ) : (
+                                    <ShieldCheck />
+                                )}
+                                Accept &amp; compare
                             </button>
                         </div>
                     </>
@@ -219,16 +226,16 @@ export function VerificationDialog({
                                 : "Establishing a secure link"}
                         </h3>
                         <p>{verification.message}</p>
-                        <div className="verification-device">
+                        <div className={classes("verification-device")}>
                             <span>OTHER DEVICE</span>
                             <code>{deviceLabel}</code>
                         </div>
-                        <p className="verification-help">
+                        <p className={classes("verification-help")}>
                             Keep Sub-Etha open on both devices. The emoji comparison will appear
                             here automatically.
                         </p>
                         <button
-                            className="secondary-button full-width"
+                            className={classes("secondary-button full-width")}
                             type="button"
                             disabled={busy}
                             onClick={() => void act(() => service.cancelDeviceVerification())}
@@ -243,7 +250,10 @@ export function VerificationDialog({
                         <h3>Do these match exactly?</h3>
                         <p>Both Sub-Etha devices must show the same symbols in the same order.</p>
                         {verification.emojis.length ? (
-                            <ol className="verification-emoji" aria-label="Security emoji">
+                            <ol
+                                className={classes("verification-emoji")}
+                                aria-label="Security emoji"
+                            >
                                 {verification.emojis.map(([emoji, name], index) => (
                                     <li key={`${index}-${name}`}>
                                         <span aria-hidden="true">{emoji}</span>
@@ -253,7 +263,7 @@ export function VerificationDialog({
                             </ol>
                         ) : verification.decimals ? (
                             <div
-                                className="verification-decimals"
+                                className={classes("verification-decimals")}
                                 aria-label={`Security numbers ${verification.decimals.join(", ")}`}
                             >
                                 {verification.decimals.map((number) => (
@@ -261,16 +271,16 @@ export function VerificationDialog({
                                 ))}
                             </div>
                         ) : (
-                            <p className="inline-error">
+                            <p className={classes("inline-error")}>
                                 This homeserver did not provide a comparison sequence.
                             </p>
                         )}
-                        <p className="verification-warning">
+                        <p className={classes("verification-warning")}>
                             If even one item differs, choose “They do not match.”
                         </p>
-                        <div className="verification-actions">
+                        <div className={classes("verification-actions")}>
                             <button
-                                className="secondary-button"
+                                className={classes("secondary-button")}
                                 type="button"
                                 disabled={busy}
                                 onClick={() =>
@@ -280,7 +290,7 @@ export function VerificationDialog({
                                 They do not match
                             </button>
                             <button
-                                className="primary-button"
+                                className={classes("primary-button")}
                                 data-dialog-autofocus
                                 type="button"
                                 disabled={
@@ -290,7 +300,8 @@ export function VerificationDialog({
                                     void act(() => service.confirmDeviceVerification(true))
                                 }
                             >
-                                {busy ? <LoaderCircle className="spin" /> : <Check />}They match
+                                {busy ? <LoaderCircle className={classes("spin")} /> : <Check />}
+                                They match
                             </button>
                         </div>
                     </>
@@ -307,11 +318,11 @@ export function VerificationDialog({
                         </h3>
                         <p>{verification.message}</p>
                         <button
-                            className={
+                            className={classes(
                                 verification.stage === "complete"
                                     ? "primary-button full-width"
-                                    : "secondary-button full-width"
-                            }
+                                    : "secondary-button full-width",
+                            )}
                             data-dialog-autofocus
                             type="button"
                             onClick={() => service.dismissDeviceVerification()}
@@ -322,7 +333,7 @@ export function VerificationDialog({
                 ) : null}
 
                 {error ? (
-                    <p className="inline-error" role="alert">
+                    <p className={classes("inline-error")} role="alert">
                         {error}
                     </p>
                 ) : null}
@@ -371,7 +382,11 @@ export function NewConversationDialog({
 
     return (
         <Dialog title="Open a channel" eyebrow="NEW TRANSMISSION" onClose={onClose}>
-            <div className="segmented-control" role="tablist" aria-label="Conversation type">
+            <div
+                className={classes("segmented-control")}
+                role="tablist"
+                aria-label="Conversation type"
+            >
                 {(["dm", "room", "join"] as const).map((value) => (
                     <button
                         key={value}
@@ -384,7 +399,7 @@ export function NewConversationDialog({
                     </button>
                 ))}
             </div>
-            <form className="panel-form" onSubmit={submit}>
+            <form className={classes("panel-form")} onSubmit={submit}>
                 {mode === "room" ? (
                     <>
                         <label htmlFor="room-name">Room name</label>
@@ -412,7 +427,7 @@ export function NewConversationDialog({
                     required={mode !== "room"}
                 />
                 {mode !== "join" ? (
-                    <label className="check-row">
+                    <label className={classes("check-row")}>
                         <input
                             type="checkbox"
                             checked={encrypted}
@@ -425,18 +440,18 @@ export function NewConversationDialog({
                     </label>
                 ) : null}
                 {error ? (
-                    <p className="inline-error" role="alert">
+                    <p className={classes("inline-error")} role="alert">
                         {error}
                     </p>
                 ) : null}
                 <button
-                    className="primary-button"
+                    className={classes("primary-button")}
                     type="submit"
                     disabled={busy || (mode !== "room" && !target.trim())}
                 >
                     {busy ? (
                         <>
-                            <LoaderCircle className="spin" /> Reticulating room aliases…
+                            <LoaderCircle className={classes("spin")} /> Reticulating room aliases…
                         </>
                     ) : (
                         <>
@@ -481,9 +496,9 @@ export function SearchDialog({
 
     return (
         <Dialog title="Search this room" eyebrow="MESSAGE INDEX" onClose={onClose} wide>
-            <form className="search-form" onSubmit={search}>
+            <form className={classes("search-form")} onSubmit={search}>
                 <Search aria-hidden="true" />
-                <label className="sr-only" htmlFor="room-search-term">
+                <label className={classes("sr-only")} htmlFor="room-search-term">
                     Search messages
                 </label>
                 <input
@@ -494,18 +509,18 @@ export function SearchDialog({
                     placeholder="A phrase worth finding again"
                 />
                 <button type="submit" disabled={busy || !term.trim()}>
-                    {busy ? <LoaderCircle className="spin" /> : "Search"}
+                    {busy ? <LoaderCircle className={classes("spin")} /> : "Search"}
                 </button>
             </form>
             {error ? (
-                <div className="error-note">
+                <div className={classes("error-note")}>
                     <strong>Search unavailable.</strong>
                     <span>{error}</span>
                 </div>
             ) : null}
-            <div className="search-results" aria-live="polite">
+            <div className={classes("search-results")} aria-live="polite">
                 {!busy && term && !results.length && !error ? (
-                    <p className="empty-note">
+                    <p className={classes("empty-note")}>
                         No matching transmissions. The universe remains coy.
                     </p>
                 ) : null}
@@ -574,7 +589,7 @@ export function RoomDetailsDialog({
 
     return (
         <Dialog title={room.name} eyebrow="ROOM FIELD NOTES" onClose={onClose}>
-            <div className="room-profile">
+            <div className={classes("room-profile")}>
                 <Avatar
                     name={room.name}
                     mxcUrl={room.avatarMxcUrl}
@@ -588,7 +603,7 @@ export function RoomDetailsDialog({
                     <span>{room.encrypted ? "End-to-end encrypted" : "Not encrypted"}</span>
                 </div>
             </div>
-            <div className="settings-list">
+            <div className={classes("settings-list")}>
                 <button
                     type="button"
                     onClick={async () => {
@@ -606,7 +621,7 @@ export function RoomDetailsDialog({
                     <ChevronRight />
                 </button>
             </div>
-            <form className="panel-form panel-form--inline" onSubmit={invite}>
+            <form className={classes("panel-form panel-form--inline")} onSubmit={invite}>
                 <label htmlFor="invite-user">Invite a Matrix user</label>
                 <div>
                     <input
@@ -621,12 +636,12 @@ export function RoomDetailsDialog({
                 </div>
             </form>
             {error ? (
-                <p className="inline-error" role="alert">
+                <p className={classes("inline-error")} role="alert">
                     {error}
                 </p>
             ) : null}
             <button
-                className="danger-button"
+                className={classes("danger-button")}
                 type="button"
                 onClick={async () => {
                     if (
@@ -725,14 +740,14 @@ export function SettingsDialog({
 
     return (
         <Dialog title="Settings" eyebrow="DEVICE & ACCOUNT" onClose={onClose} wide>
-            <div className="settings-grid">
+            <div className={classes("settings-grid")}>
                 <section>
                     <h3>
                         <Users />
                         Profile
                     </h3>
                     <form
-                        className="panel-form"
+                        className={classes("panel-form")}
                         onSubmit={(event) => {
                             event.preventDefault();
                             void act("profile", async () => {
@@ -741,7 +756,7 @@ export function SettingsDialog({
                             });
                         }}
                     >
-                        <div className="profile-preview">
+                        <div className={classes("profile-preview")}>
                             <Avatar
                                 name={displayName || snapshot.userId}
                                 mxcUrl={snapshot.avatarMxcUrl}
@@ -767,12 +782,12 @@ export function SettingsDialog({
                             onChange={(event) => setAvatar(event.target.files?.[0])}
                         />
                         <button
-                            className="secondary-button"
+                            className={classes("secondary-button")}
                             type="submit"
                             disabled={busyAction === "profile"}
                         >
                             {busyAction === "profile" ? (
-                                <LoaderCircle className="spin" />
+                                <LoaderCircle className={classes("spin")} />
                             ) : (
                                 <Check />
                             )}
@@ -784,7 +799,7 @@ export function SettingsDialog({
                         <Sun />
                         Appearance
                     </h3>
-                    <div className="theme-options" role="radiogroup" aria-label="Theme">
+                    <div className={classes("theme-options")} role="radiogroup" aria-label="Theme">
                         {[
                             { value: "system", label: "System", icon: Settings },
                             { value: "light", label: "Light", icon: Sun },
@@ -808,7 +823,7 @@ export function SettingsDialog({
                         <Bell />
                         Notifications
                     </h3>
-                    <div className="settings-block">
+                    <div className={classes("settings-block")}>
                         <div>
                             <strong>Closed-app notifications</strong>
                             <p>
@@ -817,7 +832,7 @@ export function SettingsDialog({
                             </p>
                         </div>
                         <button
-                            className="secondary-button"
+                            className={classes("secondary-button")}
                             type="button"
                             disabled={
                                 !pushState.supported || pushState.checking || busyAction === "push"
@@ -834,7 +849,7 @@ export function SettingsDialog({
                         >
                             {pushState.checking ? (
                                 <>
-                                    <LoaderCircle className="spin" />
+                                    <LoaderCircle className={classes("spin")} />
                                     Checking
                                 </>
                             ) : pushState.enabled ? (
@@ -851,7 +866,7 @@ export function SettingsDialog({
                         </button>
                         {pushState.enabled ? (
                             <button
-                                className="secondary-button"
+                                className={classes("secondary-button")}
                                 type="button"
                                 disabled={busyAction === "push-test"}
                                 onClick={() =>
@@ -864,7 +879,7 @@ export function SettingsDialog({
                                 }
                             >
                                 {busyAction === "push-test" ? (
-                                    <LoaderCircle className="spin" />
+                                    <LoaderCircle className={classes("spin")} />
                                 ) : (
                                     <Bell />
                                 )}
@@ -872,11 +887,13 @@ export function SettingsDialog({
                             </button>
                         ) : null}
                         {pushState.permission === "denied" ? (
-                            <p className="inline-error">
+                            <p className={classes("inline-error")}>
                                 Notifications are blocked in browser settings.
                             </p>
                         ) : null}
-                        {pushState.error ? <p className="inline-error">{pushState.error}</p> : null}
+                        {pushState.error ? (
+                            <p className={classes("inline-error")}>{pushState.error}</p>
+                        ) : null}
                     </div>
                 </section>
 
@@ -885,21 +902,25 @@ export function SettingsDialog({
                         <ShieldCheck />
                         Encryption & recovery
                     </h3>
-                    <div className="crypto-status">
-                        <span className={cryptoStatus?.secretStorageReady ? "is-ready" : ""}>
+                    <div className={classes("crypto-status")}>
+                        <span
+                            className={classes(cryptoStatus?.secretStorageReady ? "is-ready" : "")}
+                        >
                             {cryptoStatus?.secretStorageReady ? <Check /> : <KeyRound />}Secret
                             storage
                         </span>
-                        <span className={cryptoStatus?.crossSigningReady ? "is-ready" : ""}>
+                        <span
+                            className={classes(cryptoStatus?.crossSigningReady ? "is-ready" : "")}
+                        >
                             {cryptoStatus?.crossSigningReady ? <Check /> : <KeyRound />}
                             Cross-signing
                         </span>
-                        <span className={cryptoStatus?.backupVersion ? "is-ready" : ""}>
+                        <span className={classes(cryptoStatus?.backupVersion ? "is-ready" : "")}>
                             {cryptoStatus?.backupVersion ? <Check /> : <KeyRound />}Key backup
                         </span>
                     </div>
                     {!cryptoStatus?.secretStorageReady ? (
-                        <div className="settings-block">
+                        <div className={classes("settings-block")}>
                             <label htmlFor="recovery-passphrase">
                                 Optional recovery passphrase
                             </label>
@@ -911,7 +932,7 @@ export function SettingsDialog({
                                 placeholder="Leave blank for a recovery key"
                             />
                             <button
-                                className="secondary-button"
+                                className={classes("secondary-button")}
                                 type="button"
                                 disabled={busyAction === "recovery"}
                                 onClick={() =>
@@ -928,7 +949,7 @@ export function SettingsDialog({
                             </button>
                         </div>
                     ) : (
-                        <div className="settings-block">
+                        <div className={classes("settings-block")}>
                             <label htmlFor="recovery-key">Recovery key or passphrase</label>
                             <textarea
                                 id="recovery-key"
@@ -937,7 +958,7 @@ export function SettingsDialog({
                                 onChange={(event) => setRecoveryInput(event.target.value)}
                             />
                             <button
-                                className="secondary-button"
+                                className={classes("secondary-button")}
                                 type="button"
                                 disabled={!recoveryInput.trim() || busyAction === "unlock"}
                                 onClick={() =>
@@ -953,7 +974,7 @@ export function SettingsDialog({
                         </div>
                     )}
                     {generatedRecovery ? (
-                        <div className="recovery-result" role="status">
+                        <div className={classes("recovery-result")} role="status">
                             <strong>Save this somewhere safe. It will not be shown again.</strong>
                             <code>{generatedRecovery}</code>
                             <button
@@ -968,7 +989,7 @@ export function SettingsDialog({
                         </div>
                     ) : null}
                     <button
-                        className="secondary-button full-width"
+                        className={classes("secondary-button full-width")}
                         type="button"
                         disabled={busyAction === "verify"}
                         onClick={() =>
@@ -986,15 +1007,15 @@ export function SettingsDialog({
                         <Users />
                         Devices
                     </h3>
-                    <div className="device-list">
+                    <div className={classes("device-list")}>
                         {devices.map((device) => (
                             <div key={device.deviceId}>
                                 <span
-                                    className={
+                                    className={classes(
                                         device.current
                                             ? "status-dot status-dot--online"
-                                            : "status-dot"
-                                    }
+                                            : "status-dot",
+                                    )}
                                 />
                                 <span>
                                     <strong>
@@ -1008,11 +1029,11 @@ export function SettingsDialog({
                                             : ""}
                                     </small>
                                     <small
-                                        className={
+                                        className={classes(
                                             device.verified
                                                 ? "device-trust device-trust--verified"
-                                                : "device-trust"
-                                        }
+                                                : "device-trust",
+                                        )}
                                     >
                                         {device.verified ? "Verified" : "Not verified"}
                                     </small>
@@ -1037,7 +1058,7 @@ export function SettingsDialog({
                         ))}
                     </div>
                     <button
-                        className="danger-button"
+                        className={classes("danger-button")}
                         type="button"
                         onClick={() => {
                             if (
@@ -1055,12 +1076,12 @@ export function SettingsDialog({
                 </section>
             </div>
             {notice ? (
-                <p className="success-note" role="status">
+                <p className={classes("success-note")} role="status">
                     {notice}
                 </p>
             ) : null}
             {error ? (
-                <p className="inline-error" role="alert">
+                <p className={classes("inline-error")} role="alert">
                     {error}
                 </p>
             ) : null}

@@ -55,6 +55,7 @@ import {
     type TimelineScrollEvent,
     type TimelineScrollMode,
 } from "@/lib/timeline-scroll";
+import { classes } from "../styles/appStyles";
 
 const EmojiPickerPanel = lazy(() =>
     import("./EmojiPickerPanel").then((module) => ({ default: module.EmojiPickerPanel })),
@@ -82,21 +83,23 @@ interface TimelineHistoryAnchor {
 function TimelineHistoryHeader({ context }: { context: TimelineVirtuosoContext }) {
     if (!context.hasMoreHistory) {
         return (
-            <div className="history-loader" role="status" aria-live="polite">
-                <span className="history-loader__status">Beginning of recorded transmissions</span>
+            <div className={classes("history-loader")} role="status" aria-live="polite">
+                <span className={classes("history-loader__status")}>
+                    Beginning of recorded transmissions
+                </span>
             </div>
         );
     }
 
     return (
-        <div className="history-loader" role="status" aria-live="polite">
+        <div className={classes("history-loader")} role="status" aria-live="polite">
             <button
                 type="button"
                 onClick={context.requestEarlierHistory}
                 disabled={context.loadingHistory}
             >
                 {context.loadingHistory ? (
-                    <LoaderCircle className="spin" aria-hidden="true" />
+                    <LoaderCircle className={classes("spin")} aria-hidden="true" />
                 ) : (
                     <RefreshCw aria-hidden="true" />
                 )}
@@ -109,7 +112,7 @@ function TimelineHistoryHeader({ context }: { context: TimelineVirtuosoContext }
 }
 
 function TimelineFooter() {
-    return <div className="timeline-footer-inset" aria-hidden="true" />;
+    return <div className={classes("timeline-footer-inset")} aria-hidden="true" />;
 }
 
 const TIMELINE_COMPONENTS = {
@@ -261,7 +264,7 @@ function AnimatedImage({
 
     return (
         <span
-            className={`animated-image${className ? ` ${className}` : ""}`}
+            className={classes(`animated-image${className ? ` ${className}` : ""}`)}
             role={onOpen ? "button" : undefined}
             tabIndex={onOpen ? 0 : undefined}
             aria-label={onOpen ? `View ${item.body || "image"}` : undefined}
@@ -295,7 +298,7 @@ function AnimatedImage({
             {asset.animated && !playing ? (
                 <button
                     type="button"
-                    className="gif-play"
+                    className={classes("gif-play")}
                     onClick={(event) => {
                         event.stopPropagation();
                         setPlayOverride(true);
@@ -336,10 +339,10 @@ function MediaAttachment({
         if (visual) {
             return (
                 <div
-                    className={`${visualFrameClass} media-frame--reserved`}
+                    className={classes(`${visualFrameClass} media-frame--reserved`)}
                     style={visualFrameStyle}
                 >
-                    <div className="media-error media-error--visual">
+                    <div className={classes("media-error media-error--visual")}>
                         <ShieldAlert aria-hidden="true" />
                         <span>{error}</span>
                         {retryable ? (
@@ -354,7 +357,7 @@ function MediaAttachment({
         }
 
         return (
-            <div className={`media-error media-error--${item.type}`}>
+            <div className={classes(`media-error media-error--${item.type}`)}>
                 <ShieldAlert aria-hidden="true" />
                 <span>{error}</span>
                 {retryable ? (
@@ -371,33 +374,38 @@ function MediaAttachment({
         if (visual) {
             return (
                 <div
-                    className={`${visualFrameClass} media-frame--reserved`}
+                    className={classes(`${visualFrameClass} media-frame--reserved`)}
                     style={visualFrameStyle}
                 >
-                    <div className="media-loading media-loading--visual">
-                        <LoaderCircle className="spin" aria-hidden="true" /> Decrypting attachment…
+                    <div className={classes("media-loading media-loading--visual")}>
+                        <LoaderCircle className={classes("spin")} aria-hidden="true" /> Decrypting
+                        attachment…
                     </div>
                 </div>
             );
         }
 
         return (
-            <div className={`media-loading media-loading--${item.type}`}>
-                <LoaderCircle className="spin" aria-hidden="true" /> Decrypting attachment…
+            <div className={classes(`media-loading media-loading--${item.type}`)}>
+                <LoaderCircle className={classes("spin")} aria-hidden="true" /> Decrypting
+                attachment…
             </div>
         );
     }
 
     if (item.type === "image") {
         return (
-            <div className="image-attachment media-frame--reserved" style={visualFrameStyle}>
+            <div
+                className={classes("image-attachment media-frame--reserved")}
+                style={visualFrameStyle}
+            >
                 <AnimatedImage
                     item={item}
                     service={service}
                     asset={asset}
                     onOpen={(opener) => onOpen(item, opener)}
                 />
-                <span className="image-attachment__hint" aria-hidden="true">
+                <span className={classes("image-attachment__hint")} aria-hidden="true">
                     <Maximize2 />
                     View
                 </span>
@@ -409,21 +417,36 @@ function MediaAttachment({
         // Matrix attachments do not include a caption track URL.
 
         return (
-            <div className="video-attachment-frame media-frame--reserved" style={visualFrameStyle}>
+            <div
+                className={classes("video-attachment-frame media-frame--reserved")}
+                style={visualFrameStyle}
+            >
                 {/* eslint-disable-next-line jsx-a11y/media-has-caption */}
-                <video className="video-attachment" src={asset.url} controls preload="metadata" />
+                <video
+                    className={classes("video-attachment")}
+                    src={asset.url}
+                    controls
+                    preload="metadata"
+                />
             </div>
         );
     }
 
     if (item.type === "audio") {
         // Matrix attachments do not include a caption track URL.
-        // eslint-disable-next-line jsx-a11y/media-has-caption
-        return <audio className="audio-attachment" src={asset.url} controls preload="metadata" />;
+        return (
+            // eslint-disable-next-line jsx-a11y/media-has-caption
+            <audio
+                className={classes("audio-attachment")}
+                src={asset.url}
+                controls
+                preload="metadata"
+            />
+        );
     }
 
     return (
-        <a href={asset.url} download={item.body} className="file-attachment">
+        <a href={asset.url} download={item.body} className={classes("file-attachment")}>
             <span>
                 <FileText aria-hidden="true" />
             </span>
@@ -477,11 +500,12 @@ function ReactionPicker({
     return (
         <div
             ref={ref}
-            className="reaction-picker"
+            className={classes("reaction-picker")}
+            data-swipe-lock
             role="dialog"
             aria-label={`React to message from ${item.senderName}`}
         >
-            <div className="quick-reactions">
+            <div className={classes("quick-reactions")}>
                 {QUICK_REACTIONS.map((emoji) => (
                     <button type="button" key={emoji} onClick={() => choose(emoji)}>
                         {emoji}
@@ -490,8 +514,8 @@ function ReactionPicker({
             </div>
             <Suspense
                 fallback={
-                    <div className="emoji-loading">
-                        <LoaderCircle className="spin" /> Indexing pictograms…
+                    <div className={classes("emoji-loading")}>
+                        <LoaderCircle className={classes("spin")} /> Indexing pictograms…
                     </div>
                 }
             >
@@ -749,7 +773,7 @@ function Lightbox({
 
     return (
         <div
-            className="lightbox"
+            className={classes("lightbox")}
             role="presentation"
             onMouseDown={(event) => {
                 if (event.target === event.currentTarget) {
@@ -759,33 +783,35 @@ function Lightbox({
         >
             <div
                 ref={panel}
-                className="lightbox__panel"
+                className={classes("lightbox__panel")}
                 role="dialog"
                 aria-modal="true"
                 aria-labelledby={titleId}
                 aria-describedby={metadataId}
             >
-                <header className="lightbox__header">
-                    <div className="lightbox__identity">
+                <header className={classes("lightbox__header")}>
+                    <div className={classes("lightbox__identity")}>
                         <strong id={titleId}>{item.body || "Image"}</strong>
                         <span id={metadataId}>
                             {item.senderName} · {formatTime(item.timestamp)}
                         </span>
                     </div>
-                    <div className="lightbox__tools" aria-label="Image controls">
+                    <div className={classes("lightbox__tools")} aria-label="Image controls">
                         <button
                             type="button"
-                            className={`lightbox__tool lightbox__fit${zoom === MIN_VIEWER_ZOOM ? " is-active" : ""}`}
+                            className={classes(
+                                `lightbox__tool lightbox__fit${zoom === MIN_VIEWER_ZOOM ? " is-active" : ""}`,
+                            )}
                             onClick={() => updateZoom(MIN_VIEWER_ZOOM)}
                             aria-label="Fit image to viewer"
                             aria-pressed={zoom === MIN_VIEWER_ZOOM}
                             title="Fit image (0)"
                         >
                             <Maximize2 aria-hidden="true" />
-                            <span className="lightbox__tool-label">Fit</span>
+                            <span className={classes("lightbox__tool-label")}>Fit</span>
                         </button>
                         <div
-                            className="lightbox__zoom-controls"
+                            className={classes("lightbox__zoom-controls")}
                             role="group"
                             aria-label="Zoom controls"
                         >
@@ -799,7 +825,7 @@ function Lightbox({
                                 <ZoomOut aria-hidden="true" />
                             </button>
                             <span
-                                className="lightbox__zoom-value"
+                                className={classes("lightbox__zoom-value")}
                                 role="status"
                                 aria-live="polite"
                                 aria-atomic="true"
@@ -818,32 +844,34 @@ function Lightbox({
                         </div>
                         {asset ? (
                             <a
-                                className="lightbox__tool"
+                                className={classes("lightbox__tool")}
                                 href={asset.url}
                                 download={item.body || "matrix-image"}
                                 aria-label="Download image"
                                 title="Download image"
                             >
                                 <Download aria-hidden="true" />
-                                <span className="lightbox__tool-label">Download</span>
+                                <span className={classes("lightbox__tool-label")}>Download</span>
                             </a>
                         ) : null}
                         <button
                             ref={closeButton}
                             type="button"
-                            className="lightbox__tool"
+                            className={classes("lightbox__tool")}
                             onClick={onClose}
                             aria-label="Close image viewer"
                             title="Close image viewer"
                         >
                             <X aria-hidden="true" />
-                            <span className="lightbox__tool-label">Close</span>
+                            <span className={classes("lightbox__tool-label")}>Close</span>
                         </button>
                     </div>
                 </header>
                 <div
                     ref={stage}
-                    className={`lightbox__stage${canPan ? " is-pannable" : ""}${dragging ? " is-dragging" : ""}`}
+                    className={classes(
+                        `lightbox__stage${canPan ? " is-pannable" : ""}${dragging ? " is-dragging" : ""}`,
+                    )}
                     onPointerDown={(event) => {
                         if (
                             !canPan ||
@@ -884,7 +912,7 @@ function Lightbox({
                     }}
                 >
                     {error ? (
-                        <div className="lightbox__error">
+                        <div className={classes("lightbox__error")}>
                             <ShieldAlert />
                             <strong>Image unavailable</strong>
                             <span>{error}</span>
@@ -904,21 +932,21 @@ function Lightbox({
                         </div>
                     ) : null}
                     {!asset && !error ? (
-                        <div className="lightbox__loading">
-                            <LoaderCircle className="spin" />
+                        <div className={classes("lightbox__loading")}>
+                            <LoaderCircle className={classes("spin")} />
                             Decrypting the full transmission…
                         </div>
                     ) : null}
                     {asset ? (
                         <div
-                            className="lightbox__canvas"
+                            className={classes("lightbox__canvas")}
                             style={{ width: canvasSize.width, height: canvasSize.height }}
                         >
                             <AnimatedImage
                                 item={item}
                                 service={service}
                                 asset={asset}
-                                className="lightbox__image"
+                                className={classes("lightbox__image")}
                                 loading="eager"
                                 onImageLoad={(size) => setNaturalSize(size)}
                             />
@@ -929,7 +957,7 @@ function Lightbox({
                     <>
                         <button
                             type="button"
-                            className="lightbox__previous"
+                            className={classes("lightbox__previous")}
                             onClick={() => move(-1)}
                             aria-label="Previous image"
                         >
@@ -937,7 +965,7 @@ function Lightbox({
                         </button>
                         <button
                             type="button"
-                            className="lightbox__next"
+                            className={classes("lightbox__next")}
                             onClick={() => move(1)}
                             aria-label="Next image"
                         >
@@ -952,7 +980,7 @@ function Lightbox({
 
 function DayDivider({ timestamp }: { timestamp: number }) {
     return (
-        <div className="day-divider" role="separator">
+        <div className={classes("day-divider")} role="separator">
             <span>{formatDate(timestamp)}</span>
         </div>
     );
@@ -962,7 +990,7 @@ function PlainMessageBody({ body }: { body: string }) {
     const segments = useMemo(() => messageTextSegments(body), [body]);
 
     return (
-        <p className="message-body">
+        <p className={classes("message-body")}>
             {segments.map((segment, index) =>
                 segment.href ? (
                     <a
@@ -1064,7 +1092,11 @@ function FormattedMessageBody({ html }: { html: string }) {
     }, [html]);
 
     return (
-        <div ref={bodyRef} className="formatted-body" dangerouslySetInnerHTML={{ __html: html }} />
+        <div
+            ref={bodyRef}
+            className={classes("formatted-body")}
+            dangerouslySetInnerHTML={{ __html: html }}
+        />
     );
 }
 
@@ -1125,7 +1157,7 @@ function MessageRow({
         return (
             <>
                 {newDay ? <DayDivider timestamp={item.timestamp} /> : null}
-                <div className="system-event">
+                <div className={classes("system-event")}>
                     <span>{item.body}</span>
                     <time>{formatTime(item.timestamp)}</time>
                 </div>
@@ -1138,42 +1170,51 @@ function MessageRow({
             {newDay ? <DayDivider timestamp={item.timestamp} /> : null}
             <article
                 ref={rowRef}
-                className={`message-row${item.own ? " message-row--own" : ""}${item.type === "notice" ? " message-row--notice" : ""}${actionsOpen ? " is-actions-open" : ""}`}
+                className={classes(
+                    `message-row${item.own ? " message-row--own" : ""}${item.type === "notice" ? " message-row--notice" : ""}${actionsOpen ? " is-actions-open" : ""}`,
+                )}
+                data-ui="message-row"
+                data-actions-state={actionsOpen ? "open" : "closed"}
                 data-event-id={item.id}
                 aria-label={`Message from ${item.senderName}`}
             >
                 <time
-                    className="message-row__time"
+                    className={classes("message-row__time")}
                     dateTime={new Date(item.timestamp).toISOString()}
                 >
                     {formatTime(item.timestamp)}
                 </time>
-                <span className="message-row__marker" aria-hidden="true" />
-                <div className="message-row__main">
+                <span className={classes("message-row__marker")} aria-hidden="true" />
+                <div className={classes("message-row__main")}>
                     <header>
                         <strong>{item.senderName}</strong>
-                        {item.edited ? <span className="edited-label">edited</span> : null}
+                        {item.edited ? (
+                            <span className={classes("edited-label")}>edited</span>
+                        ) : null}
                         {item.encrypted ? (
-                            <span className="encrypted-label" title="Encrypted message">
+                            <span className={classes("encrypted-label")} title="Encrypted message">
                                 E2E
                             </span>
                         ) : null}
                     </header>
                     {item.replyTo ? (
-                        <div className="reply-context">
+                        <div className={classes("reply-context")}>
                             <CornerUpLeft aria-hidden="true" />
                             Reply to an earlier transmission
                         </div>
                     ) : null}
                     {item.redacted ? (
-                        <p className="redacted-body">Message removed</p>
+                        <p className={classes("redacted-body")}>Message removed</p>
                     ) : item.decryptionState === "decrypting" ? (
-                        <div className="decryption-state" role="status">
-                            <LoaderCircle className="spin" aria-hidden="true" />
+                        <div className={classes("decryption-state")} role="status">
+                            <LoaderCircle className={classes("spin")} aria-hidden="true" />
                             <span>Decrypting transmission…</span>
                         </div>
                     ) : item.decryptionState === "failed" ? (
-                        <div className="decryption-state decryption-state--failed" role="status">
+                        <div
+                            className={classes("decryption-state decryption-state--failed")}
+                            role="status"
+                        >
                             <ShieldAlert aria-hidden="true" />
                             <span>
                                 This transmission could not be decrypted on this device. Sub-Etha
@@ -1189,12 +1230,12 @@ function MessageRow({
                         <MediaAttachment item={item} service={service} onOpen={onOpenMedia} />
                     ) : null}
                     {item.reactions.length ? (
-                        <div className="reaction-list" aria-label="Reactions">
+                        <div className={classes("reaction-list")} aria-label="Reactions">
                             {item.reactions.map((reaction) => (
                                 <button
                                     key={reaction.key}
                                     type="button"
-                                    className={reaction.mine ? "is-mine" : ""}
+                                    className={classes(reaction.mine ? "is-mine" : "")}
                                     aria-pressed={reaction.mine}
                                     onClick={() =>
                                         void service.toggleReaction(item.id, reaction.key)
@@ -1207,7 +1248,7 @@ function MessageRow({
                         </div>
                     ) : null}
                     {item.sendingStatus ? (
-                        <div className={`send-status send-status--${item.sendingStatus}`}>
+                        <div className={classes(`send-status send-status--${item.sendingStatus}`)}>
                             <span>
                                 {item.sendingStatus === "not_sent" ? "Could not send" : "Sending…"}
                             </span>
@@ -1220,7 +1261,7 @@ function MessageRow({
                         </div>
                     ) : null}
                     {item.readBy.length ? (
-                        <div className="read-receipt">
+                        <div className={classes("read-receipt")}>
                             <CheckCheck aria-hidden="true" />
                             Read by {item.readBy.join(", ")}
                         </div>
@@ -1229,7 +1270,8 @@ function MessageRow({
                 {actionable ? (
                     <button
                         type="button"
-                        className="message-actions-toggle"
+                        className={classes("message-actions-toggle")}
+                        data-ui="message-actions-toggle"
                         aria-label={`Show actions for message from ${item.senderName}`}
                         aria-expanded={actionsOpen}
                         onClick={() => setActionsOpen((open) => !open)}
@@ -1239,7 +1281,8 @@ function MessageRow({
                 ) : null}
                 {actionable ? (
                     <div
-                        className="message-actions"
+                        className={classes("message-actions")}
+                        data-ui="message-actions"
                         aria-label={`Actions for message from ${item.senderName}`}
                     >
                         <button
@@ -2032,13 +2075,13 @@ export function Timeline({
     if (initializing) {
         return (
             <div
-                className="timeline-empty timeline-loading"
+                className={classes("timeline-empty timeline-loading")}
                 role="status"
                 aria-live="polite"
                 aria-busy="true"
             >
-                <LoaderCircle className="spin" aria-hidden="true" />
-                <p className="eyebrow">TUNING ROOM HISTORY</p>
+                <LoaderCircle className={classes("spin")} aria-hidden="true" />
+                <p className={classes("eyebrow")}>TUNING ROOM HISTORY</p>
                 <h3>Resolving local signals.</h3>
                 <p>Loading messages and the encryption keys needed to read them…</p>
             </div>
@@ -2047,11 +2090,11 @@ export function Timeline({
 
     if (!items.length) {
         return (
-            <div className="timeline-empty">
-                <div className="empty-orbit" aria-hidden="true">
+            <div className={classes("timeline-empty")}>
+                <div className={classes("empty-orbit")} aria-hidden="true">
                     <span />
                 </div>
-                <p className="eyebrow">NO SIGNALS RECORDED</p>
+                <p className={classes("eyebrow")}>NO SIGNALS RECORDED</p>
                 <h3>This room contains mostly space.</h3>
                 <p>
                     You could leave it pristine, but history suggests someone will type eventually.
@@ -2062,7 +2105,8 @@ export function Timeline({
 
     return (
         <div
-            className="timeline"
+            className={classes("timeline")}
+            data-ui="timeline"
             aria-label="Room messages"
             aria-busy={loadingHistory}
             data-first-item-index={firstItemIndex}
@@ -2094,7 +2138,7 @@ export function Timeline({
                         <>
                             {unreadCount > 0 &&
                             itemIndex === Math.max(0, items.length - unreadCount) ? (
-                                <div className="unread-divider" role="separator">
+                                <div className={classes("unread-divider")} role="separator">
                                     <span>New transmissions</span>
                                 </div>
                             ) : null}

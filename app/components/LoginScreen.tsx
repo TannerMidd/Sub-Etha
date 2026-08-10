@@ -22,6 +22,7 @@ import {
 } from "@/lib/matrix/auth";
 import type { LoginCapabilities, PersistedMatrixSession } from "@/lib/matrix/types";
 import { BrandMark } from "./BrandMark";
+import { classes } from "../styles/appStyles";
 
 export function LoginScreen({
     onAuthenticated,
@@ -108,18 +109,18 @@ export function LoginScreen({
     };
 
     return (
-        <main className="login-shell">
-            <section className="login-intro" aria-labelledby="welcome-title">
+        <main className={classes("login-shell")} data-ui="login-shell">
+            <section className={classes("login-intro")} aria-labelledby="welcome-title">
                 <BrandMark />
-                <div className="login-intro__copy">
-                    <p className="eyebrow">AN INDEPENDENT MATRIX RECEIVER</p>
+                <div className={classes("login-intro__copy")}>
+                    <p className={classes("eyebrow")}>AN INDEPENDENT MATRIX RECEIVER</p>
                     <h1 id="welcome-title">Chat without the administrative weather system.</h1>
-                    <p className="lede">
+                    <p className={classes("lede")}>
                         Your rooms, messages and encryption stay between this device and your Matrix
                         homeserver. Sub-Etha merely makes the controls less alarming.
                     </p>
                 </div>
-                <div className="field-notes" aria-label="Product principles">
+                <div className={classes("field-notes")} aria-label="Product principles">
                     <div>
                         <ShieldCheck aria-hidden="true" />
                         <span>
@@ -140,16 +141,16 @@ export function LoginScreen({
                         </span>
                     </div>
                 </div>
-                <p className="edition-note">
+                <p className={classes("edition-note")}>
                     SUB—ETHA FIELD GUIDE / TRANSMISSION APPARATUS / EARTH SECTOR
                 </p>
             </section>
 
-            <section className="login-card" aria-labelledby="signin-title">
-                <div className="login-card__header">
-                    <span className="index-chip">01</span>
+            <section className={classes("login-card")} aria-labelledby="signin-title">
+                <div className={classes("login-card__header")}>
+                    <span className={classes("index-chip")}>01</span>
                     <div>
-                        <p className="eyebrow">FIND YOUR SIGNAL</p>
+                        <p className={classes("eyebrow")}>FIND YOUR SIGNAL</p>
                         <h2 id="signin-title">Connect to Matrix</h2>
                     </div>
                 </div>
@@ -160,10 +161,10 @@ export function LoginScreen({
                             event.preventDefault();
                             void discover();
                         }}
-                        className="login-form"
+                        className={classes("login-form")}
                     >
                         <label htmlFor="homeserver">Matrix ID or homeserver</label>
-                        <div className="field-with-icon">
+                        <div className={classes("field-with-icon")}>
                             <Server aria-hidden="true" />
                             <input
                                 id="homeserver"
@@ -174,18 +175,18 @@ export function LoginScreen({
                                 spellCheck={false}
                             />
                         </div>
-                        <p className="field-help">
+                        <p className={classes("field-help")}>
                             We use Matrix discovery first, then contact the homeserver directly.
                         </p>
                         <button
-                            className="primary-button"
+                            className={classes("primary-button")}
                             type="submit"
                             disabled={busy || !serverInput.trim()}
                         >
                             {busy ? (
                                 <>
-                                    <LoaderCircle className="spin" aria-hidden="true" /> Consulting
-                                    the address book…
+                                    <LoaderCircle className={classes("spin")} aria-hidden="true" />{" "}
+                                    Consulting the address book…
                                 </>
                             ) : (
                                 <>
@@ -195,9 +196,9 @@ export function LoginScreen({
                         </button>
                     </form>
                 ) : (
-                    <div className="login-form">
+                    <div className={classes("login-form")}>
                         <button
-                            className="server-pill"
+                            className={classes("server-pill")}
                             type="button"
                             onClick={() => {
                                 setCapabilities(null);
@@ -205,7 +206,7 @@ export function LoginScreen({
                             }}
                         >
                             <span>
-                                <span className="status-dot status-dot--online" />
+                                <span className={classes("status-dot status-dot--online")} />
                                 {capabilities.serverName}
                             </span>
                             <span>Change</span>
@@ -213,7 +214,7 @@ export function LoginScreen({
 
                         {capabilities.oauth ? (
                             <button
-                                className="primary-button"
+                                className={classes("primary-button")}
                                 type="button"
                                 disabled={busy}
                                 onClick={() => void redirect("oauth")}
@@ -225,12 +226,12 @@ export function LoginScreen({
                         {capabilities.sso ? (
                             capabilities.identityProviders.length ? (
                                 <div
-                                    className="provider-list"
+                                    className={classes("provider-list")}
                                     aria-label="Single sign-on providers"
                                 >
                                     {capabilities.identityProviders.map((provider) => (
                                         <button
-                                            className="secondary-button"
+                                            className={classes("secondary-button")}
                                             type="button"
                                             key={provider.id}
                                             disabled={busy}
@@ -243,7 +244,7 @@ export function LoginScreen({
                                 </div>
                             ) : (
                                 <button
-                                    className="secondary-button"
+                                    className={classes("secondary-button")}
                                     type="button"
                                     disabled={busy}
                                     onClick={() => void redirect("sso")}
@@ -254,8 +255,8 @@ export function LoginScreen({
                         ) : null}
 
                         {capabilities.password ? (
-                            <form onSubmit={passwordLogin} className="password-fields">
-                                <div className="divider">
+                            <form onSubmit={passwordLogin} className={classes("password-fields")}>
+                                <div className={classes("divider")}>
                                     <span>or use a password</span>
                                 </div>
                                 <label htmlFor="matrix-user">Matrix ID or username</label>
@@ -275,13 +276,16 @@ export function LoginScreen({
                                     autoComplete="current-password"
                                 />
                                 <button
-                                    className="primary-button"
+                                    className={classes("primary-button")}
                                     type="submit"
                                     disabled={busy || !userId.trim() || !password}
                                 >
                                     {busy ? (
                                         <>
-                                            <LoaderCircle className="spin" aria-hidden="true" />{" "}
+                                            <LoaderCircle
+                                                className={classes("spin")}
+                                                aria-hidden="true"
+                                            />{" "}
                                             Establishing contact…
                                         </>
                                     ) : (
@@ -294,16 +298,19 @@ export function LoginScreen({
                         ) : null}
 
                         <button
-                            className="advanced-toggle"
+                            className={classes("advanced-toggle")}
                             type="button"
                             aria-expanded={advanced}
                             onClick={() => setAdvanced((value) => !value)}
                         >
                             <KeyRound aria-hidden="true" /> Advanced access token{" "}
-                            <ChevronDown className={advanced ? "rotate" : ""} aria-hidden="true" />
+                            <ChevronDown
+                                className={classes(advanced ? "rotate" : "")}
+                                aria-hidden="true"
+                            />
                         </button>
                         {advanced ? (
-                            <div className="token-fields">
+                            <div className={classes("token-fields")}>
                                 <label htmlFor="access-token">Existing access token</label>
                                 <textarea
                                     id="access-token"
@@ -312,11 +319,11 @@ export function LoginScreen({
                                     rows={3}
                                     spellCheck={false}
                                 />
-                                <p className="field-help">
+                                <p className={classes("field-help")}>
                                     Stored only in this browser. Treat it like a password.
                                 </p>
                                 <button
-                                    className="secondary-button"
+                                    className={classes("secondary-button")}
                                     type="button"
                                     disabled={busy || !accessToken.trim()}
                                     onClick={() => void tokenLogin()}
@@ -327,7 +334,7 @@ export function LoginScreen({
                         ) : null}
 
                         {!capabilities.oauth && !capabilities.sso && !capabilities.password ? (
-                            <p className="inline-notice">
+                            <p className={classes("inline-notice")}>
                                 This homeserver did not advertise a login method Sub-Etha can safely
                                 use.
                             </p>
@@ -336,12 +343,12 @@ export function LoginScreen({
                 )}
 
                 {error ? (
-                    <div className="error-note" role="alert">
+                    <div className={classes("error-note")} role="alert">
                         <strong>Signal not acquired.</strong>
                         <span>{error}</span>
                     </div>
                 ) : null}
-                <p className="privacy-footnote">
+                <p className={classes("privacy-footnote")}>
                     No account data is sent to Sub-Etha’s notification service. Not even the
                     surprisingly unhelpful bits.
                 </p>

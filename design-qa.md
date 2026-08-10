@@ -1,72 +1,78 @@
-# Sub-Etha Compact Dark Guide QA
+# Sub-Etha Night Edition Design QA
 
 ## Source and implementation evidence
 
-- Desktop art-direction reference: `designs/sub-etha-night-edition-desktop-1920x1080.png`
-- Desktop implementation capture: `designs/sub-etha-compact-dark-desktop-1920x1080.png`
-- Desktop full-view comparison: `designs/design-qa-desktop-comparison.png`
-- Desktop Guide-rail comparison: `designs/design-qa-guide-rail-comparison.png`
-- Mobile art-direction reference: `designs/sub-etha-night-edition-mobile-390x844.png`
-- Mobile implementation capture: `designs/sub-etha-compact-dark-mobile-390x844.png`
-- Mobile full-view comparison: `designs/design-qa-mobile-comparison.png`
-- Mobile composer comparison: `designs/design-qa-mobile-composer-comparison.png`
-- Browser route: `/?design-preview#/room/signal-watch`
+- Supplied desktop source of truth: `designs/sub-etha-new-visual-target-desktop-1920x1080.png`
+- Desktop implementation capture: `designs/sub-etha-night-edition-implementation-desktop-1920x1080.png`
+- Desktop side-by-side comparison, reference then implementation: `designs/design-qa-night-edition-desktop-comparison.png`
+- Mobile source of truth: `designs/sub-etha-night-edition-mobile-390x844.png`
+- Mobile implementation capture: `designs/sub-etha-night-edition-implementation-mobile-390x844.png`
+- Mobile side-by-side comparison, reference then implementation: `designs/design-qa-night-edition-mobile-comparison.png`
+- Login captures: `designs/sub-etha-night-edition-login-desktop-1920x1080.png` and `designs/sub-etha-night-edition-login-mobile-390x844.png`
+- Settings capture: `designs/sub-etha-night-edition-settings-desktop-1920x1080.png`
+- Deterministic browser route: `/?design-preview#/room/signal-watch`
 
-Both implementation captures are PNG browser renders at device-pixel ratio 1. The desktop capture is 1920 x 1080 pixels and the mobile capture is 390 x 844 pixels. The tested state is the dark `Signal Watch` design-preview fixture with an empty one-line composer.
+The implementation captures are Chromium PNG renders at device-pixel ratio 1. The tested state is the dark Signal Watch preview fixture with an empty, unfocused, one-line composer.
+
+## Theme and architecture result
+
+- Dark semantic tokens use canvas `#010709`, raised surface `#041113`, elevated surface `#071a1c`, primary text `#f0e4c7`, muted text `#91a8a1`, teal `#63d8bd`, signal red `#ff5645`, and guide amber `#e9b44c`.
+- The light theme remains available through the same semantic token names. The existing `light | dark | system` preference is preserved, with dark as the no-preference fallback.
+- Styling is compiled from Sass tokens and mixins, a minimal global foundation, shared primitives, and component-scoped Brand, Login, Shell, Timeline, Composer, and Panels modules.
+- `sass` and `clsx` provide the styling toolchain and class composition. Tailwind and PostCSS are no longer part of the styling path.
+- CSS module hashes remain private. Runtime behavior and browser coverage use roles, IDs, `data-ui`, `data-state`, `data-scroll-mode`, and `data-swipe-lock` hooks.
+- The receiver illustration reuses `public/night-receiver-linework.png`; no replacement CSS ornament or synthetic asset was introduced.
 
 ## Measured desktop result
 
-- Shell: 1920 x 1080.
-- Grid: 312px navigation, 1264px conversation, and 344px Guide rail.
-- Header: 104px. Conversation title: 38px / 42px Roboto Condensed Variable.
-- Message copy: 16px / 24px Inter Variable with an 820px maximum reading measure.
-- Timeline stage: 856px. Typing strip: 28px. Composer: 52px. Status strip: 40px.
-- Guide illustration field: 296 x 296px.
-- Primary surface: `#031013`.
-- The receiver illustration uses `night-receiver-linework.png`, an alpha-transparent derivative of the supplied source. It has no CSS filter, mask, blend mode, enlargement, or opaque backing rectangle.
+- Shell: 1920 × 1080.
+- Grid: 350px room rail, 1152px conversation, and 418px Guide rail.
+- Conversation header: 158px. The measured title glyph width is 266px, matching the supplied display scale.
+- Timeline: y=158 through y=944, with the newest row retained above the composer and no visible browser scrollbar.
+- Composer region: 73px, with the 56px field aligned at y=944 in the source composition.
+- Receiver status: 63px, beginning at y=1017.
+- Rail borders, guide dividers, note card, and receiver plate align to the supplied three-column geometry.
 
 ## Measured mobile result
 
-- Shell: 390 x 844.
-- Header: 56px. Conversation title: 26px / 30px.
-- Message copy: 15px / 22px.
-- Timeline stage: 680px in the empty-composer fixture. Typing strip: 28px. Composer: 48px. Status strip: 32px.
-- Textarea: 42px minimum and 142px maximum. Header actions: two 44 x 44px targets.
-- The Guide rail is `display: none` and no `Guide Footnote` text or replacement card exists.
-- Room information remains reachable through the labelled Details control.
+- Shell: 390 × 844.
+- Header: 84px with the inset guide-rule divider and 44px action targets.
+- Timeline: y=84 through y=705.
+- Mobile Guide Footnote: 61px, y=705 through y=766, using the receiver-linework asset.
+- Composer: 45px, y=766 through y=811. The textarea remains autosizing and the action buttons remain 44px touch targets.
+- Receiver status: 33px, y=811 through y=844, with the compact `Connected / End to end private / 7` treatment.
+- The full Guide rail remains available on larger screens; mobile retains labelled Details access while presenting the source-matched footnote treatment.
 
 ## Interaction and behavior acceptance
 
-- Rapid real wheel scrolling never creates a `.timeline-scroll-seek` placeholder.
-- Attached timelines keep the newest row at least 12px above the scrollport edge.
-- Detached timelines preserve their first visible event within 2px through twenty message mutations, decryption, media measurement, reactions, edits, and a remote append.
-- History pagination preserves its anchor, rejects concurrent requests, exposes retry after failure, stops at token exhaustion, and can still return to the newest message.
+- Timeline spacer geometry remains owned by Virtuoso.
+- History pagination preserves its reading anchor, rejects concurrent requests, exposes retry, stops at exhaustion, and returns to the newest message on desktop and mobile.
+- The final row remains clear of the composer while attached; detached reading positions survive asynchronous timeline updates.
+- Collapsed mobile message actions no longer extend the virtual scroll height. The explicit open state reveals the complete 44px action menu.
 - Composer coverage includes one, four, six, and eight lines, paste, resize, reply, edit cancellation, clear, and send.
-- Real Chromium touch input verifies edge-swipe open/close, vertical-scroll priority, dialog/control exclusions, header Back, browser Back, and reduced motion.
-- The mobile reply/edit tray remains hit-testable with 44px controls after virtualized scrolling; a ten-run repetition passed.
-- Fresh desktop and mobile browser tabs reported zero console warnings and zero console errors.
+- Mobile coverage verifies edge-swipe open and close, vertical-scroll priority, control and dialog exclusions, header Back, browser Back, and reduced motion.
+- Visual captures cover desktop and mobile chat, desktop and mobile login, and desktop settings with zero runtime console warnings, console errors, or page errors.
 
-## Visual findings and iteration history
+## Visual findings and resolution
 
-1. [P1 fixed] The original receiver derivative retained excess alpha padding and under-filled the rail. The final derivative was regenerated from the supplied artwork, cropped to its alpha bounds, and rendered without theme-altering effects.
-2. [P1 fixed] Desktop and mobile composer wrappers were 8px too tall. They now measure 52px and 48px respectively while retaining six-line expansion.
-3. [P1 fixed] The second mobile header command and Send label were hidden by competing responsive rules. Both are visible and retain 44px targets.
-4. [P1 fixed] The mobile message-action tray could be clipped or lose its open state while Virtuoso recycled a settling row. The tray is now measurement-neutral, and browser hit testing waits for the virtualized row to settle.
-5. [P2 intentional] The implementation is denser than the oversized art-direction reference: the desktop rails, type, and controls use the compact dimensions requested in the implementation plan.
-6. [P2 intentional] The mobile Guide Footnote present in the reference is removed rather than reproduced.
-7. [P3] The implementation keeps the existing Lucide icon language rather than tracing the reference symbols exactly.
+1. [P1 fixed] The first mobile action treatment remained visually hidden but still contributed overflow to Virtuoso. Collapsed actions now leave layout entirely, while `data-actions-state="open"` restores the full menu.
+2. [P1 fixed] The decorative history label and third-party scrollbar override depended on generated module hashes during hot reload. They now use stable `data-ui` and role hooks in the minimal global override layer.
+3. [P2 fixed] Desktop rails, the 158px header, title width, 63px receiver strip, right-side Guide card, and receiver illustration were rebuilt to the supplied 1920 × 1080 proportions.
+4. [P2 fixed] Mobile now carries the 84px header, source-scaled title, Guide Footnote, 45px composer, compact private-status copy, and inset rules shown in the 390 × 844 target.
+5. [P2 fixed] The deprecated compact color treatment was replaced with the requested semantic Night Edition palette and consistent red, teal, and amber roles.
+6. [P3] Minor glyph-antialiasing differences remain between the supplied raster artwork and the locally bundled variable font render; line lengths, hierarchy, and wrapping are aligned.
 
 No actionable P0, P1, or P2 visual differences remain.
 
 ## Verification
 
-- Repository-wide Prettier write and `format:check`: passed.
+- Prettier write and `format:check`: passed.
 - ESLint: passed.
 - TypeScript typecheck: passed.
-- Unit suite: 95 passed, 3 skipped, 0 failed.
-- Playwright suite: 20 passed, 4 desktop-only mobile-test skips, 0 failed.
-- Mobile message-action repetition: 10 passed, 0 failed.
+- Unit suite: 95 passed, 3 intentional integration skips, 0 failed.
 - Production build: passed.
-- Stable visual snapshots use `maxDiffPixelRatio: 0.005`.
+- Complete Playwright suite: 23 passed, 5 intentional project skips, 0 failed.
+- Focused visual and runtime-console suite: 5 passed, 1 intentional mobile settings skip, 0 failed.
+- Stable snapshots cover `desktop-1920` and `mobile-390`.
 
 final result: passed

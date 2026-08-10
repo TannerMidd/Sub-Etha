@@ -47,23 +47,25 @@
 :root,
 :root[data-theme="dark"] {
     color-scheme: dark;
-    --paper: #031013;
-    --paper-raised: #06181a;
-    --paper-deep: #091f20;
-    --ink: #e6dec3;
-    --ink-soft: #9bafa8;
-    --line: #244844;
-    --line-strong: #3e6964;
-    --signal: #ff5a46;
-    --signal-dark: #ff7967;
-    --teal: #68d4be;
-    --teal-soft: #123b35;
+    --paper: #010709;
+    --paper-raised: #041113;
+    --paper-deep: #071a1c;
+    --ink: #f0e4c7;
+    --ink-soft: #91a8a1;
+    --line: #183936;
+    --line-strong: #2b514c;
+    --signal: #ff5645;
+    --signal-dark: #ff7563;
+    --teal: #63d8bd;
+    --teal-soft: #103a34;
     --yellow: #e9b44c;
-    --shadow: 0 18px 60px rgb(0 0 0 / 38%);
+    --shadow: 0 24px 72px rgb(0 0 0 / 56%);
+    --shadow-tight: 0 14px 36px rgb(0 0 0 / 44%);
+    --surface-inset: inset 0 1px rgb(255 255 255 / 2%);
     --motion-fast: 140ms;
     --motion-standard: 220ms;
     --motion-ease: cubic-bezier(0.22, 1, 0.36, 1);
-    --font-ui: "Inter Variable", Inter, ui-sans-serif, system-ui, sans-serif;
+    --font-ui: "Roboto Condensed Variable", "Arial Narrow", sans-serif;
     --font-display: "Roboto Condensed Variable", "Arial Narrow", sans-serif;
     --font-mono: "Cascadia Mono", "SFMono-Regular", Consolas, monospace;
     --safe-top: env(safe-area-inset-top, 0px);
@@ -85,6 +87,8 @@
     --teal-soft: #d6e6df;
     --yellow: #b27b12;
     --shadow: 0 18px 60px rgb(47 42 31 / 14%);
+    --shadow-tight: 0 12px 32px rgb(47 42 31 / 12%);
+    --surface-inset: inset 0 1px rgb(255 255 255 / 38%);
 }
 
 @media (prefers-color-scheme: light) {

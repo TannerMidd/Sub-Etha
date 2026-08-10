@@ -1,0 +1,130 @@
+@use "./tokens";
+
+*,
+*::before,
+*::after {
+    box-sizing: border-box;
+}
+
+html,
+body {
+    width: 100%;
+    min-height: 100%;
+    overflow: hidden;
+    background: var(--paper);
+}
+
+body {
+    margin: 0;
+    color: var(--ink);
+    font-family: var(--font-ui);
+    font-size: 15px;
+    line-height: 1.5;
+    text-rendering: optimizeLegibility;
+    -webkit-font-smoothing: antialiased;
+}
+
+button,
+input,
+textarea,
+select {
+    font: inherit;
+}
+
+button,
+a {
+    -webkit-tap-highlight-color: transparent;
+}
+
+button,
+input,
+textarea,
+select {
+    color: inherit;
+}
+
+input[type="file"] {
+    padding: 6px;
+}
+
+input[type="file"]::file-selector-button {
+    min-height: 30px;
+    margin-right: 10px;
+    padding: 5px 10px;
+    border: 1px solid var(--line-strong);
+    border-radius: 2px;
+    background: var(--paper-deep);
+    color: var(--ink);
+    font: 750 11px/1 var(--font-ui);
+    cursor: pointer;
+}
+
+input[type="file"]::file-selector-button:hover {
+    border-color: var(--teal);
+    background: color-mix(in srgb, var(--paper-deep) 75%, var(--teal) 25%);
+}
+
+::selection {
+    background: color-mix(in srgb, var(--teal) 32%, transparent);
+    color: var(--ink);
+}
+
+.sr-only {
+    position: absolute !important;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
+}
+
+.spin {
+    animation: spin 1s linear infinite;
+}
+
+.rotate {
+    transform: rotate(180deg);
+}
+
+@keyframes spin {
+    to {
+        transform: rotate(360deg);
+    }
+}
+
+:focus-visible {
+    outline: 2px solid var(--teal);
+    outline-offset: 2px;
+}
+
+.room-list-item:focus-visible,
+.composer textarea:focus-visible {
+    outline-offset: -2px;
+}
+
+[data-ui="timeline"] [data-virtuoso-scroller="true"] {
+    scrollbar-width: none;
+}
+
+[data-ui="timeline"] [data-virtuoso-scroller="true"]::-webkit-scrollbar {
+    display: none;
+}
+
+[data-ui="timeline"] [role="status"] > span {
+    visibility: hidden;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+        scroll-behavior: auto !important;
+        animation-duration: 0s !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: 0s !important;
+        transition-delay: 0ms !important;
+    }
+}

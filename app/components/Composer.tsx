@@ -15,6 +15,7 @@ import type { MatrixService } from "@/lib/matrix/client";
 import { resolveComposerTextareaSize } from "@/lib/composer-size";
 import { firstImageFile, insertAtSelection, normalizeMediaFile } from "@/lib/matrix/media";
 import type { TimelineItem } from "@/lib/matrix/types";
+import { classes } from "../styles/appStyles";
 
 const EmojiPickerPanel = lazy(() =>
     import("./EmojiPickerPanel").then((module) => ({ default: module.EmojiPickerPanel })),
@@ -288,7 +289,8 @@ export function Composer({
 
     return (
         <div
-            className="composer-wrap"
+            className={classes("composer-wrap")}
+            data-ui="composer-wrap"
             onDragOver={(event) => event.preventDefault()}
             onDrop={(event) => {
                 event.preventDefault();
@@ -300,7 +302,7 @@ export function Composer({
             }}
         >
             {replyingTo || editing ? (
-                <div className="composer-context" aria-live="polite">
+                <div className={classes("composer-context")} aria-live="polite">
                     {editing ? <Pencil aria-hidden="true" /> : <CornerUpLeft aria-hidden="true" />}
                     <span>
                         <strong>
@@ -319,8 +321,8 @@ export function Composer({
             ) : null}
 
             {attachment ? (
-                <div className="attachment-stage">
-                    <div className="attachment-stage__preview">
+                <div className={classes("attachment-stage")}>
+                    <div className={classes("attachment-stage__preview")}>
                         {attachmentPreview && attachment.type.startsWith("image/") ? (
                             // eslint-disable-next-line @next/next/no-img-element -- Device-local staged attachment.
                             <img src={attachmentPreview} alt="Attachment preview" />
@@ -332,7 +334,7 @@ export function Composer({
                             <FileText />
                         )}
                     </div>
-                    <div className="attachment-stage__copy">
+                    <div className={classes("attachment-stage__copy")}>
                         <strong>{attachment.name}</strong>
                         <span>
                             {attachment.type || "Unknown file type"} · {formatSize(attachment.size)}
@@ -356,7 +358,7 @@ export function Composer({
             ) : null}
 
             {uploadProgress !== null ? (
-                <div className="upload-progress">
+                <div className={classes("upload-progress")}>
                     <span style={{ width: `${uploadProgress}%` }} />
                     <p>Sending attachment · {uploadProgress}%</p>
                     {cancelUpload ? (
@@ -367,18 +369,18 @@ export function Composer({
                 </div>
             ) : null}
 
-            <div className="composer">
+            <div className={classes("composer")} data-ui="composer">
                 <input
                     ref={fileInput}
                     type="file"
-                    className="sr-only"
+                    className={classes("sr-only")}
                     onChange={(event) =>
                         event.target.files?.[0] && void stageFile(event.target.files[0])
                     }
                 />
                 <button
                     type="button"
-                    className="icon-button"
+                    className={classes("icon-button")}
                     aria-label="Attach a file"
                     title="Attach a file"
                     onClick={() => fileInput.current?.click()}
@@ -386,7 +388,7 @@ export function Composer({
                 >
                     <Paperclip />
                 </button>
-                <label className="sr-only" htmlFor="message-composer">
+                <label className={classes("sr-only")} htmlFor="message-composer">
                     {attachment ? "Attachment caption" : "Message"}
                 </label>
                 <textarea
@@ -435,10 +437,10 @@ export function Composer({
                     }
                     rows={1}
                 />
-                <div className="emoji-control" ref={emojiWrap}>
+                <div className={classes("emoji-control")} ref={emojiWrap}>
                     <button
                         type="button"
-                        className="icon-button"
+                        className={classes("icon-button")}
                         aria-label="Choose an emoji"
                         title="Choose an emoji"
                         aria-expanded={emojiOpen}
@@ -447,11 +449,15 @@ export function Composer({
                         <Smile />
                     </button>
                     {emojiOpen ? (
-                        <div className="emoji-popover emoji-popover--composer">
+                        <div
+                            className={classes("emoji-popover emoji-popover--composer")}
+                            data-swipe-lock
+                        >
                             <Suspense
                                 fallback={
-                                    <div className="emoji-loading">
-                                        <LoaderCircle className="spin" /> Indexing pictograms…
+                                    <div className={classes("emoji-loading")}>
+                                        <LoaderCircle className={classes("spin")} /> Indexing
+                                        pictograms…
                                     </div>
                                 }
                             >
@@ -462,7 +468,7 @@ export function Composer({
                 </div>
                 <button
                     type="button"
-                    className="send-button"
+                    className={classes("send-button")}
                     aria-label={
                         editing
                             ? "Save message edit"
@@ -474,16 +480,16 @@ export function Composer({
                     onClick={() => void send()}
                     disabled={!canSend}
                 >
-                    {sending ? <LoaderCircle className="spin" /> : null}
+                    {sending ? <LoaderCircle className={classes("spin")} /> : null}
                     <span>{editing ? "Save" : "Send"}</span>
                 </button>
             </div>
             {error ? (
-                <p className="composer-error" role="alert">
+                <p className={classes("composer-error")} role="alert">
                     {error}
                 </p>
             ) : (
-                <p className="composer-hint">
+                <p className={classes("composer-hint")}>
                     Enter to {editing ? "save" : "send"} · Shift + Enter for a new line
                     {editing || replyingTo
                         ? " · Esc to cancel"

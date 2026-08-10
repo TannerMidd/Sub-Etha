@@ -2,10 +2,12 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 
-const GLOBALS_CSS = new URL("../app/globals.css", import.meta.url);
+const TIMELINE_STYLES = new URL("../app/styles/Timeline.module.scss", import.meta.url);
+const COMPOSER_STYLES = new URL("../app/styles/Composer.module.scss", import.meta.url);
+const GLOBAL_STYLES = new URL("../app/styles/globals.scss", import.meta.url);
 
 test("timeline styles leave Virtuoso spacer geometry untouched", async () => {
-    const css = await readFile(GLOBALS_CSS, "utf8");
+    const css = await readFile(TIMELINE_STYLES, "utf8");
     const virtuosoInternalSelector = /\.timeline\s*>\s*div\s*>\s*div\s*>\s*div(?:[^,{]*)?\s*\{/;
 
     assert.doesNotMatch(
@@ -15,19 +17,27 @@ test("timeline styles leave Virtuoso spacer geometry untouched", async () => {
     );
 });
 
-test("timeline history controls remain available", async () => {
-    const css = await readFile(GLOBALS_CSS, "utf8");
+test("timeline history controls remain available through stable hooks", async () => {
+    const [timelineCss, globalCss] = await Promise.all([
+        readFile(TIMELINE_STYLES, "utf8"),
+        readFile(GLOBAL_STYLES, "utf8"),
+    ]);
     const hiddenHistoryLoader = /\.history-loader\s*\{[^}]*display\s*:\s*none/;
 
     assert.doesNotMatch(
-        css,
+        timelineCss,
         hiddenHistoryLoader,
         "Earlier-history controls must not be hidden by theme overrides.",
+    );
+    assert.match(
+        globalCss,
+        /\[data-ui=["']timeline["']\] \[role=["']status["']\] > span/,
+        "Decorative history copy should be styled through stable data and role hooks.",
     );
 });
 
 test("composer theme styles preserve the autosize contract", async () => {
-    const css = await readFile(GLOBALS_CSS, "utf8");
+    const css = await readFile(COMPOSER_STYLES, "utf8");
     const composerRules = [...css.matchAll(/\.composer\s*\{([^}]*)\}/g)].map((match) => match[1]);
 
     assert.doesNotMatch(css, /max-height\s*:\s*(?:35|55)px/);
@@ -43,7 +53,7 @@ test("composer theme styles preserve the autosize contract", async () => {
 });
 
 test("mobile theme styles keep message actions reachable", async () => {
-    const css = await readFile(GLOBALS_CSS, "utf8");
+    const css = await readFile(TIMELINE_STYLES, "utf8");
     const hiddenMessageActions =
         /\.message-actions(?:-toggle)?\s*\{[^}]*display\s*:\s*none\s*!important/;
 
@@ -51,5 +61,10 @@ test("mobile theme styles keep message actions reachable", async () => {
         css,
         hiddenMessageActions,
         "Reply, edit, reaction, and removal controls must remain reachable on mobile.",
+    );
+    assert.match(
+        css,
+        /\.message-row\.is-actions-open \.message-actions[^{]*\{[^}]*display\s*:\s*flex/,
+        "The explicit mobile action state must reveal the full action menu.",
     );
 });

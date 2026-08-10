@@ -12,6 +12,10 @@ import { BrandMark } from "./BrandMark";
 import { ChatShell } from "./ChatShell";
 import { DesignPreview } from "./DesignPreview";
 import { LoginScreen } from "./LoginScreen";
+import styles from "../styles/App.module.scss";
+import { classes, configureStyles } from "../styles/appStyles";
+
+configureStyles(styles);
 
 type BootState = "booting" | "login" | "connected" | "duplicate" | "error";
 
@@ -257,7 +261,7 @@ export function SubEthaApp() {
             <>
                 <ChatShell service={service} onLogout={logout} />
                 {waitingWorker ? (
-                    <div className="update-toast" role="status">
+                    <div className={classes("update-toast")} role="status">
                         <RefreshCw />
                         <span>
                             <strong>A revised field guide is ready.</strong>
@@ -276,19 +280,19 @@ export function SubEthaApp() {
 
     if (bootState === "duplicate") {
         return (
-            <main className="boot-screen">
+            <main className={classes("boot-screen")}>
                 <BrandMark />
-                <div className="boot-card">
+                <div className={classes("boot-card")}>
                     <RadioTower aria-hidden="true" />
-                    <p className="eyebrow">ONE RECEIVER AT A TIME</p>
+                    <p className={classes("eyebrow")}>ONE RECEIVER AT A TIME</p>
                     <h1>Sub-Etha is already open elsewhere.</h1>
                     <p>
                         To protect your encryption store, only one tab may tune this account at
                         once. You may release the other receiver and continue here.
                     </p>
-                    <div className="button-row">
+                    <div className={classes("button-row")}>
                         <button
-                            className="primary-button"
+                            className={classes("primary-button")}
                             type="button"
                             onClick={() => void takeOver()}
                         >
@@ -296,7 +300,7 @@ export function SubEthaApp() {
                             Use this tab
                         </button>
                         <button
-                            className="secondary-button"
+                            className={classes("secondary-button")}
                             type="button"
                             onClick={() => window.location.reload()}
                         >
@@ -311,16 +315,16 @@ export function SubEthaApp() {
 
     if (bootState === "error") {
         return (
-            <main className="boot-screen">
+            <main className={classes("boot-screen")}>
                 <BrandMark />
-                <div className="boot-card boot-card--error">
+                <div className={classes("boot-card boot-card--error")}>
                     <ShieldAlert aria-hidden="true" />
-                    <p className="eyebrow">SIGNAL INTERRUPTED</p>
+                    <p className={classes("eyebrow")}>SIGNAL INTERRUPTED</p>
                     <h1>The receiver declined to become haunted.</h1>
                     <p>{bootError}</p>
-                    <div className="button-row">
+                    <div className={classes("button-row")}>
                         <button
-                            className="primary-button"
+                            className={classes("primary-button")}
                             type="button"
                             onClick={() => window.location.reload()}
                         >
@@ -328,7 +332,7 @@ export function SubEthaApp() {
                             Try again
                         </button>
                         <button
-                            className="secondary-button"
+                            className={classes("secondary-button")}
                             type="button"
                             onClick={() => setBootState("login")}
                         >
@@ -341,11 +345,11 @@ export function SubEthaApp() {
     }
 
     return (
-        <main className="boot-screen" aria-busy="true">
+        <main className={classes("boot-screen")} aria-busy="true">
             <BrandMark />
-            <div className="tuning-indicator" aria-live="polite">
+            <div className={classes("tuning-indicator")} aria-live="polite">
                 <span>
-                    <LoaderCircle className="spin" />
+                    <LoaderCircle className={classes("spin")} />
                 </span>
                 <p>
                     Aligning local encryption, room indexes and a modest number of invisible

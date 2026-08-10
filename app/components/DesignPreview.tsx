@@ -5,6 +5,7 @@ import type { MatrixService } from "@/lib/matrix/client";
 import type { MatrixMediaRef, MatrixSnapshot, RoomSummary, TimelineItem } from "@/lib/matrix/types";
 import { INITIAL_TIMELINE_ITEM_INDEX } from "@/lib/timeline-window";
 import { ChatShell } from "./ChatShell";
+import { LoginScreen } from "./LoginScreen";
 
 const at = (hour: number, minute: number) => new Date(2026, 7, 8, hour, minute).getTime();
 const STRESS_INITIAL_START = 80;
@@ -131,7 +132,7 @@ function createPreviewService(): MatrixService {
             false,
             {
                 reactions: [
-                    { key: "📡", count: 3, mine: true },
+                    { key: "⚡", count: 3, mine: true },
                     { key: "👁", count: 1, mine: false },
                 ],
             },
@@ -645,6 +646,10 @@ function createPreviewService(): MatrixService {
 
 export function DesignPreview() {
     const [service] = useState(createPreviewService);
+    const surfacePreview =
+        typeof window === "undefined"
+            ? null
+            : new URLSearchParams(window.location.search).get("surface-preview");
 
     useEffect(() => {
         const previousTheme = document.documentElement.dataset.theme;
@@ -659,6 +664,10 @@ export function DesignPreview() {
             }
         };
     }, []);
+
+    if (surfacePreview === "login") {
+        return <LoginScreen onAuthenticated={async () => undefined} />;
+    }
 
     return <ChatShell service={service} onLogout={async () => undefined} />;
 }

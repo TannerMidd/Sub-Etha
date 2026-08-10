@@ -4,16 +4,22 @@ import { useEffect, useState } from "react";
 import { RadioTower } from "lucide-react";
 import type { MatrixService } from "@/lib/matrix/client";
 import { isMxcUri } from "@/lib/matrix/media";
+import { classes } from "../styles/appStyles";
 
 export function BrandMark({ compact = false, edition }: { compact?: boolean; edition?: string }) {
     return (
-        <div className={`brand-mark${compact ? " brand-mark--compact" : ""}`} aria-label="Sub-Etha">
-            <span className="brand-mark__signal" aria-hidden="true">
+        <div
+            className={classes(`brand-mark${compact ? " brand-mark--compact" : ""}`)}
+            aria-label="Sub-Etha"
+        >
+            <span className={classes("brand-mark__signal")} aria-hidden="true">
                 <RadioTower size={compact ? 17 : 21} strokeWidth={1.8} />
             </span>
-            <span className="brand-mark__word">SUB—ETHA</span>
+            <span className={classes("brand-mark__word")}>SUB—ETHA</span>
             {compact ? null : (
-                <span className="brand-mark__edition">{edition ?? "FIELD EDITION · 01"}</span>
+                <span className={classes("brand-mark__edition")}>
+                    {edition ?? "FIELD EDITION · 01"}
+                </span>
             )}
         </div>
     );
@@ -76,7 +82,7 @@ export function Avatar({
     }, [matrixUrl, service, size]);
 
     return (
-        <span className={`avatar avatar--${size}`} aria-hidden="true">
+        <span className={classes(`avatar avatar--${size}`)} aria-hidden="true">
             {/* eslint-disable-next-line @next/next/no-img-element -- Matrix avatars are authenticated remote media. */}
             {src ? <img src={src} alt="" loading="lazy" /> : <span>{initials}</span>}
         </span>

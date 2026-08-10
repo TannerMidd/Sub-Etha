@@ -1,0 +1,33 @@
+@mixin focus-ring($color: var(--teal)) {
+    outline: 2px solid color-mix(in srgb, #{$color} 68%, transparent);
+    outline-offset: 2px;
+}
+
+@mixin mono-label {
+    font-family: var(--font-mono);
+    font-weight: 750;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+}
+
+@mixin elevated-surface {
+    border: 1px solid var(--line-strong);
+    background: var(--paper-deep);
+    box-shadow: var(--shadow-tight), var(--surface-inset);
+}
+
+@mixin interactive-control {
+    transition:
+        color var(--motion-fast) var(--motion-ease),
+        border-color var(--motion-fast) var(--motion-ease),
+        background-color var(--motion-fast) var(--motion-ease),
+        box-shadow var(--motion-fast) var(--motion-ease),
+        transform var(--motion-fast) var(--motion-ease);
+}
+
+@mixin field-surface {
+    border: 1px solid var(--line-strong);
+    background: color-mix(in srgb, var(--paper) 72%, var(--paper-raised));
+    color: var(--ink);
+    box-shadow: var(--surface-inset);
+}

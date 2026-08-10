@@ -1,0 +1,338 @@
+@use "./mixins" as *;
+
+.composer-wrap {
+    min-height: 73px;
+    flex: 0 0 auto;
+    padding: 0 27px 17px;
+    border-top: 0;
+    background: var(--paper);
+}
+
+.composer {
+    width: 100%;
+    max-width: none;
+    min-height: 56px;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    align-items: flex-end;
+    gap: 0;
+    border: 1px solid var(--line-strong);
+    border-radius: 3px;
+    background: color-mix(in srgb, var(--paper-deep) 42%, var(--paper));
+    box-shadow:
+        inset 0 1px rgba(255, 255, 255, 0.018),
+        0 10px 32px rgba(0, 0, 0, 0.15);
+}
+
+.composer:focus-within {
+    border-color: var(--teal);
+    box-shadow:
+        0 0 0 1px color-mix(in srgb, var(--teal) 28%, transparent),
+        var(--shadow-tight),
+        var(--surface-inset);
+}
+
+.composer textarea {
+    min-height: 54px;
+    max-height: 152px;
+    padding: 14px 16px;
+    overflow-y: hidden;
+    resize: none;
+    border: 0;
+    background: transparent;
+    color: var(--ink);
+    font: 430 16px/24px var(--font-ui);
+    outline: 0;
+}
+
+.composer > .icon-button,
+.emoji-control > .icon-button,
+.send-button {
+    width: 58px;
+    min-width: 58px;
+    height: 54px;
+    align-self: flex-end;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+}
+
+.composer > .icon-button {
+    border-right: 1px solid var(--line);
+}
+
+.composer > .icon-button,
+.emoji-control > .icon-button {
+    color: var(--ink-soft);
+}
+
+.emoji-control {
+    position: relative;
+    flex: 0 0 auto;
+}
+
+.emoji-control > .icon-button {
+    border-left: 1px solid var(--line);
+}
+
+.send-button {
+    width: 78px;
+    min-width: 78px;
+    padding: 0 12px;
+    display: grid;
+    place-items: center;
+    border-left: 1px solid var(--line);
+    color: var(--signal);
+    cursor: pointer;
+    font: 850 11px/1 var(--font-mono);
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+}
+
+.send-button:hover:not(:disabled) {
+    background: color-mix(in srgb, var(--signal) 12%, transparent);
+    color: var(--signal-dark);
+}
+
+.send-button:disabled {
+    background: transparent;
+    color: var(--signal);
+    opacity: 1;
+}
+
+.send-button svg {
+    width: 18px;
+}
+
+.composer-context {
+    max-width: none;
+    margin: 0 0 4px;
+    padding: 8px 10px 9px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    border: 1px solid var(--line);
+    border-bottom: 0;
+    border-radius: 3px 3px 0 0;
+    background: var(--paper-deep);
+}
+
+.composer-context > svg {
+    width: 15px;
+    color: var(--teal);
+}
+
+.composer-context > span {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    color: var(--ink-soft);
+    font-size: 10px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.composer-context strong {
+    color: var(--ink);
+}
+
+.composer-context button {
+    border: 0;
+    background: transparent;
+    cursor: pointer;
+}
+
+.composer-context button svg {
+    width: 14px;
+}
+
+.composer-hint {
+    display: none;
+}
+
+.composer-error {
+    max-width: none;
+    margin: 4px 0 0;
+    color: var(--signal-dark);
+    font-size: 9px;
+    text-align: right;
+}
+
+.upload-progress {
+    position: relative;
+    height: 24px;
+    max-width: none;
+    margin: 0 0 4px;
+    overflow: hidden;
+    display: flex;
+    align-items: center;
+    border-radius: 3px 3px 0 0;
+    background: var(--paper-deep);
+}
+
+.upload-progress span {
+    position: absolute;
+    inset: 0 auto 0 0;
+    background: var(--teal-soft);
+    transition: width 0.2s;
+}
+
+.upload-progress p {
+    position: relative;
+    flex: 1;
+    margin: 3px 9px;
+    font-size: 9px;
+}
+
+.upload-progress button {
+    position: relative;
+    width: 28px;
+    height: 24px;
+    display: grid;
+    place-items: center;
+    border: 0;
+    background: transparent;
+    color: var(--ink);
+}
+
+.upload-progress button svg {
+    width: 13px;
+}
+
+.attachment-stage {
+    max-width: none;
+    margin: 0 0 4px;
+    padding: 9px;
+    display: grid;
+    grid-template-columns: 76px minmax(0, 1fr) 34px;
+    align-items: center;
+    gap: 11px;
+    border: 1px solid var(--line-strong);
+    border-bottom: 0;
+    border-radius: 3px 3px 0 0;
+    background: color-mix(in srgb, var(--paper-raised) 96%, transparent);
+}
+
+.attachment-stage__preview {
+    width: 76px;
+    height: 58px;
+    display: grid;
+    place-items: center;
+    overflow: hidden;
+    border: 1px solid var(--line);
+    border-radius: 3px;
+    background: var(--paper-deep);
+    color: var(--teal);
+}
+
+.attachment-stage__preview img,
+.attachment-stage__preview video {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+}
+
+.attachment-stage__preview svg {
+    width: 23px;
+}
+
+.attachment-stage__copy {
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.attachment-stage__copy strong {
+    overflow: hidden;
+    font-size: 12px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.attachment-stage__copy span,
+.attachment-stage__copy small {
+    color: var(--ink-soft);
+    font-size: 9px;
+}
+
+.attachment-stage > button {
+    width: 32px;
+    height: 32px;
+    display: grid;
+    place-items: center;
+    border: 0;
+    border-radius: 3px;
+    background: transparent;
+    color: var(--ink-soft);
+    cursor: pointer;
+}
+
+.attachment-stage > button:hover {
+    background: var(--paper-deep);
+    color: var(--ink);
+}
+
+.attachment-stage > button svg {
+    width: 15px;
+}
+
+.emoji-popover--composer {
+    left: 0;
+    bottom: calc(100% + 10px);
+}
+
+@media (max-width: 720px) {
+    .composer-wrap {
+        min-height: 45px;
+        padding: 1px 10px;
+    }
+
+    .composer {
+        min-height: 43px;
+    }
+
+    .composer textarea {
+        min-height: 41px;
+        max-height: 132px;
+        padding: 10px;
+        font-size: 13px;
+        line-height: 18px;
+    }
+
+    .composer > .icon-button,
+    .emoji-control > .icon-button,
+    .send-button {
+        width: 44px;
+        min-width: 44px;
+        height: 44px;
+    }
+
+    .send-button {
+        width: 55px;
+        min-width: 55px;
+        padding: 0;
+        font-size: 9px;
+        letter-spacing: 0.05em;
+    }
+
+    .attachment-stage {
+        grid-template-columns: 60px minmax(0, 1fr) 32px;
+    }
+
+    .attachment-stage__preview {
+        width: 60px;
+        height: 52px;
+    }
+
+    .emoji-popover--composer {
+        position: fixed;
+        inset: auto 0 0;
+        width: 100%;
+        padding-bottom: env(safe-area-inset-bottom);
+        border-radius: 18px 18px 0 0;
+    }
+}

@@ -15,7 +15,7 @@ interface TextareaMetrics {
 async function openPreview(page: Page, url = PREVIEW_URL): Promise<void> {
     await page.goto(url);
     await expect(page.locator("#message-composer")).toBeVisible();
-    await expect(page.locator(".timeline")).toBeVisible();
+    await expect(page.locator('[data-ui="timeline"]')).toBeVisible();
 
     const developmentOverlay = page.getByRole("dialog", { name: "Unhandled Script Error" });
 
@@ -139,11 +139,11 @@ async function openMessageActions(row: Locator): Promise<void> {
             }),
     );
 
-    const toggle = row.locator(".message-actions-toggle");
+    const toggle = row.locator('[data-ui="message-actions-toggle"]');
 
     if (await toggle.isVisible()) {
         await toggle.click();
-        await expect(row).toHaveClass(/is-actions-open/);
+        await expect(row).toHaveAttribute("data-actions-state", "open");
     } else {
         await row.hover();
     }
@@ -166,8 +166,8 @@ async function openMessageActions(row: Locator): Promise<void> {
             .toBe(true);
     } catch (cause) {
         const diagnostics = await reply.evaluate((button) => {
-            const actions = button.closest<HTMLElement>(".message-actions");
-            const messageRow = button.closest<HTMLElement>(".message-row");
+            const actions = button.closest<HTMLElement>('[data-ui="message-actions"]');
+            const messageRow = button.closest<HTMLElement>('[data-ui="message-row"]');
             const bounds = button.getBoundingClientRect();
             const hit = document.elementFromPoint(
                 bounds.left + bounds.width / 2,
@@ -263,7 +263,9 @@ test.describe("composer regression coverage", () => {
         expect(capped.scrollHeight).toBeGreaterThan(capped.clientHeight);
         expect(capped.overflowY).toBe("auto");
         await expect(status).toBeVisible();
-        expect((await page.locator(".timeline").boundingBox())?.height ?? 0).toBeGreaterThan(100);
+        expect(
+            (await page.locator('[data-ui="timeline"]').boundingBox())?.height ?? 0,
+        ).toBeGreaterThan(100);
 
         await textarea.fill("");
         const cleared = await textareaMetrics(textarea);
@@ -277,7 +279,7 @@ test.describe("composer regression coverage", () => {
     }) => {
         await openPreview(page, STRESS_PREVIEW_URL);
 
-        const timeline = page.locator(".timeline");
+        const timeline = page.locator('[data-ui="timeline"]');
         const scroller = page.locator('[data-virtuoso-scroller="true"]');
         const textarea = page.locator("#message-composer");
 
@@ -344,11 +346,11 @@ test("rapid real scrolling never swaps messages for seek skeletons or reattaches
 }) => {
     await openPreview(page, STRESS_PREVIEW_URL);
 
-    const timeline = page.locator(".timeline");
+    const timeline = page.locator('[data-ui="timeline"]');
     const scroller = page.locator('[data-virtuoso-scroller="true"]');
 
     await page.evaluate(() => {
-        const root = document.querySelector(".timeline");
+        const root = document.querySelector('[data-ui="timeline"]');
 
         if (!root) {
             throw new Error("Timeline root is missing.");
@@ -384,7 +386,7 @@ test("rapid real scrolling never swaps messages for seek skeletons or reattaches
 test("twenty asynchronous message updates preserve a detached reading anchor", async ({ page }) => {
     await openPreview(page, STRESS_PREVIEW_URL);
 
-    const timeline = page.locator(".timeline");
+    const timeline = page.locator('[data-ui="timeline"]');
     const scroller = page.locator('[data-virtuoso-scroller="true"]');
 
     await expect(timeline).toHaveAttribute("data-scroll-mode", "attached");
@@ -422,7 +424,7 @@ test("twenty asynchronous message updates preserve a detached reading anchor", a
 test("failed history loading exposes retry without concurrent pagination", async ({ page }) => {
     await openPreview(page, FAILURE_PREVIEW_URL);
 
-    const timeline = page.locator(".timeline");
+    const timeline = page.locator('[data-ui="timeline"]');
     const scroller = page.locator('[data-virtuoso-scroller="true"]');
 
     await scrollTimelineTo(scroller, "top");
@@ -472,7 +474,7 @@ test("top pagination preserves the reading anchor, exhausts history, and keeps t
 }) => {
     await openPreview(page, STRESS_PREVIEW_URL);
 
-    const timeline = page.locator(".timeline");
+    const timeline = page.locator('[data-ui="timeline"]');
     const scroller = page.locator('[data-virtuoso-scroller="true"]');
 
     await expect(page.locator('[data-event-id="stress-remote-append"]')).toBeVisible();
