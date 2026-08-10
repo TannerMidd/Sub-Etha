@@ -698,6 +698,9 @@ export function Timeline({ items, firstItemIndex, service, loadingHistory, initi
   onEdit: (item: TimelineItem) => void;
 }) {
   const [lightboxId, setLightboxId] = useState<string | null>(null);
+  // A function-valued followOutput stays enabled while Virtuoso remeasures growing rows.
+  // Toggle the prop itself so late decryption and media layout cannot override manual scrolling.
+  const [shouldFollowOutput, setShouldFollowOutput] = useState(true);
   const lightboxOpener = useRef<HTMLElement | null>(null);
   const imageItems = useMemo(() => items.filter((item) => item.type === "image" && item.media && !item.redacted), [items]);
   const closeLightbox = () => {
@@ -735,7 +738,8 @@ export function Timeline({ items, firstItemIndex, service, loadingHistory, initi
         initialTopMostItemIndex={{ index: "LAST", align: "end" }}
         alignToBottom
         computeItemKey={(_index, item) => item.id}
-        followOutput={(atBottom) => atBottom ? "auto" : false}
+        followOutput={shouldFollowOutput ? "auto" : false}
+        atBottomStateChange={setShouldFollowOutput}
         increaseViewportBy={{ top: 600, bottom: 300 }}
         components={{
           Header: () => (
