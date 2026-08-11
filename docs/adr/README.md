@@ -12,23 +12,22 @@ Architecture Decision Records (ADRs) preserve the context and consequences of de
 
 ## Decision index
 
-| ADR                                                     | Decision                                                             | Status                 |
-| ------------------------------------------------------- | -------------------------------------------------------------------- | ---------------------- |
-| [0001](./0001-use-architecture-decision-records.md)     | Use architecture decision records                                    | Accepted               |
-| [0002](./0002-runtime-react-vinext-vite-nitro.md)       | Use React with Vinext, Vite, and Nitro                               | Accepted               |
-| [0003](./0003-matrix-client-boundary.md)                | Isolate Matrix SDK state behind a browser service                    | Accepted               |
-| [0004](./0004-client-storage-and-tab-ownership.md)      | Keep private session state client-side and enforce one active tab    | Superseded by ADR-0015 |
-| [0005](./0005-scss-modules-and-semantic-tokens.md)      | Use SCSS modules and semantic theme tokens                           | Accepted               |
-| [0006](./0006-virtualized-timeline.md)                  | Preserve an explicit virtualized-timeline state model                | Accepted               |
-| [0007](./0007-media-security-and-caching.md)            | Bound, normalize, and cache Matrix media defensively                 | Accepted               |
-| [0008](./0008-privacy-minimal-web-push.md)              | Operate a privacy-minimal Web Push gateway                           | Accepted               |
-| [0009](./0009-neon-drizzle-persistence.md)              | Keep server persistence behind a Drizzle repository boundary         | Accepted               |
-| [0010](./0010-pwa-and-service-worker.md)                | Use a conservative app-shell service worker                          | Accepted               |
-| [0011](./0011-quality-gates.md)                         | Require layered local quality gates and fixed visual viewports       | Accepted               |
-| [0012](./0012-dependency-governance.md)                 | Govern dependencies through npm, the lockfile, and explicit upgrades | Accepted               |
-| [0013](./0013-deployment-and-migrations.md)             | Deploy on Vercel and apply compatible migrations first               | Accepted               |
-| [0014](./0014-security-and-data-minimization.md)        | Treat privacy and bounded work as cross-cutting constraints          | Accepted               |
-| [0015](./0015-encrypted-browser-persistence-and-csp.md) | Encrypt browser persistence and enforce a nonce CSP                  | Accepted               |
+| ADR                                                 | Decision                                                             | Status   |
+| --------------------------------------------------- | -------------------------------------------------------------------- | -------- |
+| [0001](./0001-use-architecture-decision-records.md) | Use architecture decision records                                    | Accepted |
+| [0002](./0002-runtime-react-vinext-vite-nitro.md)   | Use React with Vinext, Vite, and Nitro                               | Accepted |
+| [0003](./0003-matrix-client-boundary.md)            | Isolate Matrix SDK state behind a browser service                    | Accepted |
+| [0004](./0004-client-storage-and-tab-ownership.md)  | Keep private session state client-side and enforce one active tab    | Accepted |
+| [0005](./0005-scss-modules-and-semantic-tokens.md)  | Use SCSS modules and semantic theme tokens                           | Accepted |
+| [0006](./0006-virtualized-timeline.md)              | Preserve an explicit virtualized-timeline state model                | Accepted |
+| [0007](./0007-media-security-and-caching.md)        | Bound, normalize, and cache Matrix media defensively                 | Accepted |
+| [0008](./0008-privacy-minimal-web-push.md)          | Operate a privacy-minimal Web Push gateway                           | Accepted |
+| [0009](./0009-neon-drizzle-persistence.md)          | Keep server persistence behind a Drizzle repository boundary         | Accepted |
+| [0010](./0010-pwa-and-service-worker.md)            | Use a conservative app-shell service worker                          | Accepted |
+| [0011](./0011-quality-gates.md)                     | Require layered local quality gates and fixed visual viewports       | Accepted |
+| [0012](./0012-dependency-governance.md)             | Govern dependencies through npm, the lockfile, and explicit upgrades | Accepted |
+| [0013](./0013-deployment-and-migrations.md)         | Deploy on Vercel and apply compatible migrations first               | Accepted |
+| [0014](./0014-security-and-data-minimization.md)    | Treat privacy and bounded work as cross-cutting constraints          | Accepted |
 
 ## Creating or changing a decision
 

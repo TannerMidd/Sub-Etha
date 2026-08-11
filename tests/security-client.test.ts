@@ -82,7 +82,6 @@ test("legacy SSO callbacks are bound to a fresh initiating transaction", () => {
         baseUrl: "https://matrix.example",
         state: "expected-state",
         createdAt: 1_800_000_000_000,
-        storageMode: "remembered" as const,
     };
     const callback = new URLSearchParams({
         loginToken: "login-token",
@@ -482,9 +481,6 @@ const SESSION: PersistedMatrixSession = {
     cryptoStorageKey: "AQID",
     deviceId: "DEVICE",
     userId: "@arthur:matrix.example",
-    storageMode: "remembered",
-    localStoreId: "AAAAAAAAAAAAAAAAAAAAAA" as PersistedMatrixSession["localStoreId"],
-    cryptoDatabasePrefix: "sub-etha-crypto-AAAAAAAAAAAAAAAAAAAAAA",
 };
 
 function mediaService(): MatrixService {

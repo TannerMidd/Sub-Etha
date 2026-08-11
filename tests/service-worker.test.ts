@@ -114,7 +114,7 @@ function createWorker(visible = false) {
     };
 }
 
-test("background Matrix pushes collapse to one content-free notification", async () => {
+test("background Matrix pushes collapse to one notification per room", async () => {
     const worker = createWorker();
 
     await worker.push({ kind: "matrix", roomId: "!one:example", eventId: "$1", unread: 1 });
@@ -122,15 +122,12 @@ test("background Matrix pushes collapse to one content-free notification", async
     assert.equal(worker.shown.length, 2);
     assert.equal(worker.shown[0].options.tag, worker.shown[1].options.tag);
     assert.equal(worker.shown[1].options.renotify, false);
-    assert.equal(JSON.stringify(worker.shown[1].options.data), JSON.stringify({ kind: "matrix" }));
-    assert.equal("roomId" in (worker.shown[1].options.data ?? {}), false);
-    assert.equal("eventId" in (worker.shown[1].options.data ?? {}), false);
     assert.equal(worker.active.size, 1);
     assert.deepEqual(worker.badgeSets, [1, 2]);
 
     await worker.push({ kind: "matrix", roomId: "!two:example", eventId: "$3", unread: 3 });
-    assert.equal(worker.shown[1].options.tag, worker.shown[2].options.tag);
-    assert.equal(worker.active.size, 1);
+    assert.notEqual(worker.shown[1].options.tag, worker.shown[2].options.tag);
+    assert.equal(worker.active.size, 2);
 });
 
 test("visible clients suppress Matrix notifications while badges remain accurate", async () => {
@@ -173,7 +170,7 @@ test("subscription challenges confirm silently through the service worker", asyn
     );
 });
 
-test("opening a room dismisses the generic Matrix notification", async () => {
+test("opening a room dismisses its grouped notification", async () => {
     const worker = createWorker();
 
     await worker.push({ roomId: "!one:example", eventId: "$1", unread: 1 });

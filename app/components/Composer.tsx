@@ -46,12 +46,8 @@ export function Composer({
     editing: TimelineItem | null;
     onClearContext: () => void;
 }) {
-    const editingBody = editing?.body ?? null;
-    const draftTarget = JSON.stringify([roomId, editing?.id ?? null]);
-    const [body, setBody] = useState(() => editingBody ?? "");
-    const [loadedDraftTarget, setLoadedDraftTarget] = useState<string | null>(
-        editing ? draftTarget : null,
-    );
+    const draftKey = `sub-etha-draft:${roomId}`;
+    const [body, setBody] = useState(() => editing?.body ?? localStorage.getItem(draftKey) ?? "");
     const [attachment, setAttachment] = useState<File | null>(null);
     const [attachmentPreview, setAttachmentPreview] = useState<string | null>(null);
     const [emojiOpen, setEmojiOpen] = useState(false);
@@ -113,23 +109,6 @@ export function Composer({
 
         return () => window.removeEventListener("resize", syncTextareaHeight);
     }, [syncTextareaHeight]);
-    useEffect(() => {
-        let active = true;
-        const content =
-            editingBody === null ? service.drafts.read(roomId) : Promise.resolve(editingBody);
-
-        void content.then((draft) => {
-            if (active) {
-                setBody(draft ?? "");
-                setLoadedDraftTarget(draftTarget);
-            }
-        });
-
-        return () => {
-            active = false;
-            void service.drafts.flush();
-        };
-    }, [draftTarget, editingBody, roomId, service]);
 
     useEffect(() => {
         if (!editing) {
@@ -151,16 +130,16 @@ export function Composer({
     }, [editing]);
 
     useEffect(() => {
-        if (editingBody !== null || loadedDraftTarget !== draftTarget) {
+        if (editing) {
             return;
         }
 
         if (body) {
-            void service.drafts.write(roomId, body);
+            localStorage.setItem(draftKey, body);
         } else {
-            void service.drafts.remove(roomId);
+            localStorage.removeItem(draftKey);
         }
-    }, [body, draftTarget, editingBody, loadedDraftTarget, roomId, service]);
+    }, [body, draftKey, editing]);
 
     useEffect(
         () => () => {
@@ -270,7 +249,7 @@ export function Composer({
             }
 
             setBody("");
-            await service.drafts.remove(roomId);
+            localStorage.removeItem(draftKey);
             onClearContext();
             await service.setTyping(false);
         } catch (cause) {

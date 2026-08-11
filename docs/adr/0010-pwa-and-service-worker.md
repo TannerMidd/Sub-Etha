@@ -23,7 +23,7 @@ Never intercept or cache `/api/`, `/_matrix/`, or `/_vinext/` requests. Version 
 - Cache names change when shell-cache behavior or incompatible assets change.
 - Old owned caches are removed during activation.
 - Update activation is visible and recoverable through the application lifecycle.
-- Push configuration is encrypted in service-worker-accessible IndexedDB and cleared on disable or logout. The worker decrypts it only for subscription renewal and never persists notification content.
+- Push configuration is stored in service-worker-accessible IndexedDB and cleared on disable or logout.
 - Push payloads remain generic under ADR-0008.
 
 ## Consequences
@@ -72,4 +72,3 @@ This removes lifecycle complexity but loses installation, offline shell fallback
 - [ADR-0004](./0004-client-storage-and-tab-ownership.md)
 - [ADR-0008](./0008-privacy-minimal-web-push.md)
 - [ADR-0014](./0014-security-and-data-minimization.md)
-- [ADR-0015](./0015-encrypted-browser-persistence-and-csp.md)

@@ -1,7 +1,7 @@
 import {
     ClientEvent,
     EventType,
-    MemoryStore,
+    IndexedDBStore,
     MatrixClient,
     MatrixEvent,
     MatrixEventEvent,
@@ -27,19 +27,12 @@ import {
 } from "matrix-js-sdk/lib/crypto-api/verification";
 import { decodeRecoveryKey } from "matrix-js-sdk/lib/crypto-api/recovery-key";
 import { deriveRecoveryKeyFromPassphrase } from "matrix-js-sdk/lib/crypto-api/key-passphrase";
-import { AuthType, type UIAuthCallback } from "matrix-js-sdk/lib/interactive-auth";
 import {
     decryptAttachment,
     encryptAttachment,
     type IEncryptedFile,
 } from "matrix-encrypt-attachment";
-import { base64UrlToBytes, getSessionDeviceKeys, saveSession } from "./session-store";
-import { EncryptedMatrixStore, MemoryDraftRepository } from "./encrypted-store";
-import {
-    clearCurrentAccountData,
-    listenForStorageReset,
-    prepareAccountCleanup,
-} from "./storage-cleanup";
+import { base64UrlToBytes, clearSession, saveSession } from "./session-store";
 import { humanizeMatrixError } from "./auth";
 import { assertAllowedHomeserverUrl } from "./url-policy";
 import {
@@ -60,8 +53,6 @@ import {
 import { normalizeRooms, normalizeTimeline } from "./normalize";
 import { createMediaContent, createTextContent } from "./message-content";
 import type {
-    CleanupOutcome,
-    DraftRepository,
     DeviceSummary,
     DeviceVerificationState,
     MatrixMediaRef,
@@ -69,7 +60,6 @@ import type {
     MediaAsset,
     PersistedMatrixSession,
     TimelineItem,
-    StorageMode,
 } from "./types";
 import { INITIAL_TIMELINE_ITEM_INDEX, timelineStartIndexAfterPrepend } from "../timeline-window";
 
@@ -79,6 +69,10 @@ export class MatrixAlreadyOpenError extends Error {
     constructor() {
         super("Sub-Etha is already tuned to this account in another tab.");
     }
+}
+
+function stableStoreName(session: PersistedMatrixSession): string {
+    return `${session.userId}-${session.deviceId}`.replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 120);
 }
 
 function emptySnapshot(session: PersistedMatrixSession): MatrixSnapshot {
@@ -108,41 +102,6 @@ interface ActiveVerification {
     sasCallbacks: ShowSasCallbacks | null;
     requestChange: () => void;
     showSas: ((callbacks: ShowSasCallbacks) => void) | null;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-    return typeof value === "object" && value !== null;
-}
-
-function uiaStages(value: unknown): string[][] {
-    if (!Array.isArray(value)) {
-        return [];
-    }
-
-    return value.flatMap((flow) => {
-        if (!isRecord(flow) || !Array.isArray(flow.stages)) {
-            return [];
-        }
-
-        const stages = flow.stages.filter((stage): stage is string => typeof stage === "string");
-
-        return stages.length === flow.stages.length ? [stages] : [];
-    });
-}
-
-function hasPublishedCrossSigningIdentity(
-    result: {
-        master_keys?: Record<string, unknown>;
-        self_signing_keys?: Record<string, unknown>;
-        user_signing_keys?: Record<string, unknown>;
-    },
-    userId: string,
-): boolean {
-    return Boolean(
-        result.master_keys?.[userId] &&
-        result.self_signing_keys?.[userId] &&
-        result.user_signing_keys?.[userId],
-    );
 }
 
 interface MediaCacheEntry<T> {
@@ -249,7 +208,7 @@ export function findOwnReactionEventId(
 
 export class MatrixService {
     private client: MatrixClient | null = null;
-    private store: MemoryStore | EncryptedMatrixStore | null = null;
+    private store: IndexedDBStore | null = null;
     private session: PersistedMatrixSession;
     private snapshot: MatrixSnapshot;
     private listeners = new Set<Listener>();
@@ -271,14 +230,9 @@ export class MatrixService {
     private lastReadEventIds = new Map<string, string>();
     private stopped = false;
     private readonly takeoverStorageKey = "sub-etha-account-takeover";
-    readonly storageMode: StorageMode;
-    drafts: DraftRepository;
-    private releaseStorageResetListener: (() => void) | null = null;
 
     constructor(session: PersistedMatrixSession) {
         this.session = session;
-        this.storageMode = session.storageMode;
-        this.drafts = new MemoryDraftRepository();
         this.snapshot = emptySnapshot(session);
     }
 
@@ -350,25 +304,18 @@ export class MatrixService {
 
     async start(): Promise<void> {
         this.session.baseUrl = assertAllowedHomeserverUrl(this.session.baseUrl);
-        const storageId = this.session.localStoreId;
+        const storeName = stableStoreName(this.session);
 
-        this.releaseLock = await acquireExclusiveLock(`sub-etha-matrix-${storageId}`);
+        this.releaseLock = await acquireExclusiveLock(`sub-etha-matrix-${storeName}`);
 
         if (!this.releaseLock) {
             throw new MatrixAlreadyOpenError();
         }
 
-        if (this.storageMode === "remembered") {
-            const keys = await getSessionDeviceKeys();
-            const encryptedStore = new EncryptedMatrixStore(storageId, keys);
-
-            this.store = encryptedStore;
-            this.drafts = encryptedStore.drafts;
-        } else {
-            this.store = new MemoryStore();
-            this.drafts = new MemoryDraftRepository();
-        }
-
+        this.store = new IndexedDBStore({
+            indexedDB: window.indexedDB,
+            dbName: `sub-etha-sync-${storeName}`,
+        });
         const scheduler = new MatrixScheduler();
 
         this.client = createClient({
@@ -399,18 +346,11 @@ export class MatrixService {
         });
 
         await this.store.startup();
-
-        if (this.storageMode === "remembered") {
-            await this.client.initRustCrypto({
-                useIndexedDB: true,
-                cryptoDatabasePrefix: this.session.cryptoDatabasePrefix,
-                storageKey: base64UrlToBytes(this.session.cryptoStorageKey),
-            });
-        } else {
-            await this.client.initRustCrypto({
-                useIndexedDB: false,
-            });
-        }
+        await this.client.initRustCrypto({
+            useIndexedDB: true,
+            cryptoDatabasePrefix: `sub-etha-crypto-${storeName}`,
+            storageKey: base64UrlToBytes(this.session.cryptoStorageKey),
+        });
 
         this.client.on(ClientEvent.Sync, this.handleSync);
         this.client.on(MatrixEventEvent.Decrypted, this.handleDecrypted);
@@ -421,11 +361,6 @@ export class MatrixService {
         this.client.on(RoomMemberEvent.Typing, this.handleTyping);
         this.client.on(CryptoEvent.VerificationRequestReceived, this.handleIncomingVerification);
         window.addEventListener("storage", this.handleTakeoverRequest);
-        this.releaseStorageResetListener = listenForStorageReset(async () => {
-            this.stop();
-            await this.store?.destroy();
-        });
-
         this.client.startClient({
             initialSyncLimit: 30,
             lazyLoadMembers: true,
@@ -1724,30 +1659,20 @@ export class MatrixService {
     }
 
     async getCryptoStatus() {
-        const client = this.requireClient();
-        const cryptoApi = client.getCrypto();
+        const cryptoApi = this.requireClient().getCrypto();
 
         if (!cryptoApi) {
-            return {
-                secretStorageReady: false,
-                crossSigningConfigured: false,
-                crossSigningReady: false,
-                backupVersion: null,
-            };
+            return { secretStorageReady: false, crossSigningReady: false, backupVersion: null };
         }
 
-        const [secretStatus, crossSigning, backupVersion, publishedKeys] = await Promise.all([
+        const [secretStatus, crossSigning, backupVersion] = await Promise.all([
             cryptoApi.getSecretStorageStatus(),
             cryptoApi.getCrossSigningStatus(),
             cryptoApi.getActiveSessionBackupVersion(),
-            client.downloadKeysForUsers([this.session.userId]).catch(() => null),
         ]);
 
         return {
             secretStorageReady: secretStatus.ready,
-            crossSigningConfigured: publishedKeys
-                ? hasPublishedCrossSigningIdentity(publishedKeys, this.session.userId)
-                : crossSigning.publicKeysOnDevice,
             crossSigningReady:
                 crossSigning.publicKeysOnDevice &&
                 (crossSigning.privateKeysInSecretStorage ||
@@ -1756,101 +1681,11 @@ export class MatrixService {
         };
     }
 
-    private deviceSigningAuthentication(accountPassword?: string): UIAuthCallback<void> {
-        return async (makeRequest) => {
-            try {
-                return await makeRequest(null);
-            } catch (error) {
-                const data = isRecord(error) && isRecord(error.data) ? error.data : null;
-                const session = typeof data?.session === "string" ? data.session : null;
-                const completed = new Set(
-                    Array.isArray(data?.completed)
-                        ? data.completed.filter(
-                              (stage): stage is string => typeof stage === "string",
-                          )
-                        : [],
-                );
-                const flows = uiaStages(data?.flows);
-                const canCompleteWith = (stage: string) =>
-                    flows.some((flow) =>
-                        flow.every((required) => completed.has(required) || required === stage),
-                    );
-
-                if (!session || !flows.length) {
-                    throw error;
-                }
-
-                if (canCompleteWith(AuthType.Dummy)) {
-                    return makeRequest({ type: AuthType.Dummy, session });
-                }
-
-                if (canCompleteWith(AuthType.Password)) {
-                    if (!accountPassword) {
-                        throw new Error(
-                            "Your homeserver requires your Matrix account password to enable cross-signing. Enter it below and try again; Sub-Etha will not store it.",
-                        );
-                    }
-
-                    try {
-                        return await makeRequest({
-                            type: AuthType.Password,
-                            identifier: { type: "m.id.user", user: this.session.userId },
-                            password: accountPassword,
-                            session,
-                        });
-                    } catch (authError) {
-                        throw new Error(
-                            `Cross-signing authentication failed: ${humanizeMatrixError(authError)}`,
-                        );
-                    }
-                }
-
-                throw new Error(
-                    "Your homeserver requires browser-based account authentication to enable cross-signing. Set up cross-signing in another Matrix client, then return here to verify this device.",
-                );
-            }
-        };
-    }
-
-    async setupRecovery(passphrase?: string, accountPassword?: string): Promise<string> {
-        const client = this.requireClient();
-        const cryptoApi = client.getCrypto();
+    async setupRecovery(passphrase?: string): Promise<string> {
+        const cryptoApi = this.requireClient().getCrypto();
 
         if (!cryptoApi) {
             throw new Error("Encryption is not available on this device.");
-        }
-
-        const [crossSigning, publishedKeys] = await Promise.all([
-            cryptoApi.getCrossSigningStatus(),
-            client.downloadKeysForUsers([this.session.userId]),
-        ]);
-        const cachedCrossSigningKeys = Object.values(crossSigning.privateKeysCachedLocally).every(
-            Boolean,
-        );
-        const crossSigningPublished = hasPublishedCrossSigningIdentity(
-            publishedKeys,
-            this.session.userId,
-        );
-
-        if (!crossSigningPublished) {
-            await cryptoApi.bootstrapCrossSigning({
-                // A failed UI-auth attempt can leave unpublished private keys in the Rust store.
-                // Regenerate only that unpublished identity so a corrected password can retry.
-                setupNewCrossSigning: crossSigning.publicKeysOnDevice || cachedCrossSigningKeys,
-                authUploadDeviceSigningKeys: this.deviceSigningAuthentication(accountPassword),
-            });
-
-            const confirmedKeys = await client.downloadKeysForUsers([this.session.userId]);
-
-            if (!hasPublishedCrossSigningIdentity(confirmedKeys, this.session.userId)) {
-                throw new Error(
-                    "The homeserver did not publish the new cross-signing identity. Recovery setup stopped before storing a partial configuration; try again.",
-                );
-            }
-        } else if (!crossSigning.privateKeysInSecretStorage && !cachedCrossSigningKeys) {
-            throw new Error(
-                "Cross-signing already exists for this account, but its private keys are not available here. Verify this device with an existing trusted device before setting up recovery.",
-            );
         }
 
         const generated = await cryptoApi.createRecoveryKeyFromPassphrase(
@@ -1904,8 +1739,7 @@ export class MatrixService {
     }
 
     async startDeviceVerification(deviceId?: string): Promise<void> {
-        const client = this.requireClient();
-        const cryptoApi = client.getCrypto();
+        const cryptoApi = this.requireClient().getCrypto();
 
         if (!cryptoApi) {
             throw new Error("Encryption is not available on this device.");
@@ -1915,28 +1749,9 @@ export class MatrixService {
             throw new Error("A device verification is already in progress.");
         }
 
-        let request: VerificationRequest;
-
-        try {
-            // Keep this path identical to the working production flow. The
-            // Rust crypto API owns device-list refresh and recipient selection.
-            request = deviceId
-                ? await cryptoApi.requestDeviceVerification(this.session.userId, deviceId)
-                : await cryptoApi.requestOwnUserVerification();
-        } catch (error) {
-            if (
-                error instanceof Error &&
-                /no existing cross-signing key|cross-signing.*not.*set up/i.test(error.message)
-            ) {
-                throw new Error(
-                    "Cross-signing is not set up for this account yet. Set up recovery in Encryption & recovery before verifying another device.",
-                    { cause: error },
-                );
-            }
-
-            throw error;
-        }
-
+        const request = deviceId
+            ? await cryptoApi.requestDeviceVerification(this.session.userId, deviceId)
+            : await cryptoApi.requestOwnUserVerification();
         const direction = request.initiatedByMe ? "outgoing" : "incoming";
         const context = this.bindVerification(request, direction);
 
@@ -2046,30 +1861,28 @@ export class MatrixService {
         await this.requireClient().setPusher(request);
     }
 
-    async prepareLogout(): Promise<void> {
-        await prepareAccountCleanup(this.session);
-    }
-
-    async logout(): Promise<CleanupOutcome> {
+    async logout(): Promise<void> {
         this.stopped = true;
-        await this.prepareLogout();
-        let remoteRevocationConfirmed = true;
 
         try {
             await this.client?.logout();
         } catch {
-            remoteRevocationConfirmed = false;
+            /* local cleanup still proceeds */
         }
 
         this.releaseClientListeners();
         this.client?.stopClient();
         window.removeEventListener("storage", this.handleTakeoverRequest);
-        this.releaseStorageResetListener?.();
-        this.releaseStorageResetListener = null;
-        await this.drafts.flush().catch(() => undefined);
-        await this.store?.destroy().catch(() => undefined);
-        const cleanup = await clearCurrentAccountData(this.session, remoteRevocationConfirmed);
 
+        try {
+            await this.client?.clearStores({
+                cryptoDatabasePrefix: `sub-etha-crypto-${stableStoreName(this.session)}`,
+            });
+        } catch {
+            /* best effort */
+        }
+
+        await clearSession();
         this.releaseMediaAssets();
         this.releaseVerificationContext();
         this.releaseLock?.();
@@ -2085,17 +1898,11 @@ export class MatrixService {
             loadingHistory: false,
             hasMoreHistory: false,
         });
-
-        return cleanup;
     }
 
     stop(): void {
         this.stopped = true;
         this.releaseClientListeners();
-        this.releaseStorageResetListener?.();
-        this.releaseStorageResetListener = null;
-        void this.drafts.flush();
-        void this.store?.destroy();
         this.client?.stopClient();
         window.removeEventListener("storage", this.handleTakeoverRequest);
         this.releaseMediaAssets();

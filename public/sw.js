@@ -1,19 +1,13 @@
-const CACHE_NAME = "sub-etha-shell-v6";
+const CACHE_NAME = "sub-etha-shell-v5";
 const SHELL = ["/", "/manifest.webmanifest", "/icon-192.png", "/icon-512.png"];
 const PUSH_DB = "sub-etha-push";
-const PUSH_DB_VERSION = 2;
 const PUSH_STORE = "settings";
-const PUSH_CONFIG_KEY = "config-v2";
-const SESSION_DB = "sub-etha-session";
-const DEVICE_KEY_STORE = "keys";
-const DEVICE_AES_KEY = "device-aead-v1";
+const ROOM_NOTIFICATION_PREFIX = "sub-etha-room:";
 const GENERIC_NOTIFICATION_TAG = "sub-etha-generic";
 const TEST_NOTIFICATION_TAG = "sub-etha-test";
-const PUSH_AAD =
-    "sub-etha\u001fenvelope-v1\u001fsub-etha-push\u001fsettings\u001fpush-capabilities\u001fconfig-v2";
 
-function notificationTag() {
-    return GENERIC_NOTIFICATION_TAG;
+function notificationTag(roomId) {
+    return roomId ? `${ROOM_NOTIFICATION_PREFIX}${roomId}` : GENERIC_NOTIFICATION_TAG;
 }
 
 async function syncBadge(unread) {
@@ -36,9 +30,13 @@ async function syncBadge(unread) {
     }
 }
 
-async function dismissRoomNotification() {
+async function dismissRoomNotification(roomId) {
+    if (!roomId) {
+        return;
+    }
+
     const notifications = await self.registration.getNotifications({
-        tag: GENERIC_NOTIFICATION_TAG,
+        tag: notificationTag(roomId),
     });
 
     for (const notification of notifications) {
@@ -52,100 +50,47 @@ async function hasVisibleWindow() {
     return windows.some((client) => client.visibilityState === "visible");
 }
 
-function openDatabase(name, version, upgrade) {
+function openPushDatabase() {
     return new Promise((resolve, reject) => {
-        const request =
-            version === undefined ? indexedDB.open(name) : indexedDB.open(name, version);
+        const request = indexedDB.open(PUSH_DB, 1);
 
-        request.onupgradeneeded = () => upgrade?.(request.result);
+        request.onupgradeneeded = () => request.result.createObjectStore(PUSH_STORE);
         request.onsuccess = () => resolve(request.result);
         request.onerror = () => reject(request.error);
     });
 }
 
-function requestValue(request) {
-    return new Promise((resolve, reject) => {
-        request.onsuccess = () => resolve(request.result);
-        request.onerror = () => reject(request.error);
+async function writePushConfig(value) {
+    const database = await openPushDatabase();
+
+    await new Promise((resolve, reject) => {
+        const transaction = database.transaction(PUSH_STORE, "readwrite");
+        const store = transaction.objectStore(PUSH_STORE);
+
+        if (value) {
+            store.put(value, "config");
+        } else {
+            store.delete("config");
+        }
+
+        transaction.oncomplete = resolve;
+        transaction.onerror = () => reject(transaction.error);
     });
+    database.close();
 }
 
 async function readPushConfig() {
-    const [sessionDatabase, pushDatabase] = await Promise.all([
-        openDatabase(SESSION_DB),
-        openDatabase(PUSH_DB, PUSH_DB_VERSION, (database) => {
-            if (!database.objectStoreNames.contains(PUSH_STORE)) {
-                database.createObjectStore(PUSH_STORE);
-            }
-        }),
-    ]);
+    const database = await openPushDatabase();
+    const value = await new Promise((resolve, reject) => {
+        const request = database.transaction(PUSH_STORE).objectStore(PUSH_STORE).get("config");
 
-    try {
-        if (
-            !sessionDatabase.objectStoreNames.contains(DEVICE_KEY_STORE) ||
-            !pushDatabase.objectStoreNames.contains(PUSH_STORE)
-        ) {
-            return null;
-        }
+        request.onsuccess = () => resolve(request.result || null);
+        request.onerror = () => reject(request.error);
+    });
 
-        const [aesKey, envelope] = await Promise.all([
-            requestValue(
-                sessionDatabase
-                    .transaction(DEVICE_KEY_STORE)
-                    .objectStore(DEVICE_KEY_STORE)
-                    .get(DEVICE_AES_KEY),
-            ),
-            requestValue(
-                pushDatabase.transaction(PUSH_STORE).objectStore(PUSH_STORE).get(PUSH_CONFIG_KEY),
-            ),
-        ]);
+    database.close();
 
-        if (
-            !(aesKey instanceof CryptoKey) ||
-            !envelope ||
-            envelope.version !== 1 ||
-            envelope.algorithm !== "AES-256-GCM" ||
-            !(envelope.iv instanceof ArrayBuffer) ||
-            envelope.iv.byteLength !== 12 ||
-            !(envelope.ciphertext instanceof ArrayBuffer) ||
-            envelope.ciphertext.byteLength > 16 * 1024 + 16
-        ) {
-            return null;
-        }
-
-        const plaintext = await crypto.subtle.decrypt(
-            {
-                name: "AES-GCM",
-                iv: new Uint8Array(envelope.iv),
-                additionalData: new TextEncoder().encode(PUSH_AAD),
-                tagLength: 128,
-            },
-            aesKey,
-            envelope.ciphertext,
-        );
-
-        if (plaintext.byteLength > 16 * 1024) {
-            return null;
-        }
-
-        const config = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(plaintext));
-
-        if (
-            !config ||
-            typeof config.deliveryKey !== "string" ||
-            typeof config.managementKey !== "string" ||
-            typeof config.publicKey !== "string"
-        ) {
-            return null;
-        }
-
-        return config;
-    } catch {
-        return null;
-    } finally {
-        sessionDatabase.close();
-        pushDatabase.close();
-    }
+    return value;
 }
 
 function decodeApplicationServerKey(value) {
@@ -164,8 +109,22 @@ self.addEventListener("message", (event) => {
         self.skipWaiting();
     }
 
+    if (event.data?.type === "SET_PUSH_CONFIG") {
+        event.waitUntil(
+            writePushConfig({
+                deliveryKey: event.data.deliveryKey,
+                managementKey: event.data.managementKey,
+                publicKey: event.data.publicKey,
+            }),
+        );
+    }
+
+    if (event.data?.type === "CLEAR_PUSH_CONFIG") {
+        event.waitUntil(writePushConfig(null));
+    }
+
     if (event.data?.type === "DISMISS_ROOM_NOTIFICATION") {
-        event.waitUntil(dismissRoomNotification());
+        event.waitUntil(dismissRoomNotification(event.data.roomId));
     }
 });
 
@@ -260,6 +219,8 @@ self.addEventListener("push", (event) => {
             }
 
             const kind = payload.kind === "test" ? "test" : "matrix";
+            const roomId = typeof payload.roomId === "string" ? payload.roomId : null;
+            const eventId = typeof payload.eventId === "string" ? payload.eventId : null;
             const unread = Number(payload.unread || 0);
             const test = kind === "test";
             const visible = test ? false : await hasVisibleWindow();
@@ -273,9 +234,9 @@ self.addEventListener("push", (event) => {
                             : "A new transmission has arrived.",
                         icon: "/icon-192.png",
                         badge: "/icon-192.png",
-                        tag: test ? TEST_NOTIFICATION_TAG : notificationTag(),
+                        tag: test ? TEST_NOTIFICATION_TAG : notificationTag(roomId),
                         renotify: test,
-                        data: { kind },
+                        data: { kind, roomId, eventId },
                     }),
                 );
             }
@@ -321,7 +282,11 @@ self.addEventListener("pushsubscriptionchange", (event) => {
 
 self.addEventListener("notificationclick", (event) => {
     event.notification.close();
-    const target = new URL("#/", self.location.origin).href;
+    const data = event.notification.data || {};
+    const hash = data.roomId
+        ? `#/room/${encodeURIComponent(data.roomId)}${data.eventId ? `/event/${encodeURIComponent(data.eventId)}` : ""}`
+        : "#/";
+    const target = new URL(hash, self.location.origin).href;
 
     event.waitUntil(
         self.clients.matchAll({ type: "window", includeUncontrolled: true }).then((clients) => {

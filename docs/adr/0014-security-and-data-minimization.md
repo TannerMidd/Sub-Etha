@@ -85,4 +85,3 @@ Reactive limits leave availability controlled by remote input and make emergency
 - [ADR-0008](./0008-privacy-minimal-web-push.md)
 - [ADR-0009](./0009-neon-drizzle-persistence.md)
 - [ADR-0010](./0010-pwa-and-service-worker.md)
-- [ADR-0015](./0015-encrypted-browser-persistence-and-csp.md)

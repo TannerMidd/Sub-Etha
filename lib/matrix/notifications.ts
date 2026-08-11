@@ -1,14 +1,10 @@
 import type { MatrixService } from "./client";
-import {
-    clearPushConfiguration,
-    readLegacyPushCredentials,
-    readPushConfiguration,
-    savePushConfiguration,
-    type PushConfiguration,
-} from "./push-store";
 import { randomBase64Url } from "./session-store";
 import type { PushState } from "./types";
 
+const LEGACY_PUSH_KEY_STORAGE = "sub-etha-push-key";
+const PUSH_DELIVERY_KEY_STORAGE = "sub-etha-push-delivery-key";
+const PUSH_MANAGEMENT_KEY_STORAGE = "sub-etha-push-management-key";
 const PUSH_APP_ID = "chat.subetha.pwa";
 const LEGACY_PUSH_HOST_SUFFIX = ".chatgpt.site";
 const PUSH_CONFIRMATION_TIMEOUT_MS = 15_000;
@@ -16,18 +12,6 @@ const PUSH_CONFIRMATION_TIMEOUT_MS = 15_000;
 interface PushCredentials {
     deliveryKey: string;
     managementKey: string;
-}
-
-function supportState(): PushState {
-    const supported =
-        "serviceWorker" in navigator && "PushManager" in window && "Notification" in window;
-
-    return {
-        supported,
-        enabled: false,
-        permission: supported ? Notification.permission : "unsupported",
-        checking: supported,
-    };
 }
 
 export function decodeApplicationServerKey(value: string): Uint8Array {
@@ -43,19 +27,15 @@ function applicationServerKey(value: string): ArrayBuffer {
     return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
 }
 
-export async function readPushState(): Promise<PushState> {
-    const initial = supportState();
-
-    if (!initial.supported) {
-        return { ...initial, checking: false };
-    }
-
-    const config = await readPushConfiguration().catch(() => null);
+export function readPushState(): PushState {
+    const supported =
+        "serviceWorker" in navigator && "PushManager" in window && "Notification" in window;
 
     return {
-        ...initial,
-        enabled: Boolean(config && Notification.permission === "granted"),
-        checking: false,
+        supported,
+        enabled: false,
+        permission: supported ? Notification.permission : "unsupported",
+        checking: supported,
     };
 }
 
@@ -117,8 +97,9 @@ async function gatewayRequest(
 
     if (!response.ok) {
         const payload = (await response.json().catch(() => null)) as { error?: string } | null;
+        const message = payload?.error;
 
-        throw new Error(payload?.error || "Push gateway returned " + response.status + ".");
+        throw new Error(message || `Push gateway returned ${response.status}.`);
     }
 
     return (await response.json().catch(() => ({}))) as Record<string, unknown>;
@@ -147,17 +128,35 @@ export function pushSubscriptionNeedsRepair(
     subscription: Pick<PushSubscription, "options"> | null,
     publicKey: string,
 ): boolean {
-    if (!subscription?.options.applicationServerKey) {
+    if (!subscription) {
         return true;
     }
 
-    const currentBytes = new Uint8Array(subscription.options.applicationServerKey);
+    const current = subscription.options.applicationServerKey;
+
+    if (!current) {
+        return true;
+    }
+
+    const currentBytes = new Uint8Array(current);
     const expectedBytes = decodeApplicationServerKey(publicKey);
 
     return (
         currentBytes.length !== expectedBytes.length ||
         currentBytes.some((value, index) => value !== expectedBytes[index])
     );
+}
+
+function configureServiceWorker(
+    registration: ServiceWorkerRegistration,
+    credentials: PushCredentials,
+    publicKey: string,
+): void {
+    registration.active?.postMessage({ type: "SET_PUSH_CONFIG", ...credentials, publicKey });
+}
+
+function clearServiceWorkerPushConfig(registration: ServiceWorkerRegistration | null): void {
+    registration?.active?.postMessage({ type: "CLEAR_PUSH_CONFIG" });
 }
 
 async function currentSubscription(
@@ -182,28 +181,32 @@ async function currentSubscription(
     return subscription;
 }
 
-async function storedCredentials(create: boolean): Promise<PushCredentials | null> {
-    const config = await readPushConfiguration();
+function readPushCredentials(create: boolean): PushCredentials | null {
+    const deliveryKey =
+        localStorage.getItem(PUSH_DELIVERY_KEY_STORAGE) ??
+        localStorage.getItem(LEGACY_PUSH_KEY_STORAGE);
+    const managementKey = localStorage.getItem(PUSH_MANAGEMENT_KEY_STORAGE);
 
-    if (config) {
-        return {
-            deliveryKey: config.deliveryKey,
-            managementKey: config.managementKey,
-        };
+    if (!deliveryKey && !create) {
+        return null;
     }
 
-    const legacy = readLegacyPushCredentials();
+    return {
+        deliveryKey: deliveryKey ?? randomBase64Url(32),
+        managementKey: managementKey ?? randomBase64Url(32),
+    };
+}
 
-    if (legacy) {
-        return legacy;
-    }
+function persistPushCredentials(credentials: PushCredentials): void {
+    localStorage.setItem(PUSH_DELIVERY_KEY_STORAGE, credentials.deliveryKey);
+    localStorage.setItem(PUSH_MANAGEMENT_KEY_STORAGE, credentials.managementKey);
+    localStorage.removeItem(LEGACY_PUSH_KEY_STORAGE);
+}
 
-    return create
-        ? {
-              deliveryKey: randomBase64Url(32),
-              managementKey: randomBase64Url(32),
-          }
-        : null;
+function clearPushCredentials(): void {
+    localStorage.removeItem(PUSH_DELIVERY_KEY_STORAGE);
+    localStorage.removeItem(PUSH_MANAGEMENT_KEY_STORAGE);
+    localStorage.removeItem(LEGACY_PUSH_KEY_STORAGE);
 }
 
 async function registerGatewaySubscription(
@@ -217,10 +220,12 @@ async function registerGatewaySubscription(
     });
 
     const onMessage = (event: MessageEvent) => {
-        if (event.data?.type === "PUSH_SUBSCRIPTION_CONFIRMED") {
-            confirmationReceived = true;
-            resolveConfirmation();
+        if (event.data?.type !== "PUSH_SUBSCRIPTION_CONFIRMED") {
+            return;
         }
+
+        confirmationReceived = true;
+        resolveConfirmation();
     };
 
     navigator.serviceWorker.addEventListener("message", onMessage);
@@ -283,7 +288,7 @@ async function removeLegacySitesPushers(service: MatrixService): Promise<void> {
 }
 
 function currentPusherUrl(): string {
-    return window.location.origin + "/_matrix/push/v1/notify";
+    return `${window.location.origin}/_matrix/push/v1/notify`;
 }
 
 async function registerMatrixPusher(service: MatrixService, pushKey: string): Promise<void> {
@@ -319,31 +324,21 @@ async function reconcileMatrixPusher(service: MatrixService, pushKey: string): P
     }
 }
 
-function privatePushState(): PushState {
-    return {
-        ...supportState(),
-        enabled: false,
-        checking: false,
-        error: "Private sessions keep no durable device state, so closed-app push is unavailable.",
-    };
-}
-
 export async function refreshPushState(service: MatrixService): Promise<PushState> {
-    if (service.storageMode === "private") {
-        return privatePushState();
-    }
-
-    const initial = supportState();
+    const initial = readPushState();
 
     if (!initial.supported) {
         return { ...initial, checking: false };
     }
 
-    const credentials = await storedCredentials(false);
+    const credentials = readPushCredentials(false);
 
     if (!credentials || Notification.permission !== "granted") {
         if (credentials) {
             await service.removePusher(credentials.deliveryKey).catch(() => undefined);
+        }
+
+        if (credentials) {
             await gatewayRequest("DELETE", { managementKey: credentials.managementKey }).catch(
                 () => undefined,
             );
@@ -353,7 +348,8 @@ export async function refreshPushState(service: MatrixService): Promise<PushStat
         const subscription = await registration?.pushManager.getSubscription();
 
         await subscription?.unsubscribe().catch(() => undefined);
-        await clearPushConfiguration();
+        clearServiceWorkerPushConfig(registration);
+        clearPushCredentials();
 
         return {
             supported: true,
@@ -367,20 +363,28 @@ export async function refreshPushState(service: MatrixService): Promise<PushStat
         const registration = await registerServiceWorker();
 
         if (!registration) {
-            throw new Error("The service worker could not be registered.");
+            return {
+                ...initial,
+                checking: false,
+                error: "The service worker could not be registered.",
+            };
         }
 
-        const existing = await readPushConfiguration();
-        const publicKey = existing?.publicKey ?? (await publicVapidKey());
+        const publicKey = await publicVapidKey();
         const subscription = await currentSubscription(registration, publicKey, true);
 
         if (!subscription) {
-            throw new Error("The browser push subscription is unavailable.");
+            return {
+                ...initial,
+                checking: false,
+                error: "The browser push subscription is unavailable.",
+            };
         }
 
         await registerGatewaySubscription(credentials, subscription);
         await reconcileMatrixPusher(service, credentials.deliveryKey);
-        await savePushConfiguration({ ...credentials, publicKey });
+        persistPushCredentials(credentials);
+        configureServiceWorker(registration, credentials, publicKey);
         await removeLegacySitesPushers(service).catch(() => undefined);
 
         return { supported: true, enabled: true, permission: "granted", checking: false };
@@ -399,11 +403,7 @@ export async function refreshPushState(service: MatrixService): Promise<PushStat
 }
 
 export async function enablePush(service: MatrixService): Promise<PushState> {
-    if (service.storageMode === "private") {
-        return privatePushState();
-    }
-
-    const initial = supportState();
+    const initial = readPushState();
 
     if (!initial.supported) {
         return { ...initial, checking: false, error: "This browser does not support Web Push." };
@@ -423,15 +423,24 @@ export async function enablePush(service: MatrixService): Promise<PushState> {
     const registration = await registerServiceWorker();
 
     if (!registration) {
-        throw new Error("The service worker could not be registered.");
+        return {
+            ...initial,
+            checking: false,
+            error: "The service worker could not be registered.",
+        };
     }
 
     const publicKey = await publicVapidKey();
     const subscription = await currentSubscription(registration, publicKey, true);
-    const credentials = await storedCredentials(true);
 
-    if (!subscription || !credentials) {
+    if (!subscription) {
         throw new Error("The browser push subscription is unavailable.");
+    }
+
+    const credentials = readPushCredentials(true);
+
+    if (!credentials) {
+        throw new Error("Push credentials could not be created.");
     }
 
     await registerGatewaySubscription(credentials, subscription);
@@ -447,14 +456,15 @@ export async function enablePush(service: MatrixService): Promise<PushState> {
         throw error;
     }
 
-    await savePushConfiguration({ ...credentials, publicKey });
+    persistPushCredentials(credentials);
+    configureServiceWorker(registration, credentials, publicKey);
     await removeLegacySitesPushers(service).catch(() => undefined);
 
     return { supported: true, enabled: true, permission: "granted", checking: false };
 }
 
 export async function disablePush(service: MatrixService): Promise<PushState> {
-    const credentials = await storedCredentials(false);
+    const credentials = readPushCredentials(false);
 
     if (credentials) {
         await service.removePusher(credentials.deliveryKey).catch(() => undefined);
@@ -468,47 +478,28 @@ export async function disablePush(service: MatrixService): Promise<PushState> {
     const subscription = await registration?.pushManager.getSubscription();
 
     await subscription?.unsubscribe().catch(() => undefined);
-    await clearPushConfiguration();
+    clearServiceWorkerPushConfig(registration);
+    clearPushCredentials();
     await syncAppBadge(0);
 
     return {
         supported: true,
         enabled: false,
-        permission: "Notification" in window ? Notification.permission : "unsupported",
+        permission: Notification.permission,
         checking: false,
     };
 }
 
-export async function clearPushForReset(service?: MatrixService): Promise<boolean> {
-    const credentials = await storedCredentials(false).catch(() => null);
-    const remote = await Promise.allSettled([
-        credentials && service ? service.removePusher(credentials.deliveryKey) : Promise.resolve(),
-        credentials
-            ? gatewayRequest("DELETE", { managementKey: credentials.managementKey })
-            : Promise.resolve(),
-    ]);
-    const registration =
-        "serviceWorker" in navigator ? await navigator.serviceWorker.ready.catch(() => null) : null;
-    const subscription = await registration?.pushManager.getSubscription();
-
-    await subscription?.unsubscribe().catch(() => undefined);
-    await clearPushConfiguration().catch(() => undefined);
-
-    return remote.every((result) => result.status === "fulfilled");
-}
-
 export async function sendTestPush(): Promise<void> {
-    const config = await readPushConfiguration();
+    const credentials = readPushCredentials(false);
 
-    if (!config) {
+    if (!credentials) {
         throw new Error("Enable closed-app notifications before sending a test.");
     }
 
-    await gatewayRequest("POST", { managementKey: config.managementKey }, "/api/push/test");
+    await gatewayRequest("POST", { managementKey: credentials.managementKey }, "/api/push/test");
 }
 
-export async function getPushKey(): Promise<string | null> {
-    return (await readPushConfiguration())?.deliveryKey ?? null;
+export function getPushKey(): string | null {
+    return readPushCredentials(false)?.deliveryKey ?? null;
 }
-
-export type { PushConfiguration };

@@ -7,7 +7,6 @@ const useLocalServer = !process.env.PLAYWRIGHT_BASE_URL;
 
 export default defineConfig({
     testDir: "./tests/browser",
-    testIgnore: "visual.spec.ts",
     fullyParallel: false,
     workers: 1,
     timeout: 45_000,
@@ -28,7 +27,7 @@ export default defineConfig({
         ? {
               webServer: {
                   command: "npm run dev -- --port 4173",
-                  url: "http://localhost:4173/sw.js",
+                  url: "http://localhost:4173/?design-preview#/room/signal-watch",
                   reuseExistingServer: !process.env.CI,
                   timeout: 120_000,
               },

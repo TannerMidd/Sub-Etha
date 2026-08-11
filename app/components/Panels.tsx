@@ -26,6 +26,7 @@ import type { MatrixService } from "@/lib/matrix/client";
 import {
     disablePush,
     enablePush,
+    readPushState,
     refreshPushState,
     sendTestPush,
 } from "@/lib/matrix/notifications";
@@ -664,34 +665,25 @@ export function SettingsDialog({
     service,
     onClose,
     onLogout,
-    onEraseAll,
     onVerificationStarted,
 }: {
     service: MatrixService;
     onClose: () => void;
     onLogout: () => Promise<void>;
-    onEraseAll: () => Promise<void>;
     onVerificationStarted: () => void;
 }) {
     const snapshot = service.getSnapshot();
     const [displayName, setDisplayName] = useState(snapshot.displayName);
     const [avatar, setAvatar] = useState<File | undefined>();
     const [theme, setTheme] = useState(() => localStorage.getItem("sub-etha-theme") ?? "dark");
-    const [pushState, setPushState] = useState<PushState>({
-        supported: false,
-        enabled: false,
-        permission: "unsupported",
-        checking: true,
-    });
+    const [pushState, setPushState] = useState<PushState>(() => readPushState());
     const [devices, setDevices] = useState<DeviceSummary[]>([]);
     const [cryptoStatus, setCryptoStatus] = useState<{
         secretStorageReady: boolean;
-        crossSigningConfigured: boolean;
         crossSigningReady: boolean;
         backupVersion: string | null;
     } | null>(null);
     const [passphrase, setPassphrase] = useState("");
-    const [accountPassword, setAccountPassword] = useState("");
     const [recoveryInput, setRecoveryInput] = useState("");
     const [generatedRecovery, setGeneratedRecovery] = useState<string | null>(null);
     const [busyAction, setBusyAction] = useState<string | null>(null);
@@ -838,21 +830,12 @@ export function SettingsDialog({
                                 Generic alerts only. The gateway never receives message text, sender
                                 or room names.
                             </p>
-                            {service.storageMode === "private" ? (
-                                <p className={classes("inline-notice")}>
-                                    Closed-app push requires durable device state and is disabled
-                                    for this private session.
-                                </p>
-                            ) : null}
                         </div>
                         <button
                             className={classes("secondary-button")}
                             type="button"
                             disabled={
-                                service.storageMode === "private" ||
-                                !pushState.supported ||
-                                pushState.checking ||
-                                busyAction === "push"
+                                !pushState.supported || pushState.checking || busyAction === "push"
                             }
                             onClick={() =>
                                 void act("push", async () => {
@@ -948,38 +931,15 @@ export function SettingsDialog({
                                 onChange={(event) => setPassphrase(event.target.value)}
                                 placeholder="Leave blank for a recovery key"
                             />
-                            {cryptoStatus && !cryptoStatus.crossSigningConfigured ? (
-                                <>
-                                    <label htmlFor="matrix-account-password">
-                                        Matrix account password
-                                    </label>
-                                    <input
-                                        id="matrix-account-password"
-                                        type="password"
-                                        value={accountPassword}
-                                        onChange={(event) => setAccountPassword(event.target.value)}
-                                        placeholder="Needed once if your homeserver asks"
-                                        autoComplete="current-password"
-                                    />
-                                    <p className={classes("verification-help")}>
-                                        Used only to authorize cross-signing setup. Sub-Etha never
-                                        stores this password.
-                                    </p>
-                                </>
-                            ) : null}
                             <button
                                 className={classes("secondary-button")}
                                 type="button"
                                 disabled={busyAction === "recovery"}
                                 onClick={() =>
                                     void act("recovery", async () => {
-                                        const key = await service.setupRecovery(
-                                            passphrase,
-                                            accountPassword || undefined,
-                                        );
+                                        const key = await service.setupRecovery(passphrase);
 
                                         setGeneratedRecovery(key);
-                                        setAccountPassword("");
                                         setCryptoStatus(await service.getCryptoStatus());
                                     })
                                 }
@@ -1031,7 +991,7 @@ export function SettingsDialog({
                     <button
                         className={classes("secondary-button full-width")}
                         type="button"
-                        disabled={busyAction === "verify" || !cryptoStatus?.crossSigningConfigured}
+                        disabled={busyAction === "verify"}
                         onClick={() =>
                             void act("verify", async () => {
                                 await service.startDeviceVerification();
@@ -1042,12 +1002,6 @@ export function SettingsDialog({
                         <ShieldCheck />
                         Verify with another device
                     </button>
-                    {cryptoStatus && !cryptoStatus.crossSigningConfigured ? (
-                        <p className={classes("verification-help")}>
-                            Set up recovery above to create this account&apos;s cross-signing
-                            identity before verifying another device.
-                        </p>
-                    ) : null}
 
                     <h3>
                         <Users />
@@ -1087,10 +1041,7 @@ export function SettingsDialog({
                                 {!device.current && !device.verified ? (
                                     <button
                                         type="button"
-                                        disabled={
-                                            busyAction === `verify-${device.deviceId}` ||
-                                            !cryptoStatus?.crossSigningConfigured
-                                        }
+                                        disabled={busyAction === `verify-${device.deviceId}`}
                                         onClick={() =>
                                             void act(`verify-${device.deviceId}`, async () => {
                                                 await service.startDeviceVerification(
@@ -1106,14 +1057,6 @@ export function SettingsDialog({
                             </div>
                         ))}
                     </div>
-                    <button
-                        className={classes("danger-button")}
-                        type="button"
-                        onClick={() => void onEraseAll()}
-                    >
-                        <ShieldAlert />
-                        Erase all Sub-Etha data
-                    </button>
                     <button
                         className={classes("danger-button")}
                         type="button"

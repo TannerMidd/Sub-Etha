@@ -4,10 +4,9 @@ import { useCallback, useEffect, useState, useSyncExternalStore } from "react";
 import { LoaderCircle, RadioTower, RefreshCw, ShieldAlert } from "lucide-react";
 import { completeRedirectLogin, humanizeMatrixError } from "@/lib/matrix/auth";
 import type { MatrixService } from "@/lib/matrix/client";
-import { clearPushForReset, disablePush, registerServiceWorker } from "@/lib/matrix/notifications";
-import { eraseAllSubEthaData, retryPendingCleanup } from "@/lib/matrix/storage-cleanup";
+import { disablePush, registerServiceWorker } from "@/lib/matrix/notifications";
 import { clearSession, readSession, saveSession } from "@/lib/matrix/session-store";
-import type { CleanupOutcome, PersistedMatrixSession } from "@/lib/matrix/types";
+import type { PersistedMatrixSession } from "@/lib/matrix/types";
 import { assertAllowedHomeserverUrl, InsecureHomeserverError } from "@/lib/matrix/url-policy";
 import { BrandMark } from "./BrandMark";
 import { ChatShell } from "./ChatShell";
@@ -41,9 +40,6 @@ const readPreviewFlag = () =>
 export function SubEthaApp() {
     const [bootState, setBootState] = useState<BootState>("booting");
     const [service, setService] = useState<MatrixService | null>(null);
-    const [notice, setNotice] = useState<string | null>(null);
-    const [failedRememberedSession, setFailedRememberedSession] =
-        useState<PersistedMatrixSession | null>(null);
     const [bootError, setBootError] = useState<string | null>(null);
     const [waitingWorker, setWaitingWorker] = useState<ServiceWorker | null>(null);
     const designPreview = useSyncExternalStore(
@@ -109,24 +105,7 @@ export function SubEthaApp() {
     const connect = useCallback(async (session: PersistedMatrixSession) => {
         setBootState("booting");
         setBootError(null);
-        setNotice(null);
-
-        if (session.storageMode === "remembered") {
-            try {
-                await saveSession(session);
-            } catch (error) {
-                setFailedRememberedSession(session);
-                setBootError(
-                    (error instanceof Error ? error.message : "Private storage failed.") +
-                        " Nothing was saved in plaintext. Continue privately or erase local data.",
-                );
-                setBootState("error");
-
-                return;
-            }
-        }
-
-        setFailedRememberedSession(null);
+        await saveSession(session);
         const { MatrixAlreadyOpenError, MatrixService: MatrixServiceImplementation } =
             await import("@/lib/matrix/client");
         const nextService = new MatrixServiceImplementation(session);
@@ -193,14 +172,6 @@ export function SubEthaApp() {
 
         void (async () => {
             try {
-                const pendingCleanup = await retryPendingCleanup();
-
-                if (pendingCleanup && !pendingCleanup.complete) {
-                    throw new Error(
-                        "Local cleanup is still blocked. Close other Sub-Etha tabs, retry, or erase all local data.",
-                    );
-                }
-
                 const redirectSession = await completeRedirectLogin();
                 const session = redirectSession ?? (await readSession());
 
@@ -244,86 +215,11 @@ export function SubEthaApp() {
             return;
         }
 
-        let cleanup: CleanupOutcome;
-
-        try {
-            await service.prepareLogout();
-            await disablePush(service).catch(() => undefined);
-            cleanup = await service.logout();
-        } catch (error) {
-            setBootError(
-                `Local cleanup could not be prepared safely: ${humanizeMatrixError(error)}`,
-            );
-            setBootState("error");
-
-            return;
-        }
-
-        if (!cleanup.localCredentialsRemoved) {
-            setBootError(
-                "Local credentials could not be removed. Close other Sub-Etha tabs and retry, or erase all data.",
-            );
-            setBootState("error");
-
-            return;
-        }
-
+        await disablePush(service).catch(() => undefined);
+        await service.logout();
         setService(null);
-        setNotice(
-            cleanup.complete && cleanup.remoteRevocationConfirmed
-                ? "Signed out and cleared local account data."
-                : (cleanup.warning ??
-                      "Signed out locally. Some cache deletion or remote revocation could not be confirmed."),
-        );
         setBootState("login");
         window.history.replaceState({}, "", window.location.pathname);
-    };
-
-    const eraseAll = async () => {
-        if (
-            window.prompt(
-                "Type ERASE to remove every Sub-Etha account, key, draft, cache, push subscription, and service worker from this browser.",
-            ) !== "ERASE"
-        ) {
-            return;
-        }
-
-        setBootState("booting");
-        setBootError(null);
-        const activeService = service;
-        const cleanup = await eraseAllSubEthaData(async () => {
-            const pushCleared = await clearPushForReset(activeService ?? undefined);
-
-            if (!activeService) {
-                return pushCleared;
-            }
-
-            const accountCleanup = await activeService.logout();
-
-            return pushCleared && accountCleanup.remoteRevocationConfirmed;
-        });
-
-        setService(null);
-        setFailedRememberedSession(null);
-        setNotice(
-            cleanup.complete
-                ? "All managed Sub-Etha data was erased from this browser."
-                : (cleanup.warning ??
-                      "Erasure was partial. Close other tabs and use the browser's Clear site data control."),
-        );
-        setBootState("login");
-        window.history.replaceState({}, "", window.location.pathname);
-    };
-
-    const continuePrivately = async () => {
-        if (!failedRememberedSession) {
-            return;
-        }
-
-        await connect({
-            ...failedRememberedSession,
-            storageMode: "private",
-        });
     };
 
     const takeOver = async () => {
@@ -357,13 +253,13 @@ export function SubEthaApp() {
     }
 
     if (bootState === "login") {
-        return <LoginScreen onAuthenticated={connect} onEraseAll={eraseAll} notice={notice} />;
+        return <LoginScreen onAuthenticated={connect} />;
     }
 
     if (bootState === "connected" && service) {
         return (
             <>
-                <ChatShell service={service} onLogout={logout} onEraseAll={eraseAll} />
+                <ChatShell service={service} onLogout={logout} />
                 {waitingWorker ? (
                     <div className={classes("update-toast")} role="status">
                         <RefreshCw />
@@ -426,15 +322,6 @@ export function SubEthaApp() {
                     <p className={classes("eyebrow")}>SIGNAL INTERRUPTED</p>
                     <h1>The receiver declined to become haunted.</h1>
                     <p>{bootError}</p>
-                    {failedRememberedSession ? (
-                        <button
-                            className={classes("primary-button")}
-                            type="button"
-                            onClick={() => void continuePrivately()}
-                        >
-                            Continue privately
-                        </button>
-                    ) : null}
                     <div className={classes("button-row")}>
                         <button
                             className={classes("primary-button")}
@@ -450,13 +337,6 @@ export function SubEthaApp() {
                             onClick={() => setBootState("login")}
                         >
                             Return to sign in
-                        </button>
-                        <button
-                            className={classes("secondary-button")}
-                            type="button"
-                            onClick={() => void eraseAll()}
-                        >
-                            Erase all Sub-Etha data
                         </button>
                     </div>
                 </div>

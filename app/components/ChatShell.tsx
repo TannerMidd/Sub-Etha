@@ -223,11 +223,9 @@ function RoomListItem({
 export function ChatShell({
     service,
     onLogout,
-    onEraseAll,
 }: {
     service: MatrixService;
     onLogout: () => Promise<void>;
-    onEraseAll: () => Promise<void>;
 }) {
     const snapshot = useSyncExternalStore(
         service.subscribe,
@@ -1083,7 +1081,6 @@ export function ChatShell({
                     service={service}
                     onClose={() => setDialog(null)}
                     onLogout={onLogout}
-                    onEraseAll={onEraseAll}
                     onVerificationStarted={() => setDialog(null)}
                 />
             ) : null}
