@@ -54,7 +54,7 @@ test("edge swipes open and close the room index while vertical scrolling wins", 
     await expect(page).not.toHaveURL(/#\/room\//);
     await page.waitForTimeout(250);
 
-    await dispatchTouchSwipe(page, { x: 340, y: 110 }, { x: 220, y: 114 });
+    await dispatchTouchSwipe(page, { x: 180, y: 30 }, { x: 80, y: 34 });
     await expect(shell).toHaveAttribute("data-rooms-state", "closed");
 
     await dispatchTouchSwipe(page, { x: 12, y: 300 }, { x: 18, y: 560 });

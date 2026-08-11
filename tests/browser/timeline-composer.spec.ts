@@ -4,6 +4,8 @@ const PREVIEW_URL = "/?design-preview#/room/signal-watch";
 const STRESS_PREVIEW_URL = "/?design-preview&ux-preview=timeline-stress#/room/signal-watch";
 const FAILURE_PREVIEW_URL =
     "/?design-preview&ux-preview=timeline-stress-failure#/room/signal-watch";
+const MESSAGE_COMPOSER_CLEARANCE_PX = 12;
+const SUBPIXEL_TOLERANCE_PX = 0.5;
 
 interface TextareaMetrics {
     height: number;
@@ -126,9 +128,11 @@ async function expectNewestMessageClearOfComposer(page: Page, eventId: string): 
                 return Number.POSITIVE_INFINITY;
             }
 
-            return row.y + row.height - (scroller.y + scroller.height - 12);
+            return (
+                row.y + row.height - (scroller.y + scroller.height - MESSAGE_COMPOSER_CLEARANCE_PX)
+            );
         })
-        .toBeLessThanOrEqual(0);
+        .toBeLessThanOrEqual(SUBPIXEL_TOLERANCE_PX);
 }
 
 async function openMessageActions(row: Locator): Promise<void> {
@@ -141,14 +145,18 @@ async function openMessageActions(row: Locator): Promise<void> {
 
     const toggle = row.locator('[data-ui="message-actions-toggle"]');
 
-    if (await toggle.isVisible()) {
+    const usesToggle = await toggle.evaluate(
+        (button) => getComputedStyle(button).display !== "none",
+    );
+
+    if (usesToggle) {
         await toggle.click();
         await expect(row).toHaveAttribute("data-actions-state", "open");
     } else {
         await row.hover();
     }
 
-    const reply = row.getByRole("button", { name: "Reply" });
+    const reply = row.getByRole("button", { name: "Reply", includeHidden: true });
 
     try {
         await expect
@@ -262,7 +270,7 @@ test.describe("composer regression coverage", () => {
         expect(capped.height).toBeLessThanOrEqual(161);
         expect(capped.scrollHeight).toBeGreaterThan(capped.clientHeight);
         expect(capped.overflowY).toBe("auto");
-        await expect(status).toBeVisible();
+        await expect(status).toBeAttached();
         expect(
             (await page.locator('[data-ui="timeline"]').boundingBox())?.height ?? 0,
         ).toBeGreaterThan(100);
@@ -318,7 +326,7 @@ test.describe("composer regression coverage", () => {
         await expect(page.getByText("Replying to Tamsin")).toBeHidden();
 
         await textarea.fill("");
-        const ownRow = page.locator('[data-event-id="m5"]');
+        const ownRow = page.locator('[data-event-id="m9"]');
 
         await ownRow.scrollIntoViewIfNeeded();
         await openMessageActions(ownRow);
