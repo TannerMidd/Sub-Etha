@@ -52,6 +52,20 @@ function timelineEvent(id: string) {
     };
 }
 
+function crossSigningKeyQuery(published: boolean) {
+    if (!published) {
+        return { failures: {}, device_keys: {} };
+    }
+
+    return {
+        failures: {},
+        device_keys: {},
+        master_keys: { [SESSION.userId]: { keys: {} } },
+        self_signing_keys: { [SESSION.userId]: { keys: {} } },
+        user_signing_keys: { [SESSION.userId]: { keys: {} } },
+    };
+}
+
 function timelineRoom(roomId: string, token: string | null, ids: string[]) {
     const events = ids.map(timelineEvent);
 
@@ -341,4 +355,230 @@ test("a stale pagination request cannot overwrite a newly selected room", async 
             });
         }
     }
+});
+
+test("device verification fails with setup guidance before requesting SAS when cross-signing is absent", async () => {
+    const service = new MatrixService(SESSION);
+    let verificationRequests = 0;
+    let localKeyChecks = 0;
+    const cryptoApi = {
+        userHasCrossSigningKeys: async () => {
+            localKeyChecks += 1;
+
+            return true;
+        },
+        requestOwnUserVerification: async () => {
+            verificationRequests += 1;
+
+            throw new Error("should not be called");
+        },
+    };
+    const internals = service as unknown as {
+        client: {
+            getCrypto: () => typeof cryptoApi;
+            downloadKeysForUsers: (
+                userIds: string[],
+            ) => Promise<ReturnType<typeof crossSigningKeyQuery>>;
+        };
+    };
+
+    internals.client = {
+        getCrypto: () => cryptoApi,
+        downloadKeysForUsers: async (userIds) => {
+            assert.deepEqual(userIds, [SESSION.userId]);
+
+            return crossSigningKeyQuery(false);
+        },
+    };
+
+    await assert.rejects(
+        service.startDeviceVerification(),
+        /Cross-signing is not set up.*Set up recovery/i,
+    );
+    assert.equal(verificationRequests, 0);
+    assert.equal(localKeyChecks, 0);
+});
+
+test("recovery setup creates and authenticates cross-signing before storing recovery secrets", async () => {
+    const service = new MatrixService(SESSION);
+    const calls: string[] = [];
+    const authPayloads: unknown[] = [];
+    const generated = {
+        privateKey: new Uint8Array(32),
+        encodedPrivateKey: "RECOVERY KEY",
+    };
+    let keyQueries = 0;
+    const cryptoApi = {
+        getCrossSigningStatus: async () => ({
+            publicKeysOnDevice: false,
+            privateKeysInSecretStorage: false,
+            privateKeysCachedLocally: {
+                masterKey: false,
+                selfSigningKey: false,
+                userSigningKey: false,
+            },
+        }),
+        bootstrapCrossSigning: async (options: {
+            setupNewCrossSigning?: boolean;
+            authUploadDeviceSigningKeys?: (
+                request: (auth: unknown) => Promise<void>,
+            ) => Promise<void>;
+        }) => {
+            calls.push("cross-signing");
+            assert.equal(options.setupNewCrossSigning, false);
+            await options.authUploadDeviceSigningKeys?.(async (auth) => {
+                authPayloads.push(auth);
+
+                if (auth === null) {
+                    throw Object.assign(new Error("Interactive authentication required"), {
+                        data: {
+                            session: "uia-session",
+                            completed: [],
+                            flows: [{ stages: ["m.login.password"] }],
+                        },
+                    });
+                }
+            });
+        },
+        createRecoveryKeyFromPassphrase: async (passphrase?: string) => {
+            calls.push(`recovery-key:${passphrase}`);
+
+            return generated;
+        },
+        bootstrapSecretStorage: async (options: {
+            createSecretStorageKey: () => Promise<typeof generated>;
+            setupNewKeyBackup: boolean;
+        }) => {
+            calls.push("secret-storage");
+            assert.equal(options.setupNewKeyBackup, true);
+            assert.equal(await options.createSecretStorageKey(), generated);
+        },
+    };
+    const internals = service as unknown as {
+        client: {
+            getCrypto: () => typeof cryptoApi;
+            downloadKeysForUsers: () => Promise<ReturnType<typeof crossSigningKeyQuery>>;
+        };
+    };
+
+    internals.client = {
+        getCrypto: () => cryptoApi,
+        downloadKeysForUsers: async () => crossSigningKeyQuery(++keyQueries > 1),
+    };
+
+    assert.equal(
+        await service.setupRecovery("recovery passphrase", "account password with spaces"),
+        "RECOVERY KEY",
+    );
+    assert.deepEqual(calls, [
+        "cross-signing",
+        "recovery-key:recovery passphrase",
+        "secret-storage",
+    ]);
+    assert.equal(keyQueries, 2);
+    assert.deepEqual(authPayloads, [
+        null,
+        {
+            type: "m.login.password",
+            identifier: { type: "m.id.user", user: SESSION.userId },
+            password: "account password with spaces",
+            session: "uia-session",
+        },
+    ]);
+});
+
+test("recovery setup explains when a homeserver requires a missing account password", async () => {
+    const service = new MatrixService(SESSION);
+    let secretStorageCalls = 0;
+    const cryptoApi = {
+        getCrossSigningStatus: async () => ({
+            publicKeysOnDevice: false,
+            privateKeysInSecretStorage: false,
+            privateKeysCachedLocally: {
+                masterKey: false,
+                selfSigningKey: false,
+                userSigningKey: false,
+            },
+        }),
+        bootstrapCrossSigning: async (options: {
+            setupNewCrossSigning?: boolean;
+            authUploadDeviceSigningKeys?: (
+                request: (auth: unknown) => Promise<void>,
+            ) => Promise<void>;
+        }) => {
+            assert.equal(options.setupNewCrossSigning, false);
+            await options.authUploadDeviceSigningKeys?.(async () => {
+                throw Object.assign(new Error("Interactive authentication required"), {
+                    data: {
+                        session: "uia-session",
+                        flows: [{ stages: ["m.login.password"] }],
+                    },
+                });
+            });
+        },
+        createRecoveryKeyFromPassphrase: async () => ({
+            privateKey: new Uint8Array(32),
+            encodedPrivateKey: "RECOVERY KEY",
+        }),
+        bootstrapSecretStorage: async () => {
+            secretStorageCalls += 1;
+        },
+    };
+    const internals = service as unknown as {
+        client: {
+            getCrypto: () => typeof cryptoApi;
+            downloadKeysForUsers: () => Promise<ReturnType<typeof crossSigningKeyQuery>>;
+        };
+    };
+
+    internals.client = {
+        getCrypto: () => cryptoApi,
+        downloadKeysForUsers: async () => crossSigningKeyQuery(false),
+    };
+
+    await assert.rejects(
+        service.setupRecovery(),
+        /requires your Matrix account password.*will not store it/i,
+    );
+    assert.equal(secretStorageCalls, 0);
+});
+
+test("recovery setup regenerates unpublished cross-signing keys after a failed auth attempt", async () => {
+    const service = new MatrixService(SESSION);
+    let resetRequested = false;
+    const generated = {
+        privateKey: new Uint8Array(32),
+        encodedPrivateKey: "RECOVERY KEY",
+    };
+    let keyQueries = 0;
+    const cryptoApi = {
+        getCrossSigningStatus: async () => ({
+            publicKeysOnDevice: false,
+            privateKeysInSecretStorage: false,
+            privateKeysCachedLocally: {
+                masterKey: true,
+                selfSigningKey: true,
+                userSigningKey: true,
+            },
+        }),
+        bootstrapCrossSigning: async (options: { setupNewCrossSigning?: boolean }) => {
+            resetRequested = options.setupNewCrossSigning === true;
+        },
+        createRecoveryKeyFromPassphrase: async () => generated,
+        bootstrapSecretStorage: async () => undefined,
+    };
+    const internals = service as unknown as {
+        client: {
+            getCrypto: () => typeof cryptoApi;
+            downloadKeysForUsers: () => Promise<ReturnType<typeof crossSigningKeyQuery>>;
+        };
+    };
+
+    internals.client = {
+        getCrypto: () => cryptoApi,
+        downloadKeysForUsers: async () => crossSigningKeyQuery(++keyQueries > 1),
+    };
+
+    assert.equal(await service.setupRecovery(), "RECOVERY KEY");
+    assert.equal(resetRequested, true);
 });

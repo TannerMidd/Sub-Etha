@@ -576,6 +576,7 @@ function createPreviewService(): MatrixService {
         ],
         getCryptoStatus: async () => ({
             secretStorageReady: true,
+            crossSigningConfigured: true,
             crossSigningReady: true,
             backupVersion: "1",
         }),

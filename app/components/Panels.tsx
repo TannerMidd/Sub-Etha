@@ -686,10 +686,12 @@ export function SettingsDialog({
     const [devices, setDevices] = useState<DeviceSummary[]>([]);
     const [cryptoStatus, setCryptoStatus] = useState<{
         secretStorageReady: boolean;
+        crossSigningConfigured: boolean;
         crossSigningReady: boolean;
         backupVersion: string | null;
     } | null>(null);
     const [passphrase, setPassphrase] = useState("");
+    const [accountPassword, setAccountPassword] = useState("");
     const [recoveryInput, setRecoveryInput] = useState("");
     const [generatedRecovery, setGeneratedRecovery] = useState<string | null>(null);
     const [busyAction, setBusyAction] = useState<string | null>(null);
@@ -946,15 +948,38 @@ export function SettingsDialog({
                                 onChange={(event) => setPassphrase(event.target.value)}
                                 placeholder="Leave blank for a recovery key"
                             />
+                            {cryptoStatus && !cryptoStatus.crossSigningConfigured ? (
+                                <>
+                                    <label htmlFor="matrix-account-password">
+                                        Matrix account password
+                                    </label>
+                                    <input
+                                        id="matrix-account-password"
+                                        type="password"
+                                        value={accountPassword}
+                                        onChange={(event) => setAccountPassword(event.target.value)}
+                                        placeholder="Needed once if your homeserver asks"
+                                        autoComplete="current-password"
+                                    />
+                                    <p className={classes("verification-help")}>
+                                        Used only to authorize cross-signing setup. Sub-Etha never
+                                        stores this password.
+                                    </p>
+                                </>
+                            ) : null}
                             <button
                                 className={classes("secondary-button")}
                                 type="button"
                                 disabled={busyAction === "recovery"}
                                 onClick={() =>
                                     void act("recovery", async () => {
-                                        const key = await service.setupRecovery(passphrase);
+                                        const key = await service.setupRecovery(
+                                            passphrase,
+                                            accountPassword || undefined,
+                                        );
 
                                         setGeneratedRecovery(key);
+                                        setAccountPassword("");
                                         setCryptoStatus(await service.getCryptoStatus());
                                     })
                                 }
@@ -1006,7 +1031,7 @@ export function SettingsDialog({
                     <button
                         className={classes("secondary-button full-width")}
                         type="button"
-                        disabled={busyAction === "verify"}
+                        disabled={busyAction === "verify" || !cryptoStatus?.crossSigningConfigured}
                         onClick={() =>
                             void act("verify", async () => {
                                 await service.startDeviceVerification();
@@ -1017,6 +1042,12 @@ export function SettingsDialog({
                         <ShieldCheck />
                         Verify with another device
                     </button>
+                    {cryptoStatus && !cryptoStatus.crossSigningConfigured ? (
+                        <p className={classes("verification-help")}>
+                            Set up recovery above to create this account&apos;s cross-signing
+                            identity before verifying another device.
+                        </p>
+                    ) : null}
 
                     <h3>
                         <Users />
@@ -1056,7 +1087,10 @@ export function SettingsDialog({
                                 {!device.current && !device.verified ? (
                                     <button
                                         type="button"
-                                        disabled={busyAction === `verify-${device.deviceId}`}
+                                        disabled={
+                                            busyAction === `verify-${device.deviceId}` ||
+                                            !cryptoStatus?.crossSigningConfigured
+                                        }
                                         onClick={() =>
                                             void act(`verify-${device.deviceId}`, async () => {
                                                 await service.startDeviceVerification(

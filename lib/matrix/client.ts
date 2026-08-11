@@ -27,6 +27,7 @@ import {
 } from "matrix-js-sdk/lib/crypto-api/verification";
 import { decodeRecoveryKey } from "matrix-js-sdk/lib/crypto-api/recovery-key";
 import { deriveRecoveryKeyFromPassphrase } from "matrix-js-sdk/lib/crypto-api/key-passphrase";
+import { AuthType, type UIAuthCallback } from "matrix-js-sdk/lib/interactive-auth";
 import {
     decryptAttachment,
     encryptAttachment,
@@ -107,6 +108,41 @@ interface ActiveVerification {
     sasCallbacks: ShowSasCallbacks | null;
     requestChange: () => void;
     showSas: ((callbacks: ShowSasCallbacks) => void) | null;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+    return typeof value === "object" && value !== null;
+}
+
+function uiaStages(value: unknown): string[][] {
+    if (!Array.isArray(value)) {
+        return [];
+    }
+
+    return value.flatMap((flow) => {
+        if (!isRecord(flow) || !Array.isArray(flow.stages)) {
+            return [];
+        }
+
+        const stages = flow.stages.filter((stage): stage is string => typeof stage === "string");
+
+        return stages.length === flow.stages.length ? [stages] : [];
+    });
+}
+
+function hasPublishedCrossSigningIdentity(
+    result: {
+        master_keys?: Record<string, unknown>;
+        self_signing_keys?: Record<string, unknown>;
+        user_signing_keys?: Record<string, unknown>;
+    },
+    userId: string,
+): boolean {
+    return Boolean(
+        result.master_keys?.[userId] &&
+        result.self_signing_keys?.[userId] &&
+        result.user_signing_keys?.[userId],
+    );
 }
 
 interface MediaCacheEntry<T> {
@@ -1688,20 +1724,30 @@ export class MatrixService {
     }
 
     async getCryptoStatus() {
-        const cryptoApi = this.requireClient().getCrypto();
+        const client = this.requireClient();
+        const cryptoApi = client.getCrypto();
 
         if (!cryptoApi) {
-            return { secretStorageReady: false, crossSigningReady: false, backupVersion: null };
+            return {
+                secretStorageReady: false,
+                crossSigningConfigured: false,
+                crossSigningReady: false,
+                backupVersion: null,
+            };
         }
 
-        const [secretStatus, crossSigning, backupVersion] = await Promise.all([
+        const [secretStatus, crossSigning, backupVersion, publishedKeys] = await Promise.all([
             cryptoApi.getSecretStorageStatus(),
             cryptoApi.getCrossSigningStatus(),
             cryptoApi.getActiveSessionBackupVersion(),
+            client.downloadKeysForUsers([this.session.userId]).catch(() => null),
         ]);
 
         return {
             secretStorageReady: secretStatus.ready,
+            crossSigningConfigured: publishedKeys
+                ? hasPublishedCrossSigningIdentity(publishedKeys, this.session.userId)
+                : crossSigning.publicKeysOnDevice,
             crossSigningReady:
                 crossSigning.publicKeysOnDevice &&
                 (crossSigning.privateKeysInSecretStorage ||
@@ -1710,11 +1756,101 @@ export class MatrixService {
         };
     }
 
-    async setupRecovery(passphrase?: string): Promise<string> {
-        const cryptoApi = this.requireClient().getCrypto();
+    private deviceSigningAuthentication(accountPassword?: string): UIAuthCallback<void> {
+        return async (makeRequest) => {
+            try {
+                return await makeRequest(null);
+            } catch (error) {
+                const data = isRecord(error) && isRecord(error.data) ? error.data : null;
+                const session = typeof data?.session === "string" ? data.session : null;
+                const completed = new Set(
+                    Array.isArray(data?.completed)
+                        ? data.completed.filter(
+                              (stage): stage is string => typeof stage === "string",
+                          )
+                        : [],
+                );
+                const flows = uiaStages(data?.flows);
+                const canCompleteWith = (stage: string) =>
+                    flows.some((flow) =>
+                        flow.every((required) => completed.has(required) || required === stage),
+                    );
+
+                if (!session || !flows.length) {
+                    throw error;
+                }
+
+                if (canCompleteWith(AuthType.Dummy)) {
+                    return makeRequest({ type: AuthType.Dummy, session });
+                }
+
+                if (canCompleteWith(AuthType.Password)) {
+                    if (!accountPassword) {
+                        throw new Error(
+                            "Your homeserver requires your Matrix account password to enable cross-signing. Enter it below and try again; Sub-Etha will not store it.",
+                        );
+                    }
+
+                    try {
+                        return await makeRequest({
+                            type: AuthType.Password,
+                            identifier: { type: "m.id.user", user: this.session.userId },
+                            password: accountPassword,
+                            session,
+                        });
+                    } catch (authError) {
+                        throw new Error(
+                            `Cross-signing authentication failed: ${humanizeMatrixError(authError)}`,
+                        );
+                    }
+                }
+
+                throw new Error(
+                    "Your homeserver requires browser-based account authentication to enable cross-signing. Set up cross-signing in another Matrix client, then return here to verify this device.",
+                );
+            }
+        };
+    }
+
+    async setupRecovery(passphrase?: string, accountPassword?: string): Promise<string> {
+        const client = this.requireClient();
+        const cryptoApi = client.getCrypto();
 
         if (!cryptoApi) {
             throw new Error("Encryption is not available on this device.");
+        }
+
+        const [crossSigning, publishedKeys] = await Promise.all([
+            cryptoApi.getCrossSigningStatus(),
+            client.downloadKeysForUsers([this.session.userId]),
+        ]);
+        const cachedCrossSigningKeys = Object.values(crossSigning.privateKeysCachedLocally).every(
+            Boolean,
+        );
+        const crossSigningPublished = hasPublishedCrossSigningIdentity(
+            publishedKeys,
+            this.session.userId,
+        );
+
+        if (!crossSigningPublished) {
+            await cryptoApi.bootstrapCrossSigning({
+                // A failed UI-auth attempt can leave unpublished private keys in the Rust store.
+                // Regenerate only that unpublished identity so a corrected password can retry.
+                setupNewCrossSigning: crossSigning.publicKeysOnDevice || cachedCrossSigningKeys,
+                authUploadDeviceSigningKeys: this.deviceSigningAuthentication(accountPassword),
+            });
+
+            const confirmedKeys = await client.downloadKeysForUsers([this.session.userId]);
+
+            if (!hasPublishedCrossSigningIdentity(confirmedKeys, this.session.userId)) {
+                throw new Error(
+                    "The homeserver did not publish the new cross-signing identity. Recovery setup stopped before storing a partial configuration; try again.",
+                );
+            }
+        } else if (!crossSigning.privateKeysInSecretStorage && !cachedCrossSigningKeys) {
+            throw new Error(
+                "Cross-signing already exists for this account, but its private keys are not available here. Verify this device with an existing trusted device before setting up recovery.",
+            );
         }
 
         const generated = await cryptoApi.createRecoveryKeyFromPassphrase(
@@ -1768,7 +1904,8 @@ export class MatrixService {
     }
 
     async startDeviceVerification(deviceId?: string): Promise<void> {
-        const cryptoApi = this.requireClient().getCrypto();
+        const client = this.requireClient();
+        const cryptoApi = client.getCrypto();
 
         if (!cryptoApi) {
             throw new Error("Encryption is not available on this device.");
@@ -1777,6 +1914,16 @@ export class MatrixService {
         if (this.activeVerification?.request.pending) {
             throw new Error("A device verification is already in progress.");
         }
+
+        const publishedKeys = await client.downloadKeysForUsers([this.session.userId]);
+
+        if (!hasPublishedCrossSigningIdentity(publishedKeys, this.session.userId)) {
+            throw new Error(
+                "Cross-signing is not set up for this account yet. Set up recovery in Encryption & recovery before verifying another device.",
+            );
+        }
+
+        await cryptoApi.userHasCrossSigningKeys(this.session.userId, true);
 
         const request = deviceId
             ? await cryptoApi.requestDeviceVerification(this.session.userId, deviceId)
