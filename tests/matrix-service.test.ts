@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { VerificationPhase } from "matrix-js-sdk/lib/crypto-api/verification";
 import { MatrixService } from "../lib/matrix/client";
 import type { MatrixSnapshot, PersistedMatrixSession, TimelineItem } from "../lib/matrix/types";
 
@@ -397,6 +398,68 @@ test("device verification fails with setup guidance before requesting SAS when c
     );
     assert.equal(verificationRequests, 0);
     assert.equal(localKeyChecks, 0);
+});
+
+test("sync reconciliation surfaces a pending same-account verification request", () => {
+    const service = new MatrixService(SESSION);
+    const request = {
+        transactionId: "verification-1",
+        otherUserId: SESSION.userId,
+        otherDeviceId: "PHONE",
+        initiatedByMe: false,
+        // The explicit user-id check is the trust boundary. Do not depend on a
+        // transient SDK classification to decide whether the request is ours.
+        isSelfVerification: false,
+        pending: true,
+        phase: VerificationPhase.Requested,
+        on: () => undefined,
+    };
+    const cryptoApi = {
+        getVerificationRequestsToDeviceInProgress: (userId: string) => {
+            assert.equal(userId, SESSION.userId);
+
+            return [request];
+        },
+    };
+    const internals = service as unknown as {
+        client: { getCrypto: () => typeof cryptoApi };
+        reconcileIncomingVerificationRequests: () => void;
+    };
+
+    internals.client = { getCrypto: () => cryptoApi };
+    internals.reconcileIncomingVerificationRequests();
+
+    assert.deepEqual(service.getSnapshot().verification, {
+        transactionId: "verification-1",
+        direction: "incoming",
+        otherUserId: SESSION.userId,
+        otherDeviceId: "PHONE",
+        stage: "incoming",
+        emojis: [],
+        message: "Another Sub-Etha receiver wants to verify this device.",
+    });
+});
+
+test("sync reconciliation ignores verification requests initiated by this device", () => {
+    const service = new MatrixService(SESSION);
+    const cryptoApi = {
+        getVerificationRequestsToDeviceInProgress: () => [
+            {
+                otherUserId: SESSION.userId,
+                initiatedByMe: true,
+                pending: true,
+            },
+        ],
+    };
+    const internals = service as unknown as {
+        client: { getCrypto: () => typeof cryptoApi };
+        reconcileIncomingVerificationRequests: () => void;
+    };
+
+    internals.client = { getCrypto: () => cryptoApi };
+    internals.reconcileIncomingVerificationRequests();
+
+    assert.equal(service.getSnapshot().verification, null);
 });
 
 test("recovery setup creates and authenticates cross-signing before storing recovery secrets", async () => {

@@ -453,6 +453,7 @@ export class MatrixService {
         }
 
         this.refreshDerivedState();
+        this.reconcileIncomingVerificationRequests();
 
         if (
             (state === SyncState.Prepared || state === SyncState.Syncing) &&
@@ -565,7 +566,12 @@ export class MatrixService {
     }
 
     private handleIncomingVerification = (request: VerificationRequest): void => {
-        if (!request.isSelfVerification || !request.pending || this.stopped) {
+        if (
+            request.otherUserId !== this.session.userId ||
+            !request.pending ||
+            this.stopped ||
+            request.initiatedByMe
+        ) {
             return;
         }
 
@@ -588,6 +594,39 @@ export class MatrixService {
         });
         this.handleVerificationChange(request);
     };
+
+    /**
+     * Rust crypto normally emits VerificationRequestReceived while processing
+     * the to-device batch. Reconcile its durable in-progress request list after
+     * every sync as well so a request cannot be lost to an event/listener race.
+     */
+    private reconcileIncomingVerificationRequests(): void {
+        const cryptoApi = this.client?.getCrypto();
+
+        if (!cryptoApi || this.stopped || this.activeVerification?.request.pending) {
+            return;
+        }
+
+        let request: VerificationRequest | undefined;
+
+        try {
+            request = cryptoApi
+                .getVerificationRequestsToDeviceInProgress(this.session.userId)
+                .find(
+                    (candidate) =>
+                        candidate.otherUserId === this.session.userId &&
+                        candidate.pending &&
+                        !candidate.initiatedByMe,
+                );
+        } catch {
+            // The crypto backend may be closing while a final sync state is emitted.
+            return;
+        }
+
+        if (request) {
+            this.handleIncomingVerification(request);
+        }
+    }
 
     private bindVerification(
         request: VerificationRequest,
