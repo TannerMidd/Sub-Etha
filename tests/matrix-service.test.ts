@@ -358,108 +358,64 @@ test("a stale pagination request cannot overwrite a newly selected room", async 
     }
 });
 
-test("device verification fails with setup guidance before requesting SAS when cross-signing is absent", async () => {
+test("device verification translates the SDK cross-signing error without a preflight key query", async () => {
     const service = new MatrixService(SESSION);
     let verificationRequests = 0;
-    let localKeyChecks = 0;
     const cryptoApi = {
-        userHasCrossSigningKeys: async () => {
-            localKeyChecks += 1;
-
-            return true;
-        },
         requestOwnUserVerification: async () => {
             verificationRequests += 1;
 
-            throw new Error("should not be called");
+            throw new Error(
+                "cannot request verification for this device when there is no existing cross-signing key",
+            );
         },
     };
     const internals = service as unknown as {
         client: {
             getCrypto: () => typeof cryptoApi;
-            downloadKeysForUsers: (
-                userIds: string[],
-            ) => Promise<ReturnType<typeof crossSigningKeyQuery>>;
         };
     };
 
     internals.client = {
         getCrypto: () => cryptoApi,
-        downloadKeysForUsers: async (userIds) => {
-            assert.deepEqual(userIds, [SESSION.userId]);
-
-            return crossSigningKeyQuery(false);
-        },
     };
 
     await assert.rejects(
         service.startDeviceVerification(),
         /Cross-signing is not set up.*Set up recovery/i,
     );
-    assert.equal(verificationRequests, 0);
-    assert.equal(localKeyChecks, 0);
+    assert.equal(verificationRequests, 1);
 });
 
-test("sync reconciliation surfaces a pending same-account verification request", () => {
+test("generic device verification delegates directly to the production SDK path", async () => {
     const service = new MatrixService(SESSION);
+    let verificationRequests = 0;
     const request = {
         transactionId: "verification-1",
+        initiatedByMe: true,
         otherUserId: SESSION.userId,
-        otherDeviceId: "PHONE",
-        initiatedByMe: false,
-        // The explicit user-id check is the trust boundary. Do not depend on a
-        // transient SDK classification to decide whether the request is ours.
-        isSelfVerification: false,
-        pending: true,
+        otherDeviceId: undefined,
         phase: VerificationPhase.Requested,
+        pending: true,
         on: () => undefined,
     };
     const cryptoApi = {
-        getVerificationRequestsToDeviceInProgress: (userId: string) => {
-            assert.equal(userId, SESSION.userId);
+        requestOwnUserVerification: async () => {
+            verificationRequests += 1;
 
-            return [request];
+            return request;
         },
     };
     const internals = service as unknown as {
         client: { getCrypto: () => typeof cryptoApi };
-        reconcileIncomingVerificationRequests: () => void;
     };
 
     internals.client = { getCrypto: () => cryptoApi };
-    internals.reconcileIncomingVerificationRequests();
+    await service.startDeviceVerification();
 
-    assert.deepEqual(service.getSnapshot().verification, {
-        transactionId: "verification-1",
-        direction: "incoming",
-        otherUserId: SESSION.userId,
-        otherDeviceId: "PHONE",
-        stage: "incoming",
-        emojis: [],
-        message: "Another Sub-Etha receiver wants to verify this device.",
-    });
-});
-
-test("sync reconciliation ignores verification requests initiated by this device", () => {
-    const service = new MatrixService(SESSION);
-    const cryptoApi = {
-        getVerificationRequestsToDeviceInProgress: () => [
-            {
-                otherUserId: SESSION.userId,
-                initiatedByMe: true,
-                pending: true,
-            },
-        ],
-    };
-    const internals = service as unknown as {
-        client: { getCrypto: () => typeof cryptoApi };
-        reconcileIncomingVerificationRequests: () => void;
-    };
-
-    internals.client = { getCrypto: () => cryptoApi };
-    internals.reconcileIncomingVerificationRequests();
-
-    assert.equal(service.getSnapshot().verification, null);
+    assert.equal(verificationRequests, 1);
+    assert.equal(service.getSnapshot().verification?.stage, "waiting");
+    assert.equal(service.getSnapshot().verification?.direction, "outgoing");
 });
 
 test("recovery setup creates and authenticates cross-signing before storing recovery secrets", async () => {

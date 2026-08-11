@@ -453,7 +453,6 @@ export class MatrixService {
         }
 
         this.refreshDerivedState();
-        this.reconcileIncomingVerificationRequests();
 
         if (
             (state === SyncState.Prepared || state === SyncState.Syncing) &&
@@ -566,12 +565,7 @@ export class MatrixService {
     }
 
     private handleIncomingVerification = (request: VerificationRequest): void => {
-        if (
-            request.otherUserId !== this.session.userId ||
-            !request.pending ||
-            this.stopped ||
-            request.initiatedByMe
-        ) {
+        if (!request.isSelfVerification || !request.pending || this.stopped) {
             return;
         }
 
@@ -594,39 +588,6 @@ export class MatrixService {
         });
         this.handleVerificationChange(request);
     };
-
-    /**
-     * Rust crypto normally emits VerificationRequestReceived while processing
-     * the to-device batch. Reconcile its durable in-progress request list after
-     * every sync as well so a request cannot be lost to an event/listener race.
-     */
-    private reconcileIncomingVerificationRequests(): void {
-        const cryptoApi = this.client?.getCrypto();
-
-        if (!cryptoApi || this.stopped || this.activeVerification?.request.pending) {
-            return;
-        }
-
-        let request: VerificationRequest | undefined;
-
-        try {
-            request = cryptoApi
-                .getVerificationRequestsToDeviceInProgress(this.session.userId)
-                .find(
-                    (candidate) =>
-                        candidate.otherUserId === this.session.userId &&
-                        candidate.pending &&
-                        !candidate.initiatedByMe,
-                );
-        } catch {
-            // The crypto backend may be closing while a final sync state is emitted.
-            return;
-        }
-
-        if (request) {
-            this.handleIncomingVerification(request);
-        }
-    }
 
     private bindVerification(
         request: VerificationRequest,
@@ -1954,19 +1915,28 @@ export class MatrixService {
             throw new Error("A device verification is already in progress.");
         }
 
-        const publishedKeys = await client.downloadKeysForUsers([this.session.userId]);
+        let request: VerificationRequest;
 
-        if (!hasPublishedCrossSigningIdentity(publishedKeys, this.session.userId)) {
-            throw new Error(
-                "Cross-signing is not set up for this account yet. Set up recovery in Encryption & recovery before verifying another device.",
-            );
+        try {
+            // Keep this path identical to the working production flow. The
+            // Rust crypto API owns device-list refresh and recipient selection.
+            request = deviceId
+                ? await cryptoApi.requestDeviceVerification(this.session.userId, deviceId)
+                : await cryptoApi.requestOwnUserVerification();
+        } catch (error) {
+            if (
+                error instanceof Error &&
+                /no existing cross-signing key|cross-signing.*not.*set up/i.test(error.message)
+            ) {
+                throw new Error(
+                    "Cross-signing is not set up for this account yet. Set up recovery in Encryption & recovery before verifying another device.",
+                    { cause: error },
+                );
+            }
+
+            throw error;
         }
 
-        await cryptoApi.userHasCrossSigningKeys(this.session.userId, true);
-
-        const request = deviceId
-            ? await cryptoApi.requestDeviceVerification(this.session.userId, deviceId)
-            : await cryptoApi.requestOwnUserVerification();
         const direction = request.initiatedByMe ? "outgoing" : "incoming";
         const context = this.bindVerification(request, direction);
 
