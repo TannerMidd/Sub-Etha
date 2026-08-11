@@ -27,14 +27,22 @@ test("Night Edition shell matches the supplied field guide reference", async ({
     });
     await page.goto(PREVIEW_URL);
     await expect(page.locator('[data-ui="app-shell"]')).toBeVisible();
+    await expect(page.locator('[data-ui="conversation-header"]')).toHaveCSS(
+        "display",
+        /^(flex|grid)$/,
+    );
+    await expect(page.locator('[data-ui="composer"]')).toHaveCSS("display", "flex");
     await page.evaluate(() => document.fonts.ready);
     await page.locator("#message-composer").fill("");
     await page.locator("#message-composer").evaluate((element) => element.blur());
+    await page.evaluate(() => window.scrollTo(0, 0));
 
-    await expect(page).toHaveScreenshot(`night-edition-shell-${testInfo.project.name}.png`, {
-        animations: "disabled",
-        fullPage: true,
-    });
+    await expect(page.locator('[data-ui="app-shell"]')).toHaveScreenshot(
+        `night-edition-shell-${testInfo.project.name}.png`,
+        {
+            animations: "allow",
+        },
+    );
     expect(runtimeProblems).toEqual([]);
 });
 

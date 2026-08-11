@@ -1,7 +1,7 @@
 import type { ValidatedAuthMetadata } from "matrix-js-sdk/lib/oauth";
 import type { LoginResponse } from "matrix-js-sdk";
 import { createSession, randomBase64Url } from "./session-store";
-import type { LoginCapabilities, PersistedMatrixSession } from "./types";
+import type { LoginCapabilities, PersistedMatrixSession, StorageMode } from "./types";
 import { assertAllowedHomeserverUrl } from "./url-policy";
 
 const PENDING_AUTH_KEY = "sub-etha-pending-auth";
@@ -24,12 +24,14 @@ export interface PendingSso {
     baseUrl: string;
     state: string;
     createdAt: number;
+    storageMode: StorageMode;
 }
 
 interface PendingOAuth {
     kind: "oauth";
     baseUrl: string;
     state: string;
+    storageMode: StorageMode;
     metadata: ValidatedAuthMetadata;
     context: {
         clientId: string;
@@ -247,22 +249,27 @@ function sessionFromLogin(
     baseUrl: string,
     response: LoginResponse,
     authKind: PersistedMatrixSession["authKind"],
+    storageMode: StorageMode,
 ): PersistedMatrixSession {
-    return createSession({
-        baseUrl,
-        userId: response.user_id,
-        deviceId: response.device_id,
-        accessToken: response.access_token,
-        refreshToken: response.refresh_token,
-        expiresAt: response.expires_in_ms ? Date.now() + response.expires_in_ms : undefined,
-        authKind,
-    });
+    return createSession(
+        {
+            baseUrl,
+            userId: response.user_id,
+            deviceId: response.device_id,
+            accessToken: response.access_token,
+            refreshToken: response.refresh_token,
+            expiresAt: response.expires_in_ms ? Date.now() + response.expires_in_ms : undefined,
+            authKind,
+        },
+        storageMode,
+    );
 }
 
 export async function loginWithPassword(
     baseUrl: string,
     user: string,
     password: string,
+    storageMode: StorageMode = "remembered",
 ): Promise<PersistedMatrixSession> {
     baseUrl = assertAllowedHomeserverUrl(baseUrl);
     const { createClient } = await import("matrix-js-sdk");
@@ -278,12 +285,13 @@ export async function loginWithPassword(
         initial_device_display_name: "Sub-Etha PWA",
     });
 
-    return sessionFromLogin(baseUrl, response, "password");
+    return sessionFromLogin(baseUrl, response, "password", storageMode);
 }
 
 export async function loginWithAccessToken(
     baseUrl: string,
     accessToken: string,
+    storageMode: StorageMode = "remembered",
 ): Promise<PersistedMatrixSession> {
     baseUrl = assertAllowedHomeserverUrl(baseUrl);
     const { createClient } = await import("matrix-js-sdk");
@@ -299,13 +307,16 @@ export async function loginWithAccessToken(
         throw new Error("This access token is not attached to a Matrix device.");
     }
 
-    return createSession({
-        baseUrl,
-        userId: identity.user_id,
-        deviceId: identity.device_id,
-        accessToken,
-        authKind: "token",
-    });
+    return createSession(
+        {
+            baseUrl,
+            userId: identity.user_id,
+            deviceId: identity.device_id,
+            accessToken,
+            authKind: "token",
+        },
+        storageMode,
+    );
 }
 
 export function legacySsoRedirectUrl(origin: string, state: string): string {
@@ -332,13 +343,23 @@ export function validateLegacySsoCallback(
     }
 }
 
-export async function beginSso(baseUrl: string, providerId?: string): Promise<void> {
+export async function beginSso(
+    baseUrl: string,
+    providerId?: string,
+    storageMode: StorageMode = "remembered",
+): Promise<void> {
     baseUrl = assertAllowedHomeserverUrl(baseUrl);
     const { createClient } = await import("matrix-js-sdk");
     const state = randomBase64Url(24);
     const redirectUrl = legacySsoRedirectUrl(window.location.origin, state);
     const client = createClient({ baseUrl, disableVoip: true });
-    const pending: PendingSso = { kind: "sso", baseUrl, state, createdAt: Date.now() };
+    const pending: PendingSso = {
+        kind: "sso",
+        baseUrl,
+        state,
+        createdAt: Date.now(),
+        storageMode,
+    };
 
     sessionStorage.setItem(PENDING_AUTH_KEY, JSON.stringify(pending));
     window.location.assign(
@@ -346,7 +367,10 @@ export async function beginSso(baseUrl: string, providerId?: string): Promise<vo
     );
 }
 
-export async function beginOAuth(baseUrl: string): Promise<void> {
+export async function beginOAuth(
+    baseUrl: string,
+    storageMode: StorageMode = "remembered",
+): Promise<void> {
     baseUrl = assertAllowedHomeserverUrl(baseUrl);
 
     if (window.location.protocol !== "https:") {
@@ -386,6 +410,7 @@ export async function beginOAuth(baseUrl: string): Promise<void> {
         kind: "oauth",
         baseUrl,
         state,
+        storageMode,
         metadata,
         context: oauth.context,
     };
@@ -473,7 +498,12 @@ export async function completeRedirectLogin(): Promise<PersistedMatrixSession | 
             initial_device_display_name: "Sub-Etha PWA",
         });
 
-        return sessionFromLogin(pending.baseUrl, response, "sso");
+        return sessionFromLogin(
+            pending.baseUrl,
+            response,
+            "sso",
+            pending.storageMode === "private" ? "private" : "remembered",
+        );
     }
 
     if (params.get("state") !== pending.state) {
@@ -501,21 +531,24 @@ export async function completeRedirectLogin(): Promise<PersistedMatrixSession | 
         });
         const identity = await client.whoami();
 
-        return createSession({
-            baseUrl: pending.baseUrl,
-            userId: identity.user_id,
-            deviceId: identity.device_id ?? pending.context.deviceId,
-            accessToken: tokens.access_token,
-            refreshToken: tokens.refresh_token,
-            expiresAt: tokens.expires_in ? Date.now() + tokens.expires_in * 1000 : undefined,
-            authKind: "oauth",
-            oauth: {
-                clientId: pending.context.clientId,
-                deviceId: pending.context.deviceId,
-                redirectUri: pending.context.redirectUri,
-                metadata: pending.metadata,
+        return createSession(
+            {
+                baseUrl: pending.baseUrl,
+                userId: identity.user_id,
+                deviceId: identity.device_id ?? pending.context.deviceId,
+                accessToken: tokens.access_token,
+                refreshToken: tokens.refresh_token,
+                expiresAt: tokens.expires_in ? Date.now() + tokens.expires_in * 1000 : undefined,
+                authKind: "oauth",
+                oauth: {
+                    clientId: pending.context.clientId,
+                    deviceId: pending.context.deviceId,
+                    redirectUri: pending.context.redirectUri,
+                    metadata: pending.metadata,
+                },
             },
-        });
+            pending.storageMode === "private" ? "private" : "remembered",
+        );
     }
 
     throw new Error("The homeserver returned an unexpected login response.");

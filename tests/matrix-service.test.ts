@@ -10,6 +10,9 @@ const SESSION: PersistedMatrixSession = {
     cryptoStorageKey: "AQID",
     deviceId: "DEVICE",
     userId: "@arthur:matrix.example",
+    storageMode: "remembered",
+    localStoreId: "AAAAAAAAAAAAAAAAAAAAAA" as PersistedMatrixSession["localStoreId"],
+    cryptoDatabasePrefix: "sub-etha-crypto-AAAAAAAAAAAAAAAAAAAAAA",
 };
 
 function timelineItem(id: string): TimelineItem {

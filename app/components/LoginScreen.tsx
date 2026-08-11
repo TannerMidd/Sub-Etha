@@ -11,6 +11,7 @@ import {
     Radio,
     Server,
     ShieldCheck,
+    Trash2,
 } from "lucide-react";
 import {
     beginOAuth,
@@ -20,19 +21,24 @@ import {
     loginWithAccessToken,
     loginWithPassword,
 } from "@/lib/matrix/auth";
-import type { LoginCapabilities, PersistedMatrixSession } from "@/lib/matrix/types";
+import type { LoginCapabilities, PersistedMatrixSession, StorageMode } from "@/lib/matrix/types";
 import { BrandMark } from "./BrandMark";
 import { classes } from "../styles/appStyles";
 
 export function LoginScreen({
     onAuthenticated,
+    onEraseAll,
+    notice,
 }: {
     onAuthenticated: (session: PersistedMatrixSession) => Promise<void> | void;
+    onEraseAll: () => Promise<void> | void;
+    notice?: string | null;
 }) {
     const [serverInput, setServerInput] = useState("");
     const [capabilities, setCapabilities] = useState<LoginCapabilities | null>(null);
     const [userId, setUserId] = useState("");
     const [password, setPassword] = useState("");
+    const [storageMode, setStorageMode] = useState<StorageMode>("remembered");
     const [accessToken, setAccessToken] = useState("");
     const [advanced, setAdvanced] = useState(false);
     const [busy, setBusy] = useState(false);
@@ -63,7 +69,9 @@ export function LoginScreen({
         setError(null);
 
         try {
-            await onAuthenticated(await loginWithPassword(capabilities.baseUrl, userId, password));
+            await onAuthenticated(
+                await loginWithPassword(capabilities.baseUrl, userId, password, storageMode),
+            );
         } catch (cause) {
             setError(humanizeMatrixError(cause));
             setBusy(false);
@@ -80,7 +88,7 @@ export function LoginScreen({
 
         try {
             await onAuthenticated(
-                await loginWithAccessToken(capabilities.baseUrl, accessToken.trim()),
+                await loginWithAccessToken(capabilities.baseUrl, accessToken.trim(), storageMode),
             );
         } catch (cause) {
             setError(humanizeMatrixError(cause));
@@ -98,9 +106,9 @@ export function LoginScreen({
 
         try {
             if (kind === "oauth") {
-                await beginOAuth(capabilities.baseUrl);
+                await beginOAuth(capabilities.baseUrl, storageMode);
             } else {
-                await beginSso(capabilities.baseUrl, providerId);
+                await beginSso(capabilities.baseUrl, providerId, storageMode);
             }
         } catch (cause) {
             setError(humanizeMatrixError(cause));
@@ -211,6 +219,35 @@ export function LoginScreen({
                             </span>
                             <span>Change</span>
                         </button>
+                        <fieldset className={classes("token-fields")}>
+                            <legend>Session storage</legend>
+                            <label>
+                                <input
+                                    type="radio"
+                                    name="storage-mode"
+                                    checked={storageMode === "remembered"}
+                                    onChange={() => setStorageMode("remembered")}
+                                />
+                                Remember this device
+                            </label>
+                            <p className={classes("field-help")}>
+                                Encrypted sign-in, sync cache, drafts, and push state remain on this
+                                browser profile for automatic sign-in.
+                            </p>
+                            <label>
+                                <input
+                                    type="radio"
+                                    name="storage-mode"
+                                    checked={storageMode === "private"}
+                                    onChange={() => setStorageMode("private")}
+                                />
+                                Private session
+                            </label>
+                            <p className={classes("field-help")}>
+                                Nothing durable is saved. Reloading requires sign-in, and closed-app
+                                notifications are unavailable.
+                            </p>
+                        </fieldset>
 
                         {capabilities.oauth ? (
                             <button
@@ -348,6 +385,20 @@ export function LoginScreen({
                         <span>{error}</span>
                     </div>
                 ) : null}
+                {notice ? (
+                    <p className={classes("success-note")} role="status">
+                        {notice}
+                    </p>
+                ) : null}
+                <button
+                    className={classes("danger-button")}
+                    type="button"
+                    disabled={busy}
+                    onClick={() => void onEraseAll()}
+                >
+                    <Trash2 aria-hidden="true" />
+                    Erase all Sub-Etha data
+                </button>
                 <p className={classes("privacy-footnote")}>
                     No account data is sent to Sub-Etha’s notification service. Not even the
                     surprisingly unhelpful bits.

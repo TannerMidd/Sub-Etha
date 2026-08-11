@@ -26,7 +26,6 @@ import type { MatrixService } from "@/lib/matrix/client";
 import {
     disablePush,
     enablePush,
-    readPushState,
     refreshPushState,
     sendTestPush,
 } from "@/lib/matrix/notifications";
@@ -665,18 +664,25 @@ export function SettingsDialog({
     service,
     onClose,
     onLogout,
+    onEraseAll,
     onVerificationStarted,
 }: {
     service: MatrixService;
     onClose: () => void;
     onLogout: () => Promise<void>;
+    onEraseAll: () => Promise<void>;
     onVerificationStarted: () => void;
 }) {
     const snapshot = service.getSnapshot();
     const [displayName, setDisplayName] = useState(snapshot.displayName);
     const [avatar, setAvatar] = useState<File | undefined>();
     const [theme, setTheme] = useState(() => localStorage.getItem("sub-etha-theme") ?? "dark");
-    const [pushState, setPushState] = useState<PushState>(() => readPushState());
+    const [pushState, setPushState] = useState<PushState>({
+        supported: false,
+        enabled: false,
+        permission: "unsupported",
+        checking: true,
+    });
     const [devices, setDevices] = useState<DeviceSummary[]>([]);
     const [cryptoStatus, setCryptoStatus] = useState<{
         secretStorageReady: boolean;
@@ -830,12 +836,21 @@ export function SettingsDialog({
                                 Generic alerts only. The gateway never receives message text, sender
                                 or room names.
                             </p>
+                            {service.storageMode === "private" ? (
+                                <p className={classes("inline-notice")}>
+                                    Closed-app push requires durable device state and is disabled
+                                    for this private session.
+                                </p>
+                            ) : null}
                         </div>
                         <button
                             className={classes("secondary-button")}
                             type="button"
                             disabled={
-                                !pushState.supported || pushState.checking || busyAction === "push"
+                                service.storageMode === "private" ||
+                                !pushState.supported ||
+                                pushState.checking ||
+                                busyAction === "push"
                             }
                             onClick={() =>
                                 void act("push", async () => {
@@ -1057,6 +1072,14 @@ export function SettingsDialog({
                             </div>
                         ))}
                     </div>
+                    <button
+                        className={classes("danger-button")}
+                        type="button"
+                        onClick={() => void onEraseAll()}
+                    >
+                        <ShieldAlert />
+                        Erase all Sub-Etha data
+                    </button>
                     <button
                         className={classes("danger-button")}
                         type="button"

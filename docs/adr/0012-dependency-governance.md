@@ -28,6 +28,7 @@ Remove unused packages and build plugins rather than retaining dormant stack opt
 - Coupled packages are upgraded and validated together.
 - Prerelease packages are never advanced as incidental maintenance.
 - A new dependency is justified against native platform and existing-library options.
+- `matrix-js-sdk` stays exactly pinned at `42.1.0`; an upgrade must pass encrypted-store compatibility, migration, and production security tests before the pin changes.
 - Removed integrations also remove obsolete configuration and tests.
 
 ## Consequences
@@ -64,7 +65,7 @@ No current workspace or performance constraint justifies migration and lockfile 
 - Runtime floor, versions, and scripts: `package.json`
 - Resolved dependency graph: `package-lock.json`
 - Clean install: `npm ci`
-- Upgrade validation: `npm run check`
+- Upgrade validation: `npm run check` and `npm run test:security`
 - Review must identify coupled packages and any ADR boundary affected.
 
 ## Revisit when

@@ -46,7 +46,7 @@ Dependencies should point inward toward contracts and pure policy where practica
 ## Runtime and data flow
 
 1. `app/page.tsx` mounts `SubEthaApp`.
-2. The app reads the persisted Matrix session from IndexedDB and dynamically starts the Matrix client in the browser.
+2. The app decrypts and validates a remembered Matrix session from IndexedDB, or starts a non-persistent private session, then dynamically starts the Matrix client in the browser.
 3. `MatrixService` normalizes SDK state into a typed `MatrixSnapshot`.
 4. React consumes that snapshot with `useSyncExternalStore`; user commands return through the service instead of mutating the snapshot.
 5. Timeline rendering uses React Virtuoso while Sub-Etha owns scroll policy and prepend bookkeeping.
@@ -55,16 +55,18 @@ Dependencies should point inward toward contracts and pure policy where practica
 
 ## State ownership
 
-| State                                        | Owner                     | Persistence           |
-| -------------------------------------------- | ------------------------- | --------------------- |
-| Matrix session and crypto storage key        | Browser                   | IndexedDB             |
-| Encryption store and sync state              | Matrix SDK in the browser | SDK-managed IndexedDB |
-| Active Matrix snapshot                       | `MatrixService`           | Memory                |
-| Component-local interaction state            | React component           | Memory                |
-| Composer drafts, theme, push capabilities    | Browser                   | `localStorage`        |
-| Pending OAuth or SSO transaction             | Browser tab               | `sessionStorage`      |
-| Service-worker push configuration            | Service worker            | IndexedDB             |
-| Push subscriptions, budgets, delivery leases | Push gateway              | Neon PostgreSQL       |
+| State                                        | Owner                      | Persistence         |
+| -------------------------------------------- | -------------------------- | ------------------- |
+| Remembered session and Rust storage key      | Browser                    | Encrypted IndexedDB |
+| Matrix sync snapshots and auxiliary state    | `EncryptedMatrixStore`     | Encrypted IndexedDB |
+| Active Matrix snapshot                       | `MatrixService`            | Memory              |
+| Component-local interaction state            | React component            | Memory              |
+| Remembered drafts and push capabilities      | Browser and service worker | Encrypted IndexedDB |
+| Theme and OAuth client registrations         | Browser                    | `localStorage`      |
+| Pending OAuth/SSO state and storage mode     | Browser tab                | `sessionStorage`    |
+| Push subscriptions, budgets, delivery leases | Push gateway               | Neon PostgreSQL     |
+
+Private mode keeps the Matrix session, sync store, Rust crypto, drafts, and push configuration in memory only. Remembered account database names use random local store IDs; room and user identifiers are HMAC-derived before becoming record keys.
 
 New state must have one declared owner. Mirrored state needs a documented synchronization rule; otherwise it should be derived at the consumer.
 
@@ -88,6 +90,7 @@ The local release gate is:
 
 ```bash
 npm run check
+npm run test:security
 ```
 
 That runs formatting checks, linting, strict TypeScript, unit tests, a production build, and the Playwright browser suite. Database schema changes additionally require a generated Drizzle migration and an apply-before-deploy plan.

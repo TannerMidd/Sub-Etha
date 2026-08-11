@@ -4,6 +4,14 @@ Sub-Etha is a fast, installable Matrix client with Rust-backed end-to-end encryp
 
 Matrix access tokens, encryption keys, message bodies, sender names, room names, and synced history remain between the browser and the selected Matrix homeserver. The deployment backend stores only separately hashed delivery and browser-management capabilities, Web Push subscription material, short-lived endpoint-confirmation challenges, timestamps, aggregate gateway counters, and seven-day delivery-deduplication records. It does not store Matrix identities or client IP addresses.
 
+## Browser privacy and storage
+
+Remembered sessions are the default. Sub-Etha encrypts the complete session, Matrix sync cache, drafts, and push capabilities in IndexedDB with origin-bound, non-extractable Web Crypto keys. Account database names are random and room/user identifiers are HMAC-derived before they become record keys. Private sessions are optional and persist none of that account state; reloading requires authentication and closed-app push is unavailable.
+
+This device encryption improves resistance to offline copies of browser databases. It is not guaranteed hardware-backed and cannot protect data from malicious same-origin JavaScript while the app is running, a browser compromise, extensions with sufficient access, or malware. The nonce-based Content Security Policy and mandatory DOMPurify boundary reduce web-content risk but do not change those limits. Sign-out performs account-scoped logical deletion; **Erase all Sub-Etha data** removes all managed origin state. Browser deletion is not guaranteed forensic erasure from SSDs, browser backups, or sync systems.
+
+See [Browser storage and privacy](./docs/privacy-and-browser-storage.md) for the complete threat model and erasure semantics.
+
 ## Architecture
 
 Start with the [architecture map](./docs/architecture.md), then use the [ADR index](./docs/adr/README.md) for the decisions, constraints, trade-offs, and enforcement anchors behind the stack. New cross-cutting or difficult-to-reverse changes should follow the ADR process documented there.

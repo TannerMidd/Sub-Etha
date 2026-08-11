@@ -1,7 +1,7 @@
 import {
     ClientEvent,
     EventType,
-    IndexedDBStore,
+    MemoryStore,
     MatrixClient,
     MatrixEvent,
     MatrixEventEvent,
@@ -32,7 +32,13 @@ import {
     encryptAttachment,
     type IEncryptedFile,
 } from "matrix-encrypt-attachment";
-import { base64UrlToBytes, clearSession, saveSession } from "./session-store";
+import { base64UrlToBytes, getSessionDeviceKeys, saveSession } from "./session-store";
+import { EncryptedMatrixStore, MemoryDraftRepository } from "./encrypted-store";
+import {
+    clearCurrentAccountData,
+    listenForStorageReset,
+    prepareAccountCleanup,
+} from "./storage-cleanup";
 import { humanizeMatrixError } from "./auth";
 import { assertAllowedHomeserverUrl } from "./url-policy";
 import {
@@ -53,6 +59,8 @@ import {
 import { normalizeRooms, normalizeTimeline } from "./normalize";
 import { createMediaContent, createTextContent } from "./message-content";
 import type {
+    CleanupOutcome,
+    DraftRepository,
     DeviceSummary,
     DeviceVerificationState,
     MatrixMediaRef,
@@ -60,6 +68,7 @@ import type {
     MediaAsset,
     PersistedMatrixSession,
     TimelineItem,
+    StorageMode,
 } from "./types";
 import { INITIAL_TIMELINE_ITEM_INDEX, timelineStartIndexAfterPrepend } from "../timeline-window";
 
@@ -69,10 +78,6 @@ export class MatrixAlreadyOpenError extends Error {
     constructor() {
         super("Sub-Etha is already tuned to this account in another tab.");
     }
-}
-
-function stableStoreName(session: PersistedMatrixSession): string {
-    return `${session.userId}-${session.deviceId}`.replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 120);
 }
 
 function emptySnapshot(session: PersistedMatrixSession): MatrixSnapshot {
@@ -208,7 +213,7 @@ export function findOwnReactionEventId(
 
 export class MatrixService {
     private client: MatrixClient | null = null;
-    private store: IndexedDBStore | null = null;
+    private store: MemoryStore | EncryptedMatrixStore | null = null;
     private session: PersistedMatrixSession;
     private snapshot: MatrixSnapshot;
     private listeners = new Set<Listener>();
@@ -230,9 +235,14 @@ export class MatrixService {
     private lastReadEventIds = new Map<string, string>();
     private stopped = false;
     private readonly takeoverStorageKey = "sub-etha-account-takeover";
+    readonly storageMode: StorageMode;
+    drafts: DraftRepository;
+    private releaseStorageResetListener: (() => void) | null = null;
 
     constructor(session: PersistedMatrixSession) {
         this.session = session;
+        this.storageMode = session.storageMode;
+        this.drafts = new MemoryDraftRepository();
         this.snapshot = emptySnapshot(session);
     }
 
@@ -304,18 +314,25 @@ export class MatrixService {
 
     async start(): Promise<void> {
         this.session.baseUrl = assertAllowedHomeserverUrl(this.session.baseUrl);
-        const storeName = stableStoreName(this.session);
+        const storageId = this.session.localStoreId;
 
-        this.releaseLock = await acquireExclusiveLock(`sub-etha-matrix-${storeName}`);
+        this.releaseLock = await acquireExclusiveLock(`sub-etha-matrix-${storageId}`);
 
         if (!this.releaseLock) {
             throw new MatrixAlreadyOpenError();
         }
 
-        this.store = new IndexedDBStore({
-            indexedDB: window.indexedDB,
-            dbName: `sub-etha-sync-${storeName}`,
-        });
+        if (this.storageMode === "remembered") {
+            const keys = await getSessionDeviceKeys();
+            const encryptedStore = new EncryptedMatrixStore(storageId, keys);
+
+            this.store = encryptedStore;
+            this.drafts = encryptedStore.drafts;
+        } else {
+            this.store = new MemoryStore();
+            this.drafts = new MemoryDraftRepository();
+        }
+
         const scheduler = new MatrixScheduler();
 
         this.client = createClient({
@@ -346,11 +363,18 @@ export class MatrixService {
         });
 
         await this.store.startup();
-        await this.client.initRustCrypto({
-            useIndexedDB: true,
-            cryptoDatabasePrefix: `sub-etha-crypto-${storeName}`,
-            storageKey: base64UrlToBytes(this.session.cryptoStorageKey),
-        });
+
+        if (this.storageMode === "remembered") {
+            await this.client.initRustCrypto({
+                useIndexedDB: true,
+                cryptoDatabasePrefix: this.session.cryptoDatabasePrefix,
+                storageKey: base64UrlToBytes(this.session.cryptoStorageKey),
+            });
+        } else {
+            await this.client.initRustCrypto({
+                useIndexedDB: false,
+            });
+        }
 
         this.client.on(ClientEvent.Sync, this.handleSync);
         this.client.on(MatrixEventEvent.Decrypted, this.handleDecrypted);
@@ -361,6 +385,11 @@ export class MatrixService {
         this.client.on(RoomMemberEvent.Typing, this.handleTyping);
         this.client.on(CryptoEvent.VerificationRequestReceived, this.handleIncomingVerification);
         window.addEventListener("storage", this.handleTakeoverRequest);
+        this.releaseStorageResetListener = listenForStorageReset(async () => {
+            this.stop();
+            await this.store?.destroy();
+        });
+
         this.client.startClient({
             initialSyncLimit: 30,
             lazyLoadMembers: true,
@@ -1861,28 +1890,30 @@ export class MatrixService {
         await this.requireClient().setPusher(request);
     }
 
-    async logout(): Promise<void> {
+    async prepareLogout(): Promise<void> {
+        await prepareAccountCleanup(this.session);
+    }
+
+    async logout(): Promise<CleanupOutcome> {
         this.stopped = true;
+        await this.prepareLogout();
+        let remoteRevocationConfirmed = true;
 
         try {
             await this.client?.logout();
         } catch {
-            /* local cleanup still proceeds */
+            remoteRevocationConfirmed = false;
         }
 
         this.releaseClientListeners();
         this.client?.stopClient();
         window.removeEventListener("storage", this.handleTakeoverRequest);
+        this.releaseStorageResetListener?.();
+        this.releaseStorageResetListener = null;
+        await this.drafts.flush().catch(() => undefined);
+        await this.store?.destroy().catch(() => undefined);
+        const cleanup = await clearCurrentAccountData(this.session, remoteRevocationConfirmed);
 
-        try {
-            await this.client?.clearStores({
-                cryptoDatabasePrefix: `sub-etha-crypto-${stableStoreName(this.session)}`,
-            });
-        } catch {
-            /* best effort */
-        }
-
-        await clearSession();
         this.releaseMediaAssets();
         this.releaseVerificationContext();
         this.releaseLock?.();
@@ -1898,11 +1929,17 @@ export class MatrixService {
             loadingHistory: false,
             hasMoreHistory: false,
         });
+
+        return cleanup;
     }
 
     stop(): void {
         this.stopped = true;
         this.releaseClientListeners();
+        this.releaseStorageResetListener?.();
+        this.releaseStorageResetListener = null;
+        void this.drafts.flush();
+        void this.store?.destroy();
         this.client?.stopClient();
         window.removeEventListener("storage", this.handleTakeoverRequest);
         this.releaseMediaAssets();

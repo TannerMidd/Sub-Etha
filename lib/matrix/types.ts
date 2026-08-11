@@ -3,6 +3,42 @@ import type { ValidatedAuthMetadata } from "matrix-js-sdk/lib/oauth";
 
 export type AuthKind = "password" | "sso" | "token" | "oauth";
 
+export type StorageMode = "remembered" | "private";
+
+declare const localStoreIdBrand: unique symbol;
+export type LocalStoreId = string & { readonly [localStoreIdBrand]: "LocalStoreId" };
+
+export interface EncryptedEnvelopeV1 {
+    version: 1;
+    algorithm: "AES-256-GCM";
+    iv: ArrayBuffer;
+    ciphertext: ArrayBuffer;
+}
+
+export type CleanupStatus = "cleared" | "blocked" | "failed";
+
+export interface CleanupScopeResult {
+    scope: string;
+    status: CleanupStatus;
+    detail?: string;
+}
+
+export interface CleanupOutcome {
+    complete: boolean;
+    localCredentialsRemoved: boolean;
+    remoteRevocationConfirmed: boolean;
+    results: CleanupScopeResult[];
+    warning?: string;
+}
+
+export interface DraftRepository {
+    read(roomId: string): Promise<string | null>;
+    write(roomId: string, value: string): Promise<void>;
+    remove(roomId: string): Promise<void>;
+    flush(): Promise<void>;
+    clear(): Promise<void>;
+}
+
 export interface PersistedMatrixSession {
     baseUrl: string;
     userId: string;
@@ -12,6 +48,9 @@ export interface PersistedMatrixSession {
     expiresAt?: number;
     authKind: AuthKind;
     cryptoStorageKey: string;
+    storageMode: StorageMode;
+    localStoreId: LocalStoreId;
+    cryptoDatabasePrefix: string;
     oauth?: {
         clientId: string;
         deviceId: string;

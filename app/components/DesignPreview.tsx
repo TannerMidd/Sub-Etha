@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import type { MatrixService } from "@/lib/matrix/client";
+import { MemoryDraftRepository } from "@/lib/matrix/encrypted-store";
 import type { MatrixMediaRef, MatrixSnapshot, RoomSummary, TimelineItem } from "@/lib/matrix/types";
 import { INITIAL_TIMELINE_ITEM_INDEX } from "@/lib/timeline-window";
 import { ChatShell } from "./ChatShell";
@@ -396,6 +397,8 @@ function createPreviewService(): MatrixService {
     };
 
     const service = {
+        drafts: new MemoryDraftRepository(),
+        storageMode: "remembered" as const,
         subscribe: (listener: () => void) => {
             listeners.add(listener);
 
@@ -666,8 +669,19 @@ export function DesignPreview() {
     }, []);
 
     if (surfacePreview === "login") {
-        return <LoginScreen onAuthenticated={async () => undefined} />;
+        return (
+            <LoginScreen
+                onAuthenticated={async () => undefined}
+                onEraseAll={async () => undefined}
+            />
+        );
     }
 
-    return <ChatShell service={service} onLogout={async () => undefined} />;
+    return (
+        <ChatShell
+            service={service}
+            onLogout={async () => undefined}
+            onEraseAll={async () => undefined}
+        />
+    );
 }
