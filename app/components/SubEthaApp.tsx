@@ -63,36 +63,16 @@ export function SubEthaApp() {
 
             if (viewport) {
                 viewport.content = standalone
-                    ? "width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover"
+                    ? "width=device-width, initial-scale=1, viewport-fit=cover"
                     : browserViewport;
-            }
-        };
-
-        const preventZoomShortcut = (event: KeyboardEvent) => {
-            if (
-                isStandalone() &&
-                (event.ctrlKey || event.metaKey) &&
-                ["+", "-", "=", "0"].includes(event.key)
-            ) {
-                event.preventDefault();
-            }
-        };
-
-        const preventZoomWheel = (event: WheelEvent) => {
-            if (isStandalone() && event.ctrlKey) {
-                event.preventDefault();
             }
         };
 
         applyDisplayMode();
         displayMode.addEventListener("change", applyDisplayMode);
-        window.addEventListener("keydown", preventZoomShortcut);
-        window.addEventListener("wheel", preventZoomWheel, { passive: false });
 
         return () => {
             displayMode.removeEventListener("change", applyDisplayMode);
-            window.removeEventListener("keydown", preventZoomShortcut);
-            window.removeEventListener("wheel", preventZoomWheel);
 
             if (viewport) {
                 viewport.content = browserViewport;
@@ -264,7 +244,7 @@ export function SubEthaApp() {
                     <div className={classes("update-toast")} role="status">
                         <RefreshCw />
                         <span>
-                            <strong>A revised field guide is ready.</strong>
+                            <strong>A refreshed version is ready.</strong>
                             <small>
                                 Update when you have finished composing anything important.
                             </small>
@@ -284,11 +264,11 @@ export function SubEthaApp() {
                 <BrandMark />
                 <div className={classes("boot-card")}>
                     <RadioTower aria-hidden="true" />
-                    <p className={classes("eyebrow")}>ONE RECEIVER AT A TIME</p>
+                    <p className={classes("eyebrow")}>ONE SECURE SESSION AT A TIME</p>
                     <h1>Sub-Etha is already open elsewhere.</h1>
                     <p>
-                        To protect your encryption store, only one tab may tune this account at
-                        once. You may release the other receiver and continue here.
+                        To protect your encrypted session, only one tab may use this account at a
+                        time. Close the other tab or continue here.
                     </p>
                     <div className={classes("button-row")}>
                         <button
@@ -319,8 +299,8 @@ export function SubEthaApp() {
                 <BrandMark />
                 <div className={classes("boot-card boot-card--error")}>
                     <ShieldAlert aria-hidden="true" />
-                    <p className={classes("eyebrow")}>SIGNAL INTERRUPTED</p>
-                    <h1>The receiver declined to become haunted.</h1>
+                    <p className={classes("eyebrow")}>CONNECTION INTERRUPTED</p>
+                    <h1>Sub-Etha could not connect.</h1>
                     <p>{bootError}</p>
                     <div className={classes("button-row")}>
                         <button
@@ -351,10 +331,7 @@ export function SubEthaApp() {
                 <span>
                     <LoaderCircle className={classes("spin")} />
                 </span>
-                <p>
-                    Aligning local encryption, room indexes and a modest number of invisible
-                    antennas…
-                </p>
+                <p>Preparing encryption, rooms, and message history…</p>
             </div>
         </main>
     );

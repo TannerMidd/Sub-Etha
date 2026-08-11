@@ -27,7 +27,7 @@ export async function generateMetadata(): Promise<Metadata> {
                     url: "/og.png",
                     width: 1200,
                     height: 630,
-                    alt: "Sub-Etha signal-guide illustration",
+                    alt: "Sub-Etha orbital signal mark",
                 },
             ],
         },

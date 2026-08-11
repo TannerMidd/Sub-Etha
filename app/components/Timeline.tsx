@@ -66,6 +66,32 @@ const TIMELINE_VIEWPORT_PADDING = { top: 0, bottom: 300 };
 const HISTORY_ANCHOR_MAX_CORRECTION_MS = 250;
 const HISTORY_ANCHOR_MAX_CORRECTIONS = 2;
 const HISTORY_ANCHOR_SECOND_CORRECTION_MS = 180;
+const AUTHOR_ACCENTS = [
+    "var(--participant-steel)",
+    "var(--participant-mist)",
+    "var(--participant-clay)",
+    "var(--participant-sand)",
+    "var(--participant-sky)",
+] as const;
+
+type AuthorAccentStyle = CSSProperties & { "--author-accent": string };
+
+function getAuthorAccentStyle(senderId: string, own: boolean): AuthorAccentStyle {
+    if (own) {
+        return { "--author-accent": "var(--signal)" };
+    }
+
+    const localpart = senderId.startsWith("@")
+        ? (senderId.slice(1).split(":", 1)[0] ?? senderId)
+        : senderId;
+    let hash = 0;
+
+    for (let index = 0; index < localpart.length; index += 1) {
+        hash = (hash * 31 + localpart.charCodeAt(index)) >>> 0;
+    }
+
+    return { "--author-accent": AUTHOR_ACCENTS[hash % AUTHOR_ACCENTS.length] };
+}
 
 interface TimelineVirtuosoContext {
     loadingHistory: boolean;
@@ -137,8 +163,9 @@ function formatTime(timestamp: number): string {
 function formatDate(timestamp: number): string {
     return new Intl.DateTimeFormat(undefined, {
         weekday: "long",
-        month: "short",
+        month: "long",
         day: "numeric",
+        year: "numeric",
     }).format(timestamp);
 }
 
@@ -1118,10 +1145,9 @@ function MessageRow({
     const [reactionOpen, setReactionOpen] = useState(false);
     const [actionsOpen, setActionsOpen] = useState(false);
     const rowRef = useRef<HTMLElement>(null);
-    const newDay = Boolean(
-        previous &&
-        new Date(previous.timestamp).toDateString() !== new Date(item.timestamp).toDateString(),
-    );
+    const newDay =
+        !previous ||
+        new Date(previous.timestamp).toDateString() !== new Date(item.timestamp).toDateString();
     const actionable = item.decryptionState === "ready" && !item.redacted && !item.sendingStatus;
     const editable = actionable && item.own && item.type === "message" && !item.media;
 
@@ -1173,6 +1199,7 @@ function MessageRow({
                 className={classes(
                     `message-row${item.own ? " message-row--own" : ""}${item.type === "notice" ? " message-row--notice" : ""}${actionsOpen ? " is-actions-open" : ""}`,
                 )}
+                style={getAuthorAccentStyle(item.senderId, item.own)}
                 data-ui="message-row"
                 data-actions-state={actionsOpen ? "open" : "closed"}
                 data-event-id={item.id}
@@ -1187,7 +1214,7 @@ function MessageRow({
                 <span className={classes("message-row__marker")} aria-hidden="true" />
                 <div className={classes("message-row__main")}>
                     <header>
-                        <strong>{item.senderName}</strong>
+                        <strong>{item.own ? "You" : item.senderName}</strong>
                         {item.edited ? (
                             <span className={classes("edited-label")}>edited</span>
                         ) : null}
@@ -2139,7 +2166,7 @@ export function Timeline({
                             {unreadCount > 0 &&
                             itemIndex === Math.max(0, items.length - unreadCount) ? (
                                 <div className={classes("unread-divider")} role="separator">
-                                    <span>New transmissions</span>
+                                    <span>New messages</span>
                                 </div>
                             ) : null}
                             <MessageRow

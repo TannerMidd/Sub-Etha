@@ -15,16 +15,13 @@ import {
     ArrowRight,
     BellOff,
     Check,
-    Eye,
     Info,
     LockKeyhole,
     MessageSquarePlus,
-    RadioTower,
     Search,
     Settings,
     Signal,
     SignalLow,
-    Star,
     UserPlus,
     Users,
     WifiOff,
@@ -56,7 +53,7 @@ import { Timeline } from "./Timeline";
 import { classes } from "../styles/appStyles";
 
 type OpenDialog = "new" | "search" | "settings" | "details" | null;
-type RoomScope = "all" | "unread" | "favourites" | "invitations";
+type RoomScope = "all" | "unread";
 
 interface SubEthaHistoryState {
     subEthaView?: "rooms" | "room";
@@ -208,12 +205,13 @@ function RoomListItem({
                         }).format(room.timestamp)}
                     </time>
                 ) : null}
-                {room.highlights ? (
-                    <span className={classes("highlight-badge")}>
-                        {room.highlights > 99 ? "99+" : room.highlights}
+                {room.unread ? (
+                    <span
+                        className={classes(room.highlights ? "highlight-badge" : "unread-dot")}
+                        aria-label={`${room.unread} unread`}
+                    >
+                        {room.unread > 99 ? "99+" : room.unread}
                     </span>
-                ) : room.unread ? (
-                    <span className={classes("unread-dot")} aria-label={`${room.unread} unread`} />
                 ) : null}
             </span>
         </button>
@@ -240,6 +238,8 @@ export function ChatShell({
     const [editing, setEditing] = useState<TimelineItem | null>(null);
     const [mobileRoomsOpen, setMobileRoomsOpen] = useState(!snapshot.activeRoomId);
     const roomSearchInput = useRef<HTMLInputElement>(null);
+    const mobileMenuButton = useRef<HTMLButtonElement>(null);
+    const mobileRoomsWasOpen = useRef(mobileRoomsOpen);
     const swipeStart = useRef<SwipeStart | null>(null);
     const suppressSwipeClickUntil = useRef(0);
     const historySeeded = useRef(false);
@@ -300,14 +300,6 @@ export function ChatShell({
 
         if (roomScope === "unread") {
             return matching.filter((room) => room.unread || room.highlights);
-        }
-
-        if (roomScope === "favourites") {
-            return matching.filter((room) => room.favourite);
-        }
-
-        if (roomScope === "invitations") {
-            return matching.filter((room) => room.membership === "invite");
         }
 
         return matching;
@@ -464,6 +456,30 @@ export function ChatShell({
         return () => window.removeEventListener("keydown", shortcut);
     }, [closeRoomIndex, mobileRoomsOpen]);
 
+    useEffect(() => {
+        const wasOpen = mobileRoomsWasOpen.current;
+
+        mobileRoomsWasOpen.current = mobileRoomsOpen;
+
+        if (!isMobileLayout()) {
+            return;
+        }
+
+        const focusTarget = mobileRoomsOpen
+            ? roomSearchInput.current
+            : wasOpen
+              ? mobileMenuButton.current
+              : null;
+
+        if (!focusTarget) {
+            return;
+        }
+
+        const frame = window.requestAnimationFrame(() => focusTarget.focus());
+
+        return () => window.cancelAnimationFrame(frame);
+    }, [mobileRoomsOpen]);
+
     const selectRoom = (roomId: string) => {
         service.selectRoom(roomId);
         const mobile = isMobileLayout();
@@ -567,10 +583,14 @@ export function ChatShell({
             return null;
         }
 
-        const groupId = `room-group-${title.toLowerCase().replace(/\s+/g, "-")}`;
+        const groupSlug = title.toLowerCase().replace(/\s+/g, "-");
+        const groupId = `room-group-${groupSlug}`;
 
         return (
-            <section className={classes("room-group")} aria-labelledby={groupId}>
+            <section
+                className={classes(`room-group room-group--${groupSlug}`)}
+                aria-labelledby={groupId}
+            >
                 <h2 id={groupId}>
                     {title}
                     <span>{countLabel}</span>
@@ -605,7 +625,7 @@ export function ChatShell({
         >
             <aside className={classes("room-sidebar")} data-ui="room-sidebar" aria-label="Rooms">
                 <header className={classes("room-sidebar__header")}>
-                    <BrandMark edition="NIGHT RECEIVER CONSOLE" />
+                    <BrandMark />
                     <button
                         className={classes("room-sidebar__close")}
                         type="button"
@@ -621,14 +641,14 @@ export function ChatShell({
                         <div className={classes("transmission-search")}>
                             <Search aria-hidden="true" />
                             <label className={classes("sr-only")} htmlFor="transmission-search">
-                                Search transmissions
+                                Search rooms
                             </label>
                             <input
                                 ref={roomSearchInput}
                                 id="transmission-search"
                                 value={roomFilter}
                                 onChange={(event) => setRoomFilter(event.target.value)}
-                                placeholder="Search transmissions..."
+                                placeholder="Search rooms"
                             />
                             <Search
                                 className={classes("transmission-search__submit")}
@@ -657,8 +677,6 @@ export function ChatShell({
                                 [
                                     { id: "all", label: "All" },
                                     { id: "unread", label: "Unread" },
-                                    { id: "favourites", label: "Saved" },
-                                    { id: "invitations", label: "Invites" },
                                 ] as const
                             ).map((item) => (
                                 <button
@@ -666,12 +684,14 @@ export function ChatShell({
                                     className={classes(roomScope === item.id ? "is-active" : "")}
                                     type="button"
                                     aria-pressed={roomScope === item.id}
+                                    aria-label={
+                                        item.id === "unread" && unreadTotal
+                                            ? `Unread, ${unreadTotal}`
+                                            : item.label
+                                    }
                                     onClick={() => setRoomScope(item.id)}
                                 >
                                     {item.label}
-                                    {item.id === "unread" && unreadTotal ? (
-                                        <span>{unreadTotal > 99 ? "99+" : unreadTotal}</span>
-                                    ) : null}
                                 </button>
                             ))}
                         </nav>
@@ -682,7 +702,7 @@ export function ChatShell({
                                 joinedRooms,
                                 `${joinedRooms.length + directMessages.length} tuned`,
                             )}
-                            {roomGroup("Direct transmissions", directMessages)}
+                            {roomGroup("Direct messages", directMessages, "")}
                             {!filteredRooms.length ? (
                                 <div className={classes("room-list-empty")}>
                                     <Search />
@@ -699,6 +719,7 @@ export function ChatShell({
                                 onClick={() => setDialog("settings")}
                             >
                                 <Settings />
+                                <span>Settings</span>
                             </button>
                             <Avatar
                                 name={snapshot.displayName}
@@ -708,25 +729,16 @@ export function ChatShell({
                             <button
                                 className={classes("profile-strip__identity")}
                                 type="button"
+                                aria-label={`${snapshot.displayName}, ${snapshot.userId}`}
+                                title={snapshot.userId}
                                 onClick={() => setDialog("settings")}
                             >
                                 <span>
                                     <strong>{snapshot.displayName}</strong>
-                                    <small>{snapshot.userId}</small>
+                                    <small>Operator</small>
                                 </span>
                             </button>
-                            <button
-                                className={classes("profile-strip__saved")}
-                                type="button"
-                                aria-label="Show saved transmissions"
-                                onClick={() => setRoomScope("favourites")}
-                            >
-                                <Star />
-                            </button>
                         </footer>
-                        <div className={classes("sidebar-folio")}>
-                            Field guide · Vol. 01 · Page 17
-                        </div>
                     </div>
                 </div>
             </aside>
@@ -736,6 +748,8 @@ export function ChatShell({
                     `conversation${!activeRoom || activeRoom.membership === "invite" ? " conversation--single" : ""}`,
                 )}
                 aria-label={activeRoom ? activeRoom.name : "No room selected"}
+                aria-hidden={mobileRoomsOpen || undefined}
+                inert={mobileRoomsOpen || undefined}
             >
                 {activeRoom ? (
                     <>
@@ -745,6 +759,7 @@ export function ChatShell({
                                 data-ui="conversation-header"
                             >
                                 <button
+                                    ref={mobileMenuButton}
                                     className={classes("mobile-menu-button")}
                                     type="button"
                                     aria-label="Open transmission index"
@@ -762,6 +777,11 @@ export function ChatShell({
                                         {activeRoom.muted ? <BellOff aria-label="Muted" /> : null}
                                     </h1>
                                     <p>
+                                        <span className={classes("room-presence-summary")}>
+                                            {activeRoom.encrypted ? "Private" : "Open"} ·{" "}
+                                            {activeRoom.memberCount}{" "}
+                                            {activeRoom.memberCount === 1 ? "member" : "members"}
+                                        </span>
                                         <span className={classes("room-classification")}>
                                             Classification:{" "}
                                             {activeRoom.classification ??
@@ -865,25 +885,6 @@ export function ChatShell({
                                             }}
                                         />
                                     </div>
-                                    <aside
-                                        className={classes("mobile-guide-footnote")}
-                                        data-ui="mobile-guide-footnote"
-                                        aria-label="Guide footnote"
-                                    >
-                                        {/* eslint-disable-next-line @next/next/no-img-element -- Original receiver diagram supplied with the app. */}
-                                        <img
-                                            src="/night-receiver-linework.png"
-                                            alt=""
-                                            aria-hidden="true"
-                                        />
-                                        <p>
-                                            <strong>Guide footnote · Fig. {activeEntryCode}</strong>
-                                            <span>
-                                                Carrier found. It was under the usual pile of cosmic
-                                                noise.
-                                            </span>
-                                        </p>
-                                    </aside>
                                     <div
                                         className={classes(
                                             `typing-line${snapshot.typingNames.length ? " is-active" : ""}`,
@@ -914,6 +915,7 @@ export function ChatShell({
                                     <Composer
                                         key={`${activeRoom.id}:${editing?.id ?? "compose"}`}
                                         roomId={activeRoom.id}
+                                        roomName={activeRoom.name}
                                         service={service}
                                         replyingTo={replyingTo}
                                         editing={editing}
@@ -960,76 +962,6 @@ export function ChatShell({
                                 </>
                             )}
                         </div>
-                        {activeRoom.membership !== "invite" ? (
-                            <aside
-                                className={classes("room-guide-panel")}
-                                aria-labelledby="room-guide-heading"
-                            >
-                                <h2 id="room-guide-heading">About this transmission</h2>
-                                <dl className={classes("room-guide-details")}>
-                                    <div>
-                                        <dt>
-                                            <Eye />
-                                            Purpose
-                                        </dt>
-                                        <dd>
-                                            {activeRoom.topic ??
-                                                "Live room coordination and field observations"}
-                                        </dd>
-                                    </div>
-                                    <div>
-                                        <dt>
-                                            <Users />
-                                            Members
-                                        </dt>
-                                        <dd>{activeRoom.memberCount} members</dd>
-                                    </div>
-                                    <div>
-                                        <dt>
-                                            <LockKeyhole />
-                                            Privacy
-                                        </dt>
-                                        <dd>
-                                            {activeRoom.encrypted
-                                                ? "Private end to end. Intermediate space remains uninformed."
-                                                : "Unencrypted transmission."}
-                                        </dd>
-                                    </div>
-                                </dl>
-                                <figure className={classes("room-guide-diagram")}>
-                                    <h3>Fig. {activeEntryCode} — Receiver diagram</h3>
-                                    <div className={classes("room-guide-diagram__plate")}>
-                                        {/* eslint-disable-next-line @next/next/no-img-element -- Original receiver diagram supplied with the app. */}
-                                        <img
-                                            src="/night-receiver-linework.png"
-                                            alt="Abstract receiver diagram with orbit and signal traces"
-                                            loading="lazy"
-                                            decoding="async"
-                                        />
-                                    </div>
-                                    <figcaption>
-                                        Signal path and sweep overlay.
-                                        <br />
-                                        Carrier trace in red.
-                                    </figcaption>
-                                </figure>
-                                <section className={classes("room-guide-note")}>
-                                    <div>
-                                        <h3>Guide note</h3>
-                                        <p>
-                                            Carrier found. It was under the usual pile of cosmic
-                                            noise.
-                                        </p>
-                                    </div>
-                                    <RadioTower aria-hidden="true" />
-                                </section>
-                                <footer className={classes("room-guide-meta")}>
-                                    <span>Coordinate&nbsp;&nbsp; Local device</span>
-                                    <span>Frequency&nbsp;&nbsp; Matrix / live</span>
-                                    <span>Field guide&nbsp;&nbsp; Vol. 01 / Page 17</span>
-                                </footer>
-                            </aside>
-                        ) : null}
                     </>
                 ) : (
                     <div className={classes("no-room-view")}>

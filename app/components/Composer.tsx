@@ -35,12 +35,14 @@ function formatSize(size: number): string {
 
 export function Composer({
     roomId,
+    roomName,
     service,
     replyingTo,
     editing,
     onClearContext,
 }: {
     roomId: string;
+    roomName: string;
     service: MatrixService;
     replyingTo: TimelineItem | null;
     editing: TimelineItem | null;
@@ -433,7 +435,7 @@ export function Composer({
                             ? "Revise this message…"
                             : attachment
                               ? "Add a caption…"
-                              : "Add an observation…"
+                              : `Message ${roomName}`
                     }
                     rows={1}
                 />

@@ -14,12 +14,19 @@ body {
     background: var(--paper);
 }
 
+html {
+    text-size-adjust: 100%;
+    scrollbar-color: var(--line-strong) transparent;
+}
+
 body {
     margin: 0;
     color: var(--ink);
     font-family: var(--font-ui);
     font-size: 15px;
+    font-weight: 400;
     line-height: 1.5;
+    letter-spacing: -0.012em;
     text-rendering: optimizeLegibility;
     -webkit-font-smoothing: antialiased;
 }
@@ -43,29 +50,33 @@ select {
     color: inherit;
 }
 
+button {
+    touch-action: manipulation;
+}
+
 input[type="file"] {
     padding: 6px;
 }
 
 input[type="file"]::file-selector-button {
-    min-height: 30px;
+    min-height: 36px;
     margin-right: 10px;
-    padding: 5px 10px;
+    padding: 6px 11px;
     border: 1px solid var(--line-strong);
-    border-radius: 2px;
-    background: var(--paper-deep);
+    border-radius: 0;
+    background: transparent;
     color: var(--ink);
-    font: 750 11px/1 var(--font-ui);
+    font: 650 11px/1 var(--font-ui);
     cursor: pointer;
 }
 
 input[type="file"]::file-selector-button:hover {
     border-color: var(--teal);
-    background: color-mix(in srgb, var(--paper-deep) 75%, var(--teal) 25%);
+    color: var(--teal);
 }
 
 ::selection {
-    background: color-mix(in srgb, var(--teal) 32%, transparent);
+    background: color-mix(in srgb, var(--teal) 28%, transparent);
     color: var(--ink);
 }
 
@@ -96,7 +107,7 @@ input[type="file"]::file-selector-button:hover {
 }
 
 :focus-visible {
-    outline: 2px solid var(--teal);
+    outline: 2px solid var(--focus);
     outline-offset: 2px;
 }
 

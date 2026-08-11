@@ -1,12 +1,12 @@
 @use "./mixins" as *;
 
 .eyebrow {
-    margin: 0 0 8px;
+    margin: 0 0 9px;
     color: var(--signal);
-    font-family: var(--font-mono);
-    font-size: 11px;
-    font-weight: 800;
-    letter-spacing: 0.14em;
+    font-family: var(--font-ui);
+    font-size: 10px;
+    font-weight: 650;
+    letter-spacing: 0.13em;
     text-transform: uppercase;
 }
 
@@ -16,60 +16,60 @@
     @include interactive-control;
 
     min-height: 44px;
-    border-radius: 8px;
-    border: 1px solid transparent;
+    padding: 9px 15px;
     display: inline-flex;
     align-items: center;
     justify-content: center;
     gap: 9px;
-    padding: 10px 16px;
-    font-weight: 780;
+    border: 1px solid;
+    border-radius: 0;
+    background: transparent;
+    font-size: 12px;
+    font-weight: 620;
     cursor: pointer;
 }
 
 .primary-button {
     border-color: var(--signal);
     background: var(--signal);
-    color: var(--paper);
-    box-shadow: 0 8px 24px color-mix(in srgb, var(--signal) 18%, transparent);
+    color: #2c2e31;
 }
 
 .primary-button:hover:not(:disabled) {
-    transform: translateY(-1px);
     border-color: var(--signal-dark);
     background: var(--signal-dark);
 }
 
 .secondary-button {
-    background: color-mix(in srgb, var(--paper-deep) 64%, transparent);
-    color: var(--ink);
     border-color: var(--line-strong);
+    color: var(--ink);
 }
 
 .secondary-button:hover:not(:disabled) {
-    background: var(--paper-deep);
-    border-color: var(--line-strong);
+    border-color: var(--teal);
+    color: var(--teal);
 }
 
 .danger-button {
-    background: transparent;
-    border-color: color-mix(in srgb, var(--signal) 45%, var(--line));
+    border-color: color-mix(in srgb, var(--signal-dark) 70%, var(--line));
     color: var(--signal-dark);
 }
 
 .danger-button:hover:not(:disabled) {
-    background: color-mix(in srgb, var(--signal) 10%, transparent);
+    border-color: var(--signal-dark);
+    background: color-mix(in srgb, var(--signal-dark) 10%, transparent);
 }
 
 .primary-button svg,
 .secondary-button svg,
 .danger-button svg {
-    width: 18px;
-    height: 18px;
+    width: 17px;
+    height: 17px;
+    stroke-width: 1.7;
 }
 
 button:disabled {
-    opacity: 0.48;
+    opacity: 0.42;
     cursor: not-allowed;
 }
 
@@ -83,37 +83,31 @@ button:disabled {
     place-items: center;
     flex: 0 0 auto;
     border: 1px solid transparent;
-    border-radius: 8px;
+    border-radius: 0;
     background: transparent;
+    color: var(--ink-soft);
     cursor: pointer;
 }
 
 .icon-button:hover {
-    background: var(--paper-deep);
-    border-color: var(--line);
+    border-color: var(--line-strong);
+    color: var(--ink);
 }
 
 .icon-button svg {
-    width: 19px;
-    height: 19px;
+    width: 18px;
+    height: 18px;
+    stroke-width: 1.6;
 }
 
 .button-row {
     display: flex;
-    gap: 10px;
+    gap: 9px;
     flex-wrap: wrap;
 }
 
 .index-chip {
-    min-width: 38px;
-    height: 24px;
-    display: inline-grid;
-    place-items: center;
-    background: var(--signal);
-    color: #fff;
-    border-radius: 4px;
-    font: 800 10px var(--font-mono);
-    letter-spacing: 0.08em;
+    display: none;
 }
 
 input,
@@ -121,9 +115,19 @@ textarea {
     @include field-surface;
 
     width: 100%;
-    border-radius: 4px;
-    padding: 12px 13px;
     min-height: 44px;
+    padding: 11px 12px;
+    border-radius: 0;
+}
+
+input:hover,
+textarea:hover {
+    border-color: var(--ink-soft);
+}
+
+input:focus,
+textarea:focus {
+    border-color: var(--focus);
 }
 
 textarea {
@@ -132,7 +136,7 @@ textarea {
 
 input::placeholder,
 textarea::placeholder {
-    color: color-mix(in srgb, var(--ink-soft) 70%, transparent);
+    color: color-mix(in srgb, var(--ink-soft) 72%, transparent);
 }
 
 .field-with-icon {
@@ -141,10 +145,14 @@ textarea::placeholder {
 
 .field-with-icon svg {
     position: absolute;
-    width: 18px;
+    z-index: 1;
+    width: 17px;
+    height: 17px;
     left: 13px;
-    top: 13px;
+    top: 14px;
     color: var(--ink-soft);
+    stroke-width: 1.6;
+    pointer-events: none;
 }
 
 .field-with-icon input {
@@ -156,37 +164,36 @@ textarea::placeholder {
     margin: 0;
     color: var(--ink-soft);
     font-size: 11px;
+    line-height: 1.55;
 }
 
 .privacy-footnote {
-    margin-top: 20px;
+    margin-top: 22px;
     padding-top: 16px;
-    border-top: 1px dashed var(--line);
+    border-top: 1px solid var(--line);
 }
 
 .status-dot {
-    width: 8px;
-    height: 8px;
-    border-radius: 50%;
+    width: 6px;
+    height: 6px;
     background: var(--line-strong);
     flex: 0 0 auto;
 }
 
 .status-dot--online {
     background: var(--teal);
-    box-shadow: 0 0 0 3px color-mix(in srgb, var(--teal) 17%, transparent);
 }
 
 .divider {
     display: grid;
     grid-template-columns: 1fr auto 1fr;
     align-items: center;
-    gap: 10px;
+    gap: 11px;
+    margin: 6px 0;
     color: var(--ink-soft);
-    font-size: 10px;
+    font-size: 9px;
+    letter-spacing: 0.08em;
     text-transform: uppercase;
-    letter-spacing: 0.09em;
-    margin: 4px 0;
 }
 
 .divider::before,
@@ -197,20 +204,26 @@ textarea::placeholder {
 }
 
 .advanced-toggle {
+    min-height: 40px;
     display: flex;
     align-items: center;
     gap: 8px;
-    padding: 8px 0;
+    padding: 7px 0;
     border: 0;
+    border-bottom: 1px solid var(--line);
     background: transparent;
     color: var(--ink-soft);
-    font-size: 12px;
+    font-size: 11px;
     cursor: pointer;
+}
+
+.advanced-toggle:hover {
+    color: var(--ink);
 }
 
 .advanced-toggle svg {
     width: 15px;
-    transition: transform 0.15s ease;
+    transition: transform var(--motion-fast) var(--motion-ease);
 }
 
 .advanced-toggle svg:last-child {
@@ -218,13 +231,14 @@ textarea::placeholder {
 }
 
 .error-note {
-    margin-top: 16px;
+    margin-top: 17px;
+    padding: 11px 13px;
     display: flex;
     flex-direction: column;
-    padding: 12px 14px;
-    border-left: 3px solid var(--signal);
-    background: color-mix(in srgb, var(--signal) 8%, transparent);
-    font-size: 12px;
+    border: 1px solid color-mix(in srgb, var(--signal-dark) 58%, var(--line));
+    border-left: 3px solid var(--signal-dark);
+    background: transparent;
+    font-size: 11px;
 }
 
 .error-note span {
@@ -233,12 +247,12 @@ textarea::placeholder {
 
 .inline-notice,
 .empty-note {
-    color: var(--ink-soft);
-    font-size: 12px;
-    padding: 12px;
-    border: 1px dashed var(--line);
-    border-radius: 8px;
     margin: 0;
+    padding: 12px;
+    border: 1px solid var(--line);
+    border-radius: 0;
+    color: var(--ink-soft);
+    font-size: 11px;
 }
 
 .boot-screen {
@@ -247,70 +261,71 @@ textarea::placeholder {
     flex-direction: column;
     align-items: center;
     justify-content: center;
-    gap: 42px;
-    padding: 24px;
-    background: radial-gradient(circle at center, var(--paper-raised), var(--paper) 65%);
+    gap: clamp(38px, 7vh, 72px);
+    padding: calc(28px + var(--safe-top)) calc(24px + var(--safe-right))
+        calc(28px + var(--safe-bottom)) calc(24px + var(--safe-left));
+    background: var(--paper);
 }
 
 .boot-card {
-    max-width: 560px;
-    text-align: center;
-    padding: 44px;
-    background: var(--paper-raised);
-    border: 1px solid var(--line);
-    border-radius: 14px;
-    box-shadow: var(--shadow);
+    width: min(600px, 100%);
+    padding: 36px 0;
+    border-top: 1px solid var(--line-strong);
+    border-bottom: 1px solid var(--line-strong);
+    text-align: left;
 }
 
 .boot-card > svg {
-    width: 44px;
-    height: 44px;
+    width: 34px;
+    height: 34px;
+    margin-bottom: 22px;
     color: var(--teal);
-    margin-bottom: 18px;
+    stroke-width: 1.4;
 }
 
 .boot-card--error > svg {
-    color: var(--signal);
+    color: var(--signal-dark);
 }
 
 .boot-card h1 {
     margin: 0;
-    font: 900 42px/0.95 var(--font-display);
-    text-transform: uppercase;
+    font: 470 clamp(30px, 5vw, 44px)/1.08 var(--font-display);
+    letter-spacing: -0.045em;
 }
 
 .boot-card p:not(.eyebrow) {
+    max-width: 520px;
     color: var(--ink-soft);
+    line-height: 1.65;
 }
 
 .boot-card .button-row {
-    justify-content: center;
-    margin-top: 24px;
+    margin-top: 26px;
 }
 
 .tuning-indicator {
-    text-align: center;
     max-width: 440px;
+    text-align: center;
     color: var(--ink-soft);
 }
 
 .tuning-indicator > span {
+    width: 58px;
+    height: 58px;
     margin: auto;
-    width: 72px;
-    height: 72px;
     display: grid;
     place-items: center;
-    border: 1px solid var(--line);
-    border-radius: 50%;
+    border: 1px solid var(--line-strong);
 }
 
 .tuning-indicator svg {
-    width: 26px;
+    width: 23px;
     color: var(--signal);
 }
 
 .new-room-button:hover {
-    background: var(--signal-dark);
+    border-color: var(--signal-dark);
+    color: var(--signal-dark);
 }
 
 .new-room-button svg {
@@ -318,31 +333,21 @@ textarea::placeholder {
 }
 
 .highlight-badge {
-    min-width: 19px;
-    height: 19px;
-    padding: 0 5px;
-    display: grid;
-    place-items: center;
-    background: var(--signal);
-    color: white;
-    border-radius: 10px;
-    font-size: 9px;
-    font-weight: 800;
+    color: var(--signal-dark);
+    font: 650 13px/1 var(--font-ui);
 }
 
 .unread-dot {
-    width: 7px;
-    height: 7px;
-    background: var(--teal);
-    border-radius: 50%;
+    color: var(--signal-dark);
+    font: 650 13px/1 var(--font-ui);
 }
 
 .encrypted-label {
-    padding: 1px 4px;
-    border-radius: 3px;
-    background: var(--teal-soft);
+    padding: 1px 5px;
+    border: 1px solid color-mix(in srgb, var(--teal) 58%, var(--line));
+    border-radius: 0;
     color: var(--teal);
-    font: 800 8px var(--font-mono);
+    font: 650 8px var(--font-ui);
     letter-spacing: 0.06em;
 }
 
@@ -358,11 +363,13 @@ textarea::placeholder {
 }
 
 .send-status button {
-    border: 0;
-    background: transparent;
-    color: inherit;
+    padding: 0;
     display: inline-flex;
     gap: 3px;
+    border: 0;
+    border-bottom: 1px solid currentColor;
+    background: transparent;
+    color: inherit;
     cursor: pointer;
 }
 
@@ -370,13 +377,13 @@ textarea::placeholder {
     display: flex;
     justify-content: center;
     gap: 7px;
-    padding: 5px 24px;
+    padding: 6px 24px;
     color: var(--ink-soft);
     font-size: 10px;
 }
 
 .system-event time {
-    opacity: 0.65;
+    opacity: 0.7;
 }
 
 .decryption-state {
@@ -396,30 +403,27 @@ textarea::placeholder {
     color: var(--teal);
 }
 
-.decryption-state--failed {
+.decryption-state--failed,
+.decryption-state--failed svg {
     color: var(--signal-dark);
 }
 
-.decryption-state--failed svg {
-    color: currentColor;
-}
-
 .video-attachment-frame {
-    display: block;
     max-width: min(620px, 100%);
     margin-top: 8px;
+    display: block;
     overflow: hidden;
-    border: 1px solid var(--line);
-    border-radius: 10px;
-    background: #000;
+    border: 1px solid var(--line-strong);
+    border-radius: 0;
+    background: #18191b;
 }
 
 .video-attachment {
-    display: block;
     width: 100%;
     height: 100%;
+    display: block;
     object-fit: contain;
-    background: #000;
+    background: #18191b;
 }
 
 .audio-attachment {
@@ -436,25 +440,28 @@ textarea::placeholder {
     grid-template-columns: auto 1fr auto;
     align-items: center;
     gap: 10px;
-    border: 1px solid var(--line);
-    border-radius: 9px;
-    background: var(--paper-raised);
+    border: 1px solid var(--line-strong);
+    border-radius: 0;
+    background: transparent;
     color: var(--ink);
     text-decoration: none;
 }
 
+.file-attachment:hover {
+    border-color: var(--teal);
+}
+
 .file-attachment > span:first-child {
-    width: 38px;
-    height: 38px;
+    width: 36px;
+    height: 36px;
     display: grid;
     place-items: center;
-    background: var(--teal-soft);
+    border-right: 1px solid var(--line);
     color: var(--teal);
-    border-radius: 7px;
 }
 
 .file-attachment svg {
-    width: 18px;
+    width: 17px;
 }
 
 .file-attachment > span:nth-child(2) {
@@ -464,10 +471,10 @@ textarea::placeholder {
 }
 
 .file-attachment strong {
-    white-space: nowrap;
     overflow: hidden;
-    text-overflow: ellipsis;
     font-size: 12px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
 }
 
 .file-attachment small {
@@ -475,31 +482,7 @@ textarea::placeholder {
 }
 
 .empty-orbit {
-    width: 84px;
-    height: 84px;
-    margin-bottom: 24px;
-    border: 1px solid var(--line-strong);
-    border-radius: 50%;
-    display: grid;
-    place-items: center;
-    position: relative;
-}
-
-.empty-orbit::after {
-    content: "";
-    position: absolute;
-    width: 118px;
-    height: 34px;
-    border: 1px solid var(--line);
-    border-radius: 50%;
-    transform: rotate(-18deg);
-}
-
-.empty-orbit span {
-    width: 12px;
-    height: 12px;
-    background: var(--signal);
-    border-radius: 50%;
+    display: none;
 }
 
 @keyframes typing-dot {
@@ -526,25 +509,24 @@ textarea::placeholder {
 
 .app-toast {
     position: fixed;
-    left: 50%;
-    bottom: 22px;
-    transform: translateX(-50%);
     z-index: 50;
+    left: 50%;
+    bottom: calc(22px + var(--safe-bottom));
     max-width: min(580px, 100vw - 30px);
     padding: 11px 12px;
     display: flex;
     align-items: center;
     gap: 9px;
-    border: 1px solid color-mix(in srgb, var(--signal) 40%, var(--line));
-    border-radius: 9px;
+    transform: translateX(-50%);
+    border: 1px solid color-mix(in srgb, var(--signal-dark) 52%, var(--line));
+    border-radius: 0;
     background: var(--paper-raised);
-    box-shadow: var(--shadow);
     font-size: 12px;
 }
 
 .app-toast > svg {
     width: 17px;
-    color: var(--signal);
+    color: var(--signal-dark);
 }
 
 .app-toast span {
@@ -563,28 +545,29 @@ textarea::placeholder {
 .segmented-control {
     display: grid;
     grid-template-columns: repeat(3, 1fr);
-    gap: 4px;
-    padding: 4px;
     margin-top: 20px;
-    background: var(--paper-deep);
-    border-radius: 8px;
+    border: 1px solid var(--line-strong);
 }
 
 .segmented-control button {
-    min-height: 34px;
+    min-height: 38px;
     border: 0;
-    border-radius: 6px;
+    border-right: 1px solid var(--line);
+    border-radius: 0;
     background: transparent;
     color: var(--ink-soft);
     cursor: pointer;
     font-size: 11px;
-    font-weight: 750;
+    font-weight: 560;
+}
+
+.segmented-control button:last-child {
+    border-right: 0;
 }
 
 .segmented-control button[aria-selected="true"] {
-    background: var(--paper-raised);
-    color: var(--ink);
-    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+    background: var(--teal-soft);
+    color: var(--teal);
 }
 
 .check-row {
@@ -620,9 +603,11 @@ textarea::placeholder {
 
 .success-note {
     padding: 10px 12px;
-    background: var(--teal-soft);
+    border: 1px solid color-mix(in srgb, var(--teal) 60%, var(--line));
+    border-left: 3px solid var(--teal);
+    border-radius: 0;
+    background: transparent;
     color: var(--teal);
-    border-radius: 7px;
     font-size: 11px;
 }
 
@@ -632,13 +617,13 @@ textarea::placeholder {
     align-items: center;
     gap: 8px;
     margin-top: 18px;
-    border: 1px solid var(--line);
-    border-radius: 9px;
-    padding: 5px 6px 5px 11px;
+    padding: 0 0 0 11px;
+    border: 1px solid var(--line-strong);
+    border-radius: 0;
 }
 
 .search-form > svg {
-    width: 18px;
+    width: 17px;
     color: var(--ink-soft);
 }
 
@@ -649,13 +634,19 @@ textarea::placeholder {
 }
 
 .search-form button {
-    height: 36px;
+    align-self: stretch;
+    min-width: 42px;
     padding: 0 13px;
     border: 0;
-    border-radius: 6px;
-    background: var(--ink);
-    color: var(--paper-raised);
-    font-weight: 750;
+    border-left: 1px solid var(--line-strong);
+    border-radius: 0;
+    background: transparent;
+    color: var(--teal);
+    font-weight: 620;
+}
+
+.search-form button:hover {
+    background: var(--teal-soft);
 }
 
 .search-form button svg {
@@ -691,20 +682,21 @@ textarea::placeholder {
 .recovery-result {
     margin-top: 10px;
     padding: 12px;
-    border: 1px solid var(--teal);
-    background: var(--teal-soft);
-    border-radius: 8px;
     display: flex;
     flex-direction: column;
     gap: 8px;
+    border: 1px solid var(--teal);
+    border-radius: 0;
+    background: transparent;
     font-size: 10px;
 }
 
 .recovery-result code {
     padding: 8px;
-    background: var(--paper-raised);
     overflow-wrap: anywhere;
-    border-radius: 5px;
+    border: 1px solid var(--line);
+    border-radius: 0;
+    background: var(--paper-deep);
 }
 
 .recovery-result button {
@@ -712,11 +704,13 @@ textarea::placeholder {
     display: flex;
     align-items: center;
     gap: 5px;
+    padding: 0 0 2px;
     border: 0;
+    border-bottom: 1px solid currentColor;
     background: transparent;
     color: var(--teal);
     cursor: pointer;
-    font-weight: 750;
+    font-weight: 620;
 }
 
 .recovery-result svg {
@@ -739,18 +733,18 @@ textarea::placeholder {
 .gif-play {
     position: absolute;
     inset: 50% auto auto 50%;
-    transform: translate(-50%, -50%);
-    min-height: 38px;
+    min-height: 40px;
     padding: 0 13px;
     display: flex;
     align-items: center;
     gap: 6px;
-    border: 1px solid rgba(255, 255, 255, 0.35);
-    border-radius: 20px;
-    background: rgba(8, 15, 14, 0.86);
-    color: white;
+    transform: translate(-50%, -50%);
+    border: 1px solid #eeece6;
+    border-radius: 0;
+    background: rgb(44 46 49 / 88%);
+    color: #eeece6;
     cursor: pointer;
-    font: 800 10px var(--font-ui);
+    font: 650 10px var(--font-ui);
 }
 
 .gif-play svg {
@@ -777,18 +771,27 @@ textarea::placeholder {
     --epr-dark-bg-color: var(--paper-raised);
     --epr-text-color: var(--ink);
     --epr-dark-text-color: var(--ink);
-    --epr-picker-border-color: transparent;
-    --epr-dark-picker-border-color: transparent;
+    --epr-picker-border-color: var(--line-strong);
+    --epr-dark-picker-border-color: var(--line-strong);
     --epr-category-label-bg-color: var(--paper-raised);
     --epr-dark-category-label-bg-color: var(--paper-raised);
     --epr-search-input-bg-color: var(--paper-deep);
     --epr-dark-search-input-bg-color: var(--paper-deep);
+    --epr-hover-bg-color: var(--teal-soft);
+    --epr-dark-hover-bg-color: var(--teal-soft);
+    --epr-focus-bg-color: var(--teal-soft);
+    --epr-dark-focus-bg-color: var(--teal-soft);
     --epr-highlight-color: var(--teal);
     --epr-dark-highlight-color: var(--teal);
     --epr-category-icon-active-color: var(--signal);
     --epr-dark-category-icon-active-color: var(--signal);
-    border: 0 !important;
+    border: 1px solid var(--line-strong) !important;
+    border-radius: 0 !important;
     font-family: var(--font-ui) !important;
+}
+
+:global(.EmojiPickerReact .epr-search-container input.epr-search) {
+    border-radius: 0 !important;
 }
 
 .quick-reactions {
@@ -803,17 +806,11 @@ textarea::placeholder {
     height: 36px;
     display: grid;
     place-items: center;
-    border: 0;
-    border-radius: 8px;
-    background: var(--signal);
-    color: white;
-    cursor: pointer;
-    width: 36px;
-    height: 36px;
     border: 1px solid var(--signal);
-    border-radius: 2px;
+    border-radius: 0;
     background: transparent;
     color: var(--signal);
+    cursor: pointer;
 }
 
 @keyframes guide-fade {
@@ -825,6 +822,24 @@ textarea::placeholder {
 @keyframes guide-rise {
     from {
         opacity: 0;
-        transform: translateY(8px);
+    }
+}
+
+@media (max-width: 600px) {
+    .boot-card {
+        padding: 28px 0;
+    }
+
+    .boot-card .button-row {
+        display: grid;
+    }
+
+    .boot-card .button-row > * {
+        width: 100%;
+    }
+
+    .no-room-view,
+    .invite-view {
+        padding: 22px;
     }
 }

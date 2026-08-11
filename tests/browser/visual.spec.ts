@@ -16,9 +16,7 @@ function captureRuntimeProblems(page: Page): string[] {
     return problems;
 }
 
-test("Night Edition shell matches the supplied field guide reference", async ({
-    page,
-}, testInfo) => {
+test("Zen chat shell matches the selected line-driven reference", async ({ page }, testInfo) => {
     const runtimeProblems = captureRuntimeProblems(page);
 
     await page.addInitScript(() => {
@@ -31,14 +29,14 @@ test("Night Edition shell matches the supplied field guide reference", async ({
     await page.locator("#message-composer").fill("");
     await page.locator("#message-composer").evaluate((element) => element.blur());
 
-    await expect(page).toHaveScreenshot(`night-edition-shell-${testInfo.project.name}.png`, {
+    await expect(page).toHaveScreenshot(`zen-chat-shell-${testInfo.project.name}.png`, {
         animations: "disabled",
         fullPage: true,
     });
     expect(runtimeProblems).toEqual([]);
 });
 
-test("Night Edition login surface matches the field guide theme", async ({ page }, testInfo) => {
+test("Zen login surface uses the shared line system", async ({ page }, testInfo) => {
     const runtimeProblems = captureRuntimeProblems(page);
 
     await page.addInitScript(() => {
@@ -48,14 +46,14 @@ test("Night Edition login surface matches the field guide theme", async ({ page 
     await expect(page.locator('[data-ui="login-shell"]')).toBeVisible();
     await page.evaluate(() => document.fonts.ready);
 
-    await expect(page).toHaveScreenshot(`night-edition-login-${testInfo.project.name}.png`, {
+    await expect(page).toHaveScreenshot(`zen-chat-login-${testInfo.project.name}.png`, {
         animations: "disabled",
         fullPage: true,
     });
     expect(runtimeProblems).toEqual([]);
 });
 
-test("Night Edition settings dialog matches the field guide theme", async ({ page }, testInfo) => {
+test("Zen settings dialog uses the shared line system", async ({ page }, testInfo) => {
     test.skip(testInfo.project.name !== "desktop-1920", "Desktop dialog reference only.");
     const runtimeProblems = captureRuntimeProblems(page);
 
@@ -68,7 +66,7 @@ test("Night Edition settings dialog matches the field guide theme", async ({ pag
     await expect(page.getByRole("dialog", { name: "Settings" })).toBeVisible();
     await page.evaluate(() => document.fonts.ready);
 
-    await expect(page).toHaveScreenshot("night-edition-settings-desktop-1920.png", {
+    await expect(page).toHaveScreenshot("zen-chat-settings-desktop-1920.png", {
         animations: "disabled",
         fullPage: true,
     });

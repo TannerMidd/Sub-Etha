@@ -1,26 +1,17 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { RadioTower } from "lucide-react";
 import type { MatrixService } from "@/lib/matrix/client";
 import { isMxcUri } from "@/lib/matrix/media";
 import { classes } from "../styles/appStyles";
 
-export function BrandMark({ compact = false, edition }: { compact?: boolean; edition?: string }) {
+export function BrandMark({ compact = false }: { compact?: boolean }) {
     return (
         <div
             className={classes(`brand-mark${compact ? " brand-mark--compact" : ""}`)}
             aria-label="Sub-Etha"
         >
-            <span className={classes("brand-mark__signal")} aria-hidden="true">
-                <RadioTower size={compact ? 17 : 21} strokeWidth={1.8} />
-            </span>
             <span className={classes("brand-mark__word")}>SUB—ETHA</span>
-            {compact ? null : (
-                <span className={classes("brand-mark__edition")}>
-                    {edition ?? "FIELD EDITION · 01"}
-                </span>
-            )}
         </div>
     );
 }

@@ -1,78 +1,75 @@
-# Sub-Etha Night Edition Design QA
+# Sub-Etha Zen Chat Design QA
 
-## Source and implementation evidence
+## Build under review
 
-- Supplied desktop source of truth: `designs/sub-etha-new-visual-target-desktop-1920x1080.png`
-- Desktop implementation capture: `designs/sub-etha-night-edition-implementation-desktop-1920x1080.png`
-- Desktop side-by-side comparison, reference then implementation: `designs/design-qa-night-edition-desktop-comparison.png`
-- Mobile source of truth: `designs/sub-etha-night-edition-mobile-390x844.png`
-- Mobile implementation capture: `designs/sub-etha-night-edition-implementation-mobile-390x844.png`
-- Mobile side-by-side comparison, reference then implementation: `designs/design-qa-night-edition-mobile-comparison.png`
-- Login captures: `designs/sub-etha-night-edition-login-desktop-1920x1080.png` and `designs/sub-etha-night-edition-login-mobile-390x844.png`
-- Settings capture: `designs/sub-etha-night-edition-settings-desktop-1920x1080.png`
-- Deterministic browser route: `/?design-preview#/room/signal-watch`
+- Branch: `QA`
+- Deterministic chat route: `/?design-preview#/room/signal-watch`
+- Deterministic login route: `/?design-preview&surface-preview=login`
+- Source of truth: `designs/zen-chat-target-desktop.png` (1672 × 941)
+- Final source-sized implementation: `designs/zen-chat-implementation-desktop-1672x941.png`
+- Final large-desktop implementation: `designs/zen-chat-implementation-desktop-1920x1080.png`
+- Final mobile conversation: `designs/zen-chat-implementation-mobile-conversation-390x844.png`
+- Final mobile room index: `designs/zen-chat-implementation-mobile-rooms-390x844.png`
+- Login captures: `designs/zen-login-desktop-1920x1080.png` and `designs/zen-login-mobile-390x844.png`
+- Settings capture: `designs/zen-settings-desktop-1920x1080.png`
+- Final side-by-side comparison, source then implementation: `designs/design-qa-zen-desktop-comparison.png`
 
-The implementation captures are Chromium PNG renders at device-pixel ratio 1. The tested state is the dark Signal Watch preview fixture with an empty, unfocused, one-line composer.
+All browser captures were made in the Codex in-app browser at device-pixel ratio 1. The desktop comparison uses the same 1672 × 941 viewport and the same Signal Watch fixture as the selected source. The mobile implementation is a responsive derivation because no separate mobile source image was selected.
 
-## Theme and architecture result
+## Visual-system result
 
-- Dark semantic tokens use canvas `#010709`, raised surface `#041113`, elevated surface `#071a1c`, primary text `#f0e4c7`, muted text `#91a8a1`, teal `#63d8bd`, signal red `#ff5645`, and guide amber `#e9b44c`.
-- The light theme remains available through the same semantic token names. The existing `light | dark | system` preference is preserved, with dark as the no-preference fallback.
-- Styling is compiled from Sass tokens and mixins, a minimal global foundation, shared primitives, and component-scoped Brand, Login, Shell, Timeline, Composer, and Panels modules.
-- `sass` and `clsx` provide the styling toolchain and class composition. Tailwind and PostCSS are no longer part of the styling path.
-- CSS module hashes remain private. Runtime behavior and browser coverage use roles, IDs, `data-ui`, `data-state`, `data-scroll-mode`, and `data-swipe-lock` hooks.
-- The receiver illustration reuses `public/night-receiver-linework.png`; no replacement CSS ornament or synthetic asset was introduced.
+- One Sass/CSS-module stack is retained throughout; no second styling technology was introduced.
+- Inter is the only interface type family.
+- The dark palette is warm graphite and ash with terracotta, steel blue, and sand accents. Purple and green are absent from the interface palette.
+- Cards, bubbles, glow, gradients, and drop shadows were removed. Structure comes from one-pixel rules, short author strokes, whitespace, and typography.
+- Dark and supported light themes use semantic tokens. Small accent text and participant labels meet normal-text contrast targets in both themes.
+- The left rail, 105px desktop header, timestamp gutter, 48rem divider span, 22rem message rules, and bottom composer align to the selected desktop geometry.
+- Own messages remain in transcript flow and use the visible label `You`; ARIA labels retain the real sender identity.
+- Participant accents are stable by Matrix localpart and use five non-purple, non-green semantic colors.
 
-## Measured desktop result
+## Responsive and PWA result
 
-- Shell: 1920 × 1080.
-- Grid: 350px room rail, 1152px conversation, and 418px Guide rail.
-- Conversation header: 158px. The measured title glyph width is 266px, matching the supplied display scale.
-- Timeline: y=158 through y=944, with the newest row retained above the composer and no visible browser scrollbar.
-- Composer region: 73px, with the 56px field aligned at y=944 in the source composition.
-- Receiver status: 63px, beginning at y=1017.
-- Rail borders, guide dividers, note card, and receiver plate align to the supplied three-column geometry.
+- Desktop: verified at 1672 × 941 and 1920 × 1080 with no horizontal document overflow.
+- Mobile: verified at 390 × 844 with a full-screen room index, full-screen conversation, compact header, safe-area padding, and no horizontal document overflow.
+- Opening the mobile room index moves focus to room search and makes the covered conversation inert and `aria-hidden`; closing returns focus to the index button.
+- Mobile message actions expose Reply, Reaction, Edit, and Remove as 44 × 44 controls without extending the document width.
+- Standalone PWA zoom remains available; no `user-scalable=no`, keyboard-zoom block, or wheel-zoom block remains.
+- The service-worker shell cache was advanced to `sub-etha-shell-v6` so installed PWAs receive the new manifest and assets.
+- The 192px, 512px, Apple touch, favicon, and Open Graph assets now use the graphite/terracotta/steel Zen mark. The generated master is `designs/zen-pwa-icon-master.png`.
 
-## Measured mobile result
+## Comparison history
 
-- Shell: 390 × 844.
-- Header: 84px with the inset guide-rule divider and 44px action targets.
-- Timeline: y=84 through y=705.
-- Mobile Guide Footnote: 61px, y=705 through y=766, using the receiver-linework asset.
-- Composer: 45px, y=766 through y=811. The textarea remains autosizing and the action buttons remain 44px touch targets.
-- Receiver status: 33px, y=811 through y=844, with the compact `Connected / End to end private / 7` treatment.
-- The full Guide rail remains available on larger screens; mobile retains labelled Details access while presenting the source-matched footnote treatment.
+1. Initial integrated capture exposed a short desktop header, oversized message/divider rules, stale guide-era room/profile treatments, ambiguous unread dots, and an incorrectly marked Sol message.
+2. The source-sized pass corrected author ownership and colors, numeric unread states, date/copy fixtures, rail/profile geometry, header height, flat row selection, and outgoing-message placement.
+3. The fit pass reduced separator/reaction height so the full source conversation remained visible, aligned the date and unread rules to the 48rem source span, and matched the composer and timestamp gutters.
+4. The final combined comparison confirmed the same viewport, content state, rail boundary, message geometry, whitespace, palette, and composer placement with no blocking visible difference.
 
-## Interaction and behavior acceptance
+## Findings and resolutions
 
-- Timeline spacer geometry remains owned by Virtuoso.
-- History pagination preserves its reading anchor, rejects concurrent requests, exposes retry, stops at exhaustion, and returns to the newest message on desktop and mobile.
-- The final row remains clear of the composer while attached; detached reading positions survive asynchronous timeline updates.
-- Collapsed mobile message actions no longer extend the virtual scroll height. The explicit open state reveals the complete 44px action menu.
-- Composer coverage includes one, four, six, and eight lines, paste, resize, reply, edit cancellation, clear, and send.
-- Mobile coverage verifies edge-swipe open and close, vertical-scroll priority, control and dialog exclusions, header Back, browser Back, and reduced motion.
-- Visual captures cover desktop and mobile chat, desktop and mobile login, and desktop settings with zero runtime console warnings, console errors, or page errors.
+1. [P1 fixed] Standalone mode disabled pinch, keyboard, and wheel zoom. Zoom blocking was removed while retaining `viewport-fit=cover`.
+2. [P1 fixed] Dark signal text and light-theme author accents failed normal-text contrast. Theme-specific signal and participant tokens now clear the contrast threshold.
+3. [P1 fixed] Existing PWAs could keep the old cache-first manifest. The shell cache version was bumped and all install assets were replaced.
+4. [P2 fixed] The mobile room index exposed focusable content behind its full-screen surface. The conversation is now inert/hidden while open, with deterministic focus transfer in both directions.
+5. [P2 fixed] Preview ownership, date, unread counts, and sender hashing did not reproduce the selected conversation. Fixtures and deterministic accent assignment now match the source state.
+6. [P2 fixed] The first message/date could clip when the full conversation was bottom-aligned. Timeline density and divider geometry now keep all nine desktop messages visible.
+7. [P2 fixed] Old green install and preview identity art conflicted with the no-green direction. PWA, social, favicon, and preview identity assets now use the new Zen mark.
+8. [P3] User-generated reaction glyphs remain native reaction content instead of being replaced with decorative source-only icons. Their containers are flat and line-free, and interaction semantics are preserved.
+9. [P3] The selected raster and the local Inter render have minor platform antialiasing differences only.
 
-## Visual findings and resolution
+No actionable P0, P1, or P2 visual, responsive, accessibility, or interaction differences remain.
 
-1. [P1 fixed] The first mobile action treatment remained visually hidden but still contributed overflow to Virtuoso. Collapsed actions now leave layout entirely, while `data-actions-state="open"` restores the full menu.
-2. [P1 fixed] The decorative history label and third-party scrollbar override depended on generated module hashes during hot reload. They now use stable `data-ui` and role hooks in the minimal global override layer.
-3. [P2 fixed] Desktop rails, the 158px header, title width, 63px receiver strip, right-side Guide card, and receiver illustration were rebuilt to the supplied 1920 × 1080 proportions.
-4. [P2 fixed] Mobile now carries the 84px header, source-scaled title, Guide Footnote, 45px composer, compact private-status copy, and inset rules shown in the 390 × 844 target.
-5. [P2 fixed] The deprecated compact color treatment was replaced with the requested semantic Night Edition palette and consistent red, teal, and amber roles.
-6. [P3] Minor glyph-antialiasing differences remain between the supplied raster artwork and the locally bundled variable font render; line lengths, hierarchy, and wrapping are aligned.
+## Interaction and runtime verification
 
-No actionable P0, P1, or P2 visual differences remain.
-
-## Verification
-
-- Prettier write and `format:check`: passed.
+- Room-index open/close, focus transfer, inert state, and scroll containment: passed.
+- Composer fill/send and local appended-message reveal: passed.
+- Mobile action tray reachability and 44px control sizing: passed.
+- Room details dialog, settings dialog, login surface, and theme controls: passed.
+- Desktop and mobile console warnings/errors during verified routes: none.
+- TypeScript: passed.
 - ESLint: passed.
-- TypeScript typecheck: passed.
+- Prettier check: passed.
 - Unit suite: 95 passed, 3 intentional integration skips, 0 failed.
-- Production build: passed.
-- Complete Playwright suite: 23 passed, 5 intentional project skips, 0 failed.
-- Focused visual and runtime-console suite: 5 passed, 1 intentional mobile settings skip, 0 failed.
-- Stable snapshots cover `desktop-1920` and `mobile-390`.
+- Production build: passed; only existing bundle-size and ineffective-dynamic-import warnings were emitted.
+- Visual baselines were replaced for desktop-1920 and mobile-390 chat/login plus desktop settings. Browser behavior and visuals were verified in the selected Codex in-app browser rather than a separate Playwright CLI run.
 
 final result: passed

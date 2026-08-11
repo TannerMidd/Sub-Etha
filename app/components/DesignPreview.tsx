@@ -7,7 +7,7 @@ import { INITIAL_TIMELINE_ITEM_INDEX } from "@/lib/timeline-window";
 import { ChatShell } from "./ChatShell";
 import { LoginScreen } from "./LoginScreen";
 
-const at = (hour: number, minute: number) => new Date(2026, 7, 8, hour, minute).getTime();
+const at = (hour: number, minute: number) => new Date(2026, 7, 11, hour, minute).getTime();
 const STRESS_INITIAL_START = 80;
 const STRESS_INITIAL_COUNT = 120;
 const STRESS_PAGE_SIZE = 40;
@@ -30,7 +30,7 @@ function previewRoom(
         guideCode,
         topic,
         classification,
-        avatarMxcUrl: id === "signal-watch" ? "mxc://preview/night-receiver-plate" : null,
+        avatarMxcUrl: id === "signal-watch" ? "mxc://preview/zen-mark" : null,
         membership: "join",
         lastMessage,
         timestamp,
@@ -57,7 +57,7 @@ function previewMessage(
         type: "message",
         senderId: `@${senderName.toLowerCase().replace(/\s+/g, "-")}:sub-etha.test`,
         senderName,
-        senderAvatarMxcUrl: senderName === "Vera" ? "mxc://preview/night-receiver-plate" : null,
+        senderAvatarMxcUrl: senderName === "Vera" ? "mxc://preview/zen-mark" : null,
         body,
         timestamp,
         own,
@@ -132,7 +132,7 @@ function createPreviewService(): MatrixService {
             false,
             {
                 reactions: [
-                    { key: "⚡", count: 3, mine: true },
+                    { key: "👍", count: 3, mine: true },
                     { key: "👁", count: 1, mine: false },
                 ],
             },
@@ -150,14 +150,14 @@ function createPreviewService(): MatrixService {
             at(10, 24),
         ),
         previewMessage("m4", "Vera", "Thanks. I’ve annotated the spike.", at(10, 25), false, {
-            replyTo: "m3",
+            replyTo: "m2",
         }),
         previewMessage(
             "m5",
             "Sol",
             "Looks like background ion wash. Within margin.",
             at(10, 26),
-            true,
+            false,
         ),
         previewMessage(
             "m6",
@@ -176,10 +176,11 @@ function createPreviewService(): MatrixService {
             false,
             uxPreview === "states" ? { decryptionState: "decrypting" } : {},
         ),
+        previewMessage("m9", "Rayne", "Roger. I’ll review and confirm.", at(10, 43), true),
         ...(uxPreview === "media"
             ? [
                   previewMessage(
-                      "m9",
+                      "m10",
                       "Vera",
                       "Receiver plate recovered from the archive.",
                       at(10, 44),
@@ -206,9 +207,9 @@ function createPreviewService(): MatrixService {
                 "Signal Watch",
                 "42-B",
                 7,
-                "Scheduling maintenance for 2100.",
+                "Yes. Dockside locker. Seal intact.",
                 at(10, 42),
-                1,
+                2,
                 true,
                 "Sweep coordination and carrier anomalies",
                 "FIELD OBSERVATIONS · SWEEP OPERATIONS",
@@ -220,7 +221,7 @@ function createPreviewService(): MatrixService {
                 5,
                 "Sweep complete on the north arc.",
                 at(9, 18),
-                0,
+                1,
                 true,
             ),
             previewRoom(
@@ -230,7 +231,7 @@ function createPreviewService(): MatrixService {
                 12,
                 "The old relay notes are indexed.",
                 at(8, 7),
-                1,
+                0,
             ),
             previewRoom(
                 "observatory",
@@ -248,7 +249,6 @@ function createPreviewService(): MatrixService {
                 "Coil batch cleared customs.",
                 at(6, 51),
             ),
-            previewRoom("quiet-room", "Quiet Room", "QR", 2, "No new transmissions.", at(6, 12)),
             previewRoom("maris", "Maris", "M", 2, "See you on the far side.", at(5, 48)),
             previewRoom("ilya", "Ilya", "I", 2, "Typing…", at(5, 42), 1),
         ],
@@ -266,7 +266,7 @@ function createPreviewService(): MatrixService {
         error: null,
         userId: "@rayne:sub-etha.test",
         displayName: "Rayne",
-        avatarMxcUrl: "mxc://preview/night-receiver-plate",
+        avatarMxcUrl: "mxc://preview/zen-mark",
         deviceId: "FIELD-GUIDE-01",
         verification: verificationPreview
             ? {
@@ -539,9 +539,12 @@ function createPreviewService(): MatrixService {
             }
 
             return {
-                url: media.mxcUrl.startsWith("mxc://preview/")
-                    ? "/night-receiver-plate.png"
-                    : media.mxcUrl,
+                url:
+                    media.mxcUrl === "mxc://preview/zen-mark"
+                        ? "/icon-512.png"
+                        : media.mxcUrl.startsWith("mxc://preview/")
+                          ? "/night-receiver-plate.png"
+                          : media.mxcUrl,
                 blob: new Blob(),
                 mimeType: media.mimeType ?? "application/octet-stream",
                 animated: media.mimeType === "image/gif",
