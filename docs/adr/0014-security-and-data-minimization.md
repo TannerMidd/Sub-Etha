@@ -1,6 +1,6 @@
 # ADR-0014: Treat privacy and bounded work as cross-cutting constraints
 
-- Status: Accepted
+- Status: Superseded by ADR-0020
 - Date: 2026-08-10
 - Owners: Sub-Etha maintainers
 - Decision scope: trust boundaries, validation, data collection, retention, and resource limits

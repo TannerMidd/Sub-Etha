@@ -2,49 +2,20 @@
 
 - Status: Proposed
 - Date: YYYY-MM-DD
-- Owners: Sub-Etha maintainers
-- Decision scope: concise list of affected boundaries
+- Supersedes: ADR-NNNN (omit when not applicable)
 
 ## Context
 
-What problem must be solved? Include the forces that make the decision architectural: privacy, security, performance, compatibility, operability, maintainability, or reversibility. Describe the current state without assuming the reader has the implementation open.
+Describe the problem, credible alternatives, and why the choice is architectural rather than a routine implementation change.
 
 ## Decision
 
-State the chosen direction in active language. Define the boundary, its public contract, and which layer owns each relevant state transition.
-
-### Required invariants
-
-- List rules that future implementations must preserve.
-- Prefer outcomes that can be linked to code or tests.
-- Include size, time, concurrency, retention, and compatibility limits when applicable.
+State the chosen boundary or outcome. Include only invariants that should survive a change of library, file layout, helper structure, or numeric tuning.
 
 ## Consequences
 
-### Positive
-
-- What becomes simpler, safer, faster, or more predictable?
-
-### Costs and trade-offs
-
-- What complexity, coupling, operational work, or migration cost is accepted?
-
-## Alternatives considered
-
-### Alternative name
-
-Explain why it was plausible and why it was not selected under the current constraints.
-
-## Enforcement and verification
-
-- Code or configuration anchors: `path/to/file`
-- Automated checks: `test or command`
-- Review-only checks: condition reviewers must confirm
+Record the important benefit, cost, and limitation. Add enforcement links only when they materially help a future maintainer find the boundary.
 
 ## Revisit when
 
-- State measurable triggers that would invalidate the assumptions behind this decision.
-
-## Related decisions
-
-- ADR-NNNN — relationship to this decision
+Name the concrete condition that would invalidate this decision.

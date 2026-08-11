@@ -1,6 +1,6 @@
 # ADR-0002: Use React with Vinext, Vite, and Nitro
 
-- Status: Accepted
+- Status: Superseded by ADR-0016
 - Date: 2026-08-10
 - Owners: Sub-Etha maintainers
 - Decision scope: application runtime, build system, routing, and server handlers

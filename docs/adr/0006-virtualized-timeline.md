@@ -1,6 +1,6 @@
 # ADR-0006: Preserve an explicit virtualized-timeline state model
 
-- Status: Accepted
+- Status: Superseded by ADR-0018
 - Date: 2026-08-10
 - Owners: Sub-Etha maintainers
 - Decision scope: timeline rendering, pagination, scroll restoration, and composer geometry

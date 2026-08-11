@@ -1,6 +1,6 @@
 # ADR-0005: Use SCSS modules and semantic theme tokens
 
-- Status: Accepted
+- Status: Deprecated
 - Date: 2026-08-10
 - Owners: Sub-Etha maintainers
 - Decision scope: styling, theming, accessibility, and UI test contracts

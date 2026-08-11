@@ -1,6 +1,6 @@
 # ADR-0004: Keep private session state client-side and enforce one active tab
 
-- Status: Accepted
+- Status: Superseded by ADR-0017
 - Date: 2026-08-10
 - Owners: Sub-Etha maintainers
 - Decision scope: browser persistence, account lifecycle, and concurrency

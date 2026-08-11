@@ -1,6 +1,6 @@
 # ADR-0013: Deploy on Vercel and apply compatible migrations first
 
-- Status: Accepted
+- Status: Superseded by ADR-0016
 - Date: 2026-08-10
 - Owners: Sub-Etha maintainers
 - Decision scope: hosting, environment configuration, route compatibility, and database rollout

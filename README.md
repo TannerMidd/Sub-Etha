@@ -2,11 +2,11 @@
 
 Sub-Etha is a fast, installable Matrix client with Rust-backed end-to-end encryption, IndexedDB persistence, virtualized timelines, authenticated media, and a privacy-minimal Web Push gateway hosted on Vercel.
 
-Matrix access tokens, encryption keys, message bodies, sender names, room names, and synced history remain between the browser and the selected Matrix homeserver. The deployment backend stores only separately hashed delivery and browser-management capabilities, Web Push subscription material, short-lived endpoint-confirmation challenges, timestamps, aggregate gateway counters, and seven-day delivery-deduplication records. It does not store Matrix identities or client IP addresses.
+Matrix access tokens, encryption keys, message bodies, sender names, room names, and synced history remain between the browser and the selected Matrix homeserver. The deployment backend stores only separately hashed delivery and browser-management capabilities, Web Push subscription material, short-lived endpoint-confirmation challenges, timestamps, aggregate gateway counters, and seven-day event-ID delivery-deduplication records. It does not store Matrix user IDs, room IDs, or client IP addresses.
 
 ## Architecture
 
-Start with the [architecture map](./docs/architecture.md), then use the [ADR index](./docs/adr/README.md) for the decisions, constraints, trade-offs, and enforcement anchors behind the stack. New cross-cutting or difficult-to-reverse changes should follow the ADR process documented there.
+Start with the [architecture map](./docs/architecture.md), use the [active ADRs](./docs/adr/README.md#active-decisions) for durable rationale, and follow the [codebase conventions](./docs/code-conventions.md) for routine development. New decisions use an ADR only when they meet the narrow admission rule documented in the index.
 
 ## Local development
 
@@ -24,10 +24,7 @@ The linked Vercel project supplies Neon credentials through `.env.local`. The lo
 ## Verification
 
 ```bash
-npm run typecheck
-npm run lint
-npm run test:unit
-npm run build
+npm run check
 ```
 
 Generate and apply PostgreSQL migrations after changing `db/schema.ts`:
@@ -63,7 +60,7 @@ The gateway endpoints are:
 - `POST /api/push/test`
 - `POST /_matrix/push/v1/notify`
 
-The Matrix pusher uses `event_id_only` and receives only the delivery identifier. Browser test and removal operations require a separate management capability that is never sent to the homeserver. A new endpoint does not count toward active capacity until its service worker returns an encrypted Web Push challenge. Notifications are deliberately generic; opening Sub-Etha fetches and decrypts the event directly from the homeserver. Push is intentionally unavailable on Vercel preview deployments.
+Of the browser's two capabilities, the Matrix homeserver receives only the delivery capability. With `event_id_only`, its callback carries minimal room, event, and unread-count metadata but no message content. Browser test and removal operations require the separate management capability, which is never sent to the homeserver. A new endpoint does not count toward active capacity until its service worker returns an encrypted Web Push challenge. Notifications are deliberately generic; opening Sub-Etha fetches and decrypts the event directly from the homeserver. Push is intentionally unavailable on Vercel preview deployments.
 
 Automatic media previews are capped at 64 MiB of transferred bytes and 64 MiB of decoded RGBA work per image or animation, with a 16,384-pixel maximum edge. Three downloads may run concurrently; each has a 10-second idle deadline and a 30-second total deadline. Animated images remain paused behind a generated static poster until the user explicitly plays them.
 

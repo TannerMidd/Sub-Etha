@@ -1,6 +1,6 @@
 # ADR-0010: Use a conservative app-shell service worker
 
-- Status: Accepted
+- Status: Superseded by ADR-0019
 - Date: 2026-08-10
 - Owners: Sub-Etha maintainers
 - Decision scope: installation, offline shell, updates, push handling, and cache ownership

@@ -1,6 +1,6 @@
 # ADR-0012: Govern dependencies through npm, the lockfile, and explicit upgrades
 
-- Status: Accepted
+- Status: Deprecated
 - Date: 2026-08-10
 - Owners: Sub-Etha maintainers
 - Decision scope: package manager, runtime baseline, versioning, and upgrade review

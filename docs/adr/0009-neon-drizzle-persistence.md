@@ -1,6 +1,6 @@
 # ADR-0009: Keep server persistence behind a Drizzle repository boundary
 
-- Status: Accepted
+- Status: Superseded by ADR-0016 and ADR-0019
 - Date: 2026-08-10
 - Owners: Sub-Etha maintainers
 - Decision scope: server data model, database access, migrations, and test seams

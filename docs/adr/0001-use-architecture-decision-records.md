@@ -1,6 +1,6 @@
 # ADR-0001: Use architecture decision records
 
-- Status: Accepted
+- Status: Deprecated
 - Date: 2026-08-10
 - Owners: Sub-Etha maintainers
 - Decision scope: architecture governance and technical documentation

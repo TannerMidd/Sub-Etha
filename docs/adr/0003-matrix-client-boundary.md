@@ -1,6 +1,6 @@
 # ADR-0003: Isolate Matrix SDK state behind a browser service
 
-- Status: Accepted
+- Status: Superseded by ADR-0017
 - Date: 2026-08-10
 - Owners: Sub-Etha maintainers
 - Decision scope: Matrix integration, application state, React contracts, and testability

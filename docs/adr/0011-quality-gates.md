@@ -1,6 +1,6 @@
 # ADR-0011: Require layered local quality gates and fixed visual viewports
 
-- Status: Accepted
+- Status: Deprecated
 - Date: 2026-08-10
 - Owners: Sub-Etha maintainers
 - Decision scope: formatting, static analysis, tests, builds, accessibility, and visual regression

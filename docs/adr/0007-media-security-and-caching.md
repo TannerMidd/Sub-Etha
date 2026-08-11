@@ -1,6 +1,6 @@
 # ADR-0007: Bound, normalize, and cache Matrix media defensively
 
-- Status: Accepted
+- Status: Superseded by ADR-0020
 - Date: 2026-08-10
 - Owners: Sub-Etha maintainers
 - Decision scope: Matrix downloads, uploads, previews, memory, and image safety

@@ -1,6 +1,6 @@
 # ADR-0008: Operate a privacy-minimal Web Push gateway
 
-- Status: Accepted
+- Status: Superseded by ADR-0019
 - Date: 2026-08-10
 - Owners: Sub-Etha maintainers
 - Decision scope: closed-app notifications, server trust boundary, capabilities, SSRF, and rate limits
