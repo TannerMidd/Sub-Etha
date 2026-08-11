@@ -14,7 +14,6 @@ import {
 } from "react";
 import type { CSSProperties, PointerEvent as ReactPointerEvent } from "react";
 import { Virtuoso } from "react-virtuoso";
-import type { VirtuosoHandle } from "react-virtuoso";
 import {
     CheckCheck,
     ChevronLeft,
@@ -52,6 +51,7 @@ import {
     classifyTimelineChange,
     shouldFollowTimelineChange,
     transitionTimelineScrollMode,
+    type TimelineIdentity,
     type TimelineScrollEvent,
     type TimelineScrollMode,
 } from "@/lib/timeline-scroll";
@@ -61,11 +61,20 @@ const EmojiPickerPanel = lazy(() =>
     import("./EmojiPickerPanel").then((module) => ({ default: module.EmojiPickerPanel })),
 );
 const QUICK_REACTIONS = ["👍", "❤️", "😂", "😮", "😢", "🎉"];
-const INITIAL_TIMELINE_LOCATION = { index: "LAST" as const, align: "end" as const };
+const TIMELINE_BOTTOM_CLEARANCE_PX = 12;
+const INITIAL_TIMELINE_LOCATION = {
+    index: "LAST" as const,
+    align: "end" as const,
+    offset: TIMELINE_BOTTOM_CLEARANCE_PX,
+};
 const TIMELINE_VIEWPORT_PADDING = { top: 0, bottom: 300 };
-const HISTORY_ANCHOR_MAX_CORRECTION_MS = 250;
-const HISTORY_ANCHOR_MAX_CORRECTIONS = 2;
-const HISTORY_ANCHOR_SECOND_CORRECTION_MS = 180;
+const HISTORY_ANCHOR_MIN_SETTLE_MS = 120;
+const HISTORY_ANCHOR_MAX_SETTLE_MS = 600;
+const HISTORY_ANCHOR_STABLE_FRAMES = 4;
+const USER_SCROLL_INTENT_GRACE_MS = 400;
+
+type UserScrollDirection = -1 | 0 | 1;
+
 const AUTHOR_ACCENTS = [
     "var(--participant-steel)",
     "var(--participant-mist)",
@@ -96,6 +105,7 @@ function getAuthorAccentStyle(senderId: string, own: boolean): AuthorAccentStyle
 interface TimelineVirtuosoContext {
     loadingHistory: boolean;
     hasMoreHistory: boolean;
+    firstTimestamp: number | null;
     requestEarlierHistory: () => void;
 }
 
@@ -107,17 +117,7 @@ interface TimelineHistoryAnchor {
 }
 
 function TimelineHistoryHeader({ context }: { context: TimelineVirtuosoContext }) {
-    if (!context.hasMoreHistory) {
-        return (
-            <div className={classes("history-loader")} role="status" aria-live="polite">
-                <span className={classes("history-loader__status")}>
-                    Beginning of recorded transmissions
-                </span>
-            </div>
-        );
-    }
-
-    return (
+    const historyControl = context.hasMoreHistory ? (
         <div className={classes("history-loader")} role="status" aria-live="polite">
             <button
                 type="button"
@@ -134,6 +134,21 @@ function TimelineHistoryHeader({ context }: { context: TimelineVirtuosoContext }
                     : "Load earlier transmissions"}
             </button>
         </div>
+    ) : (
+        <div className={classes("history-loader")} role="status" aria-live="polite">
+            <span className={classes("history-loader__status")}>
+                Beginning of recorded transmissions
+            </span>
+        </div>
+    );
+
+    return (
+        <>
+            {historyControl}
+            {context.firstTimestamp !== null ? (
+                <DayDivider timestamp={context.firstTimestamp} />
+            ) : null}
+        </>
     );
 }
 
@@ -167,6 +182,17 @@ function formatDate(timestamp: number): string {
         day: "numeric",
         year: "numeric",
     }).format(timestamp);
+}
+
+function initialUnreadBoundaryId(
+    items: readonly TimelineItem[],
+    unreadCount: number,
+): string | null {
+    if (unreadCount <= 0 || items.length === 0) {
+        return null;
+    }
+
+    return items[Math.max(0, items.length - unreadCount)]?.id ?? null;
 }
 
 function formatSize(size?: number): string {
@@ -1129,14 +1155,14 @@ function FormattedMessageBody({ html }: { html: string }) {
 
 function MessageRow({
     item,
-    previous,
+    next,
     service,
     onReply,
     onEdit,
     onOpenMedia,
 }: {
     item: TimelineItem;
-    previous?: TimelineItem;
+    next?: TimelineItem;
     service: MatrixService;
     onReply: (item: TimelineItem) => void;
     onEdit: (item: TimelineItem) => void;
@@ -1145,9 +1171,8 @@ function MessageRow({
     const [reactionOpen, setReactionOpen] = useState(false);
     const [actionsOpen, setActionsOpen] = useState(false);
     const rowRef = useRef<HTMLElement>(null);
-    const newDay =
-        !previous ||
-        new Date(previous.timestamp).toDateString() !== new Date(item.timestamp).toDateString();
+    const nextDay =
+        next && new Date(next.timestamp).toDateString() !== new Date(item.timestamp).toDateString();
     const actionable = item.decryptionState === "ready" && !item.redacted && !item.sendingStatus;
     const editable = actionable && item.own && item.type === "message" && !item.media;
 
@@ -1182,18 +1207,17 @@ function MessageRow({
     if (item.type === "system") {
         return (
             <>
-                {newDay ? <DayDivider timestamp={item.timestamp} /> : null}
                 <div className={classes("system-event")}>
                     <span>{item.body}</span>
                     <time>{formatTime(item.timestamp)}</time>
                 </div>
+                {nextDay ? <DayDivider timestamp={next.timestamp} /> : null}
             </>
         );
     }
 
     return (
         <>
-            {newDay ? <DayDivider timestamp={item.timestamp} /> : null}
             <article
                 ref={rowRef}
                 className={classes(
@@ -1368,6 +1392,7 @@ function MessageRow({
                     </div>
                 ) : null}
             </article>
+            {nextDay ? <DayDivider timestamp={next.timestamp} /> : null}
         </>
     );
 }
@@ -1395,12 +1420,14 @@ export function Timeline({
 }) {
     const [lightboxId, setLightboxId] = useState<string | null>(null);
     const [scrollMode, setScrollMode] = useState<TimelineScrollMode>("initializing");
+    const [unreadBoundaryId, setUnreadBoundaryId] = useState<string | null>(() =>
+        initialUnreadBoundaryId(items, unreadCount),
+    );
     const lightboxOpener = useRef<HTMLElement | null>(null);
-    const virtuoso = useRef<VirtuosoHandle>(null);
     const scroller = useRef<HTMLElement | null>(null);
     const removeScrollerListeners = useRef<(() => void) | null>(null);
     const scrollModeRef = useRef<TimelineScrollMode>("initializing");
-    const previousItems = useRef<Array<{ id: string; own: boolean }>>([]);
+    const previousItems = useRef<TimelineIdentity[]>([]);
     const previousFirstItemIndex = useRef(firstItemIndex);
     const historyAnchor = useRef<TimelineHistoryAnchor | null>(null);
     const historyAnchorFrame = useRef<number | null>(null);
@@ -1417,6 +1444,8 @@ export function Timeline({
     const forcePendingBottom = useRef(false);
     const programmaticScroll = useRef(false);
     const userScrollIntentUntil = useRef(0);
+    const userScrollDirection = useRef<UserScrollDirection>(0);
+    const unreadBoundaryInitialized = useRef(items.length > 0 || !initializing);
     const transitionScrollMode = useCallback((event: TimelineScrollEvent) => {
         const nextMode = transitionTimelineScrollMode(scrollModeRef.current, event);
 
@@ -1526,6 +1555,7 @@ export function Timeline({
         }
 
         historyAnchor.current = null;
+        programmaticScroll.current = false;
 
         if (scrollModeRef.current === "restoring-history") {
             transitionScrollMode({ type: "user-detach" });
@@ -1587,6 +1617,10 @@ export function Timeline({
         const requestGeneration = ++historyRequestGeneration.current;
         const requestedFirstItemIndex = firstItemIndex;
 
+        if (historyAnchor.current) {
+            transitionScrollMode({ type: "history-start" });
+        }
+
         void service.paginate().finally(() => {
             if (historyRequestGeneration.current !== requestGeneration) {
                 return;
@@ -1610,9 +1644,15 @@ export function Timeline({
         transitionScrollMode,
     ]);
 
+    const firstTimestamp = items[0]?.timestamp ?? null;
     const virtuosoContext = useMemo(
-        () => ({ loadingHistory, hasMoreHistory, requestEarlierHistory: loadEarlierHistory }),
-        [hasMoreHistory, loadEarlierHistory, loadingHistory],
+        () => ({
+            loadingHistory,
+            hasMoreHistory,
+            firstTimestamp,
+            requestEarlierHistory: loadEarlierHistory,
+        }),
+        [firstTimestamp, hasMoreHistory, loadEarlierHistory, loadingHistory],
     );
 
     const restoreHistoryAnchor = useCallback(() => {
@@ -1622,7 +1662,7 @@ export function Timeline({
 
         transitionScrollMode({ type: "history-start" });
         const startedAt = window.performance.now();
-        let corrections = 0;
+        let stableFrames = 0;
 
         const restore = () => {
             historyAnchorFrame.current = null;
@@ -1631,6 +1671,7 @@ export function Timeline({
 
             if (!element || !anchor) {
                 historyAnchor.current = null;
+                programmaticScroll.current = false;
                 transitionScrollMode({ type: "history-complete" });
 
                 return;
@@ -1645,27 +1686,24 @@ export function Timeline({
 
             if (anchorElement) {
                 const delta = anchorElement.getBoundingClientRect().top - anchor.top;
-                const elapsed = window.performance.now() - startedAt;
-                const correctionReady =
-                    corrections === 0 || elapsed >= HISTORY_ANCHOR_SECOND_CORRECTION_MS;
 
-                if (
-                    Math.abs(delta) > 0.5 &&
-                    correctionReady &&
-                    corrections < HISTORY_ANCHOR_MAX_CORRECTIONS
-                ) {
+                if (Math.abs(delta) > 0.5) {
                     programmaticScroll.current = true;
                     element.scrollTop += delta;
-                    corrections += 1;
+                    stableFrames = 0;
+                } else {
+                    stableFrames += 1;
                 }
+            } else {
+                stableFrames = 0;
             }
 
             const elapsed = window.performance.now() - startedAt;
+            const stillSettling =
+                elapsed < HISTORY_ANCHOR_MIN_SETTLE_MS ||
+                stableFrames < HISTORY_ANCHOR_STABLE_FRAMES;
 
-            if (
-                elapsed < HISTORY_ANCHOR_MAX_CORRECTION_MS &&
-                corrections < HISTORY_ANCHOR_MAX_CORRECTIONS
-            ) {
+            if (elapsed < HISTORY_ANCHOR_MAX_SETTLE_MS && stillSettling) {
                 historyAnchorFrame.current = window.requestAnimationFrame(restore);
 
                 return;
@@ -1676,7 +1714,7 @@ export function Timeline({
             transitionScrollMode({ type: "history-complete" });
         };
 
-        historyAnchorFrame.current = window.requestAnimationFrame(restore);
+        restore();
     }, [transitionScrollMode]);
 
     const closeLightbox = () => {
@@ -1684,12 +1722,26 @@ export function Timeline({
         window.requestAnimationFrame(() => lightboxOpener.current?.focus());
     };
 
-    const markUserScrollIntent = useCallback(() => {
-        userScrollIntentUntil.current = window.performance.now() + 120;
+    const markUserScrollIntent = useCallback((direction: UserScrollDirection = 0) => {
+        userScrollDirection.current = direction;
+        userScrollIntentUntil.current = window.performance.now() + USER_SCROLL_INTENT_GRACE_MS;
     }, []);
 
     const detachFromBottom = useCallback(() => {
-        markUserScrollIntent();
+        markUserScrollIntent(-1);
+
+        if (bottomFrame.current !== null) {
+            window.cancelAnimationFrame(bottomFrame.current);
+            bottomFrame.current = null;
+        }
+
+        if (programmaticResetFrame.current !== null) {
+            window.cancelAnimationFrame(programmaticResetFrame.current);
+            programmaticResetFrame.current = null;
+        }
+
+        forcePendingBottom.current = false;
+        programmaticScroll.current = false;
         cancelHistoryRestoration();
         transitionScrollMode({ type: "user-detach" });
         scheduleDetachedAnchorCapture();
@@ -1718,46 +1770,43 @@ export function Timeline({
                     return;
                 }
 
+                const element = scroller.current;
+
+                if (!element) {
+                    return;
+                }
+
                 programmaticScroll.current = true;
-                virtuoso.current?.scrollToIndex(INITIAL_TIMELINE_LOCATION);
+                element.scrollTo({ top: element.scrollHeight, behavior: "auto" });
 
                 if (programmaticResetFrame.current !== null) {
                     window.cancelAnimationFrame(programmaticResetFrame.current);
                 }
 
                 programmaticResetFrame.current = window.requestAnimationFrame(() => {
-                    const element = scroller.current;
-                    const renderedEvents =
-                        element?.querySelectorAll<HTMLElement>("[data-event-id]");
-                    const newestEvent = renderedEvents?.[renderedEvents.length - 1];
+                    programmaticScroll.current = false;
+                    programmaticResetFrame.current = null;
 
-                    if (
-                        element &&
-                        newestEvent &&
-                        (forced || scrollModeRef.current === "attached")
-                    ) {
-                        const scrollerBottom = element.getBoundingClientRect().bottom;
-                        const eventBottom = newestEvent.getBoundingClientRect().bottom;
-                        const correction = eventBottom - (scrollerBottom - 12);
-
-                        if (Math.abs(correction) > 0.5) {
-                            element.scrollTop += correction;
-                        }
+                    if (scrollModeRef.current === "initializing") {
+                        transitionScrollMode({ type: "initial-positioned" });
                     }
-
-                    programmaticResetFrame.current = window.requestAnimationFrame(() => {
-                        programmaticScroll.current = false;
-                        programmaticResetFrame.current = null;
-
-                        if (scrollModeRef.current === "initializing") {
-                            transitionScrollMode({ type: "initial-positioned" });
-                        }
-                    });
                 });
             });
         },
         [transitionScrollMode],
     );
+
+    const preservePositionAfterGeometryChange = useCallback(() => {
+        if (scrollModeRef.current === "attached") {
+            scheduleBottomPosition();
+
+            return;
+        }
+
+        if (scrollModeRef.current === "detached" && detachedViewportAnchor.current) {
+            scheduleDetachedAnchorRestore();
+        }
+    }, [scheduleBottomPosition, scheduleDetachedAnchorRestore]);
 
     const setScroller = useCallback(
         (value: HTMLElement | Window | null) => {
@@ -1770,13 +1819,30 @@ export function Timeline({
                 return;
             }
 
+            let lastScrollTop = element.scrollTop;
+
             const onScroll = () => {
+                const scrollDelta = element.scrollTop - lastScrollTop;
+
+                lastScrollTop = element.scrollTop;
                 const atBottom =
                     element.scrollHeight - element.clientHeight - element.scrollTop <= 2;
                 const hasUserIntent = window.performance.now() <= userScrollIntentUntil.current;
 
+                if (
+                    hasUserIntent &&
+                    scrollbarPointerActive.current &&
+                    !programmaticScroll.current &&
+                    Math.abs(scrollDelta) > 0.5
+                ) {
+                    userScrollDirection.current = scrollDelta < 0 ? -1 : 1;
+                }
+
                 if (atBottom) {
-                    if (scrollModeRef.current !== "detached" || hasUserIntent) {
+                    if (
+                        scrollModeRef.current !== "detached" ||
+                        (hasUserIntent && userScrollDirection.current >= 0)
+                    ) {
                         transitionScrollMode({ type: "bottom-state", atBottom: true });
                     }
                 } else if (scrollbarPointerActive.current) {
@@ -1791,7 +1857,7 @@ export function Timeline({
             };
 
             const onWheel = (event: WheelEvent) => {
-                markUserScrollIntent();
+                markUserScrollIntent(event.deltaY < 0 ? -1 : event.deltaY > 0 ? 1 : 0);
 
                 if (event.deltaY < 0) {
                     detachFromBottom();
@@ -1812,7 +1878,7 @@ export function Timeline({
                 }
 
                 if (touchY.current !== null && Math.abs(nextY - touchY.current) > 1) {
-                    markUserScrollIntent();
+                    markUserScrollIntent(nextY > touchY.current ? -1 : 1);
                 }
 
                 if (touchY.current !== null && nextY > touchY.current + 3) {
@@ -1848,7 +1914,6 @@ export function Timeline({
                 if (event.pointerType === "mouse") {
                     if (scrollbarPointerActive.current) {
                         markUserScrollIntent();
-                        detachFromBottom();
                     }
 
                     return;
@@ -1863,7 +1928,7 @@ export function Timeline({
                 if (event.clientY > current.y + 3) {
                     detachFromBottom();
                 } else if (Math.abs(event.clientY - current.y) > 1) {
-                    markUserScrollIntent();
+                    markUserScrollIntent(event.clientY > current.y ? -1 : 1);
 
                     if (scrollModeRef.current === "detached") {
                         scheduleDetachedAnchorCapture();
@@ -1883,17 +1948,7 @@ export function Timeline({
                 }
             };
 
-            const resizeObserver = new ResizeObserver(() => {
-                if (scrollModeRef.current === "attached") {
-                    scheduleBottomPosition();
-
-                    return;
-                }
-
-                if (scrollModeRef.current === "detached" && detachedViewportAnchor.current) {
-                    scheduleDetachedAnchorRestore();
-                }
-            });
+            const resizeObserver = new ResizeObserver(preservePositionAfterGeometryChange);
 
             element.addEventListener("scroll", onScroll, { passive: true });
             element.addEventListener("wheel", onWheel, { passive: true });
@@ -1906,10 +1961,6 @@ export function Timeline({
             element.addEventListener("pointerup", clearPointer, { passive: true });
             element.addEventListener("pointercancel", clearPointer, { passive: true });
             resizeObserver.observe(element);
-
-            if (element.firstElementChild instanceof HTMLElement) {
-                resizeObserver.observe(element.firstElementChild);
-            }
 
             removeScrollerListeners.current = () => {
                 resizeObserver.disconnect();
@@ -1928,9 +1979,8 @@ export function Timeline({
         [
             detachFromBottom,
             markUserScrollIntent,
-            scheduleBottomPosition,
             scheduleDetachedAnchorCapture,
-            scheduleDetachedAnchorRestore,
+            preservePositionAfterGeometryChange,
             transitionScrollMode,
         ],
     );
@@ -1956,7 +2006,7 @@ export function Timeline({
             if (upwardKey && scroller.current) {
                 detachFromBottom();
             } else if (scrollKey && scroller.current) {
-                markUserScrollIntent();
+                markUserScrollIntent(1);
 
                 if (scrollModeRef.current === "detached") {
                     scheduleDetachedAnchorCapture();
@@ -1970,7 +2020,19 @@ export function Timeline({
     }, [detachFromBottom, markUserScrollIntent, scheduleDetachedAnchorCapture]);
 
     useLayoutEffect(() => {
-        const nextItems = items.map((item) => ({ id: item.id, own: item.own }));
+        if (unreadBoundaryInitialized.current || initializing || items.length === 0) {
+            return;
+        }
+
+        unreadBoundaryInitialized.current = true;
+        setUnreadBoundaryId(initialUnreadBoundaryId(items, unreadCount));
+    }, [initializing, items, unreadCount]);
+
+    useLayoutEffect(() => {
+        const nextItems = items.map((item) => ({
+            id: item.id,
+            local: item.sendingStatus !== null,
+        }));
         const previousStartIndex = previousFirstItemIndex.current;
         const change = classifyTimelineChange(
             previousItems.current,
@@ -1994,7 +2056,6 @@ export function Timeline({
             historyRequestInFlight.current = false;
             userScrollIntentUntil.current = 0;
             programmaticScroll.current = false;
-            transitionScrollMode({ type: "room-change" });
         }
 
         if (change.kind === "initial") {
@@ -2012,10 +2073,9 @@ export function Timeline({
         }
 
         const wasAttachedRemoteAppend = change.kind === "append" && scrollMode === "attached";
-        const force =
-            change.kind === "replace" || change.appendedOwnItem || wasAttachedRemoteAppend;
+        const force = change.appendedLocalItem;
 
-        if (change.appendedOwnItem) {
+        if (change.appendedLocalItem) {
             transitionScrollMode({ type: "local-append" });
         } else if (wasAttachedRemoteAppend) {
             transitionScrollMode({ type: "bottom-state", atBottom: true });
@@ -2068,8 +2128,10 @@ export function Timeline({
 
     const onAtBottomStateChange = useCallback(
         (atBottom: boolean) => {
+            const hasUserIntent = window.performance.now() <= userScrollIntentUntil.current;
+
             if (!atBottom) {
-                if (window.performance.now() <= userScrollIntentUntil.current) {
+                if (hasUserIntent) {
                     transitionScrollMode({ type: "bottom-state", atBottom: false });
                 }
 
@@ -2078,7 +2140,7 @@ export function Timeline({
 
             if (
                 scrollModeRef.current === "detached" &&
-                window.performance.now() > userScrollIntentUntil.current
+                (!hasUserIntent || userScrollDirection.current < 0)
             ) {
                 return;
             }
@@ -2143,7 +2205,6 @@ export function Timeline({
             data-pagination-state={paginationState}
         >
             <Virtuoso
-                ref={virtuoso}
                 data={items}
                 firstItemIndex={firstItemIndex}
                 initialTopMostItemIndex={INITIAL_TIMELINE_LOCATION}
@@ -2155,6 +2216,7 @@ export function Timeline({
                 atBottomStateChange={onAtBottomStateChange}
                 scrollerRef={setScroller}
                 itemsRendered={onItemsRendered}
+                totalListHeightChanged={preservePositionAfterGeometryChange}
                 increaseViewportBy={TIMELINE_VIEWPORT_PADDING}
                 components={TIMELINE_COMPONENTS}
                 context={virtuosoContext}
@@ -2163,15 +2225,14 @@ export function Timeline({
 
                     return (
                         <>
-                            {unreadCount > 0 &&
-                            itemIndex === Math.max(0, items.length - unreadCount) ? (
+                            {item.id === unreadBoundaryId ? (
                                 <div className={classes("unread-divider")} role="separator">
                                     <span>New messages</span>
                                 </div>
                             ) : null}
                             <MessageRow
                                 item={item}
-                                previous={items[itemIndex - 1]}
+                                next={items[itemIndex + 1]}
                                 service={service}
                                 onReply={onReply}
                                 onEdit={onEdit}

@@ -14,6 +14,97 @@ interface TextareaMetrics {
     overflowY: string;
 }
 
+interface TimelineMotionSample {
+    rowTop: number | null;
+    stageHeight: number | null;
+    typingHeight: number | null;
+}
+
+async function startTimelineMotionProbe(page: Page, eventId: string): Promise<string> {
+    const key = `${eventId}-${Date.now()}-${Math.random()}`;
+
+    await page.evaluate(
+        ({ nextEventId, probeKey }) => {
+            type MotionProbe = {
+                frame: number;
+                timer: number | null;
+                samples: TimelineMotionSample[];
+            };
+            const probeWindow = window as typeof window & {
+                __timelineMotionProbes?: Record<string, MotionProbe>;
+            };
+            const probes = (probeWindow.__timelineMotionProbes ??= {});
+            const probe: MotionProbe = { frame: 0, timer: null, samples: [] };
+
+            const record = () => {
+                const row = document.querySelector<HTMLElement>(
+                    `[data-event-id="${CSS.escape(nextEventId)}"]`,
+                );
+                const stage = document.querySelector<HTMLElement>('[data-ui="conversation-stage"]');
+                const typing = document.querySelector<HTMLElement>('[data-ui="typing-line"]');
+
+                probe.samples.push({
+                    rowTop: row?.getBoundingClientRect().top ?? null,
+                    stageHeight: stage?.getBoundingClientRect().height ?? null,
+                    typingHeight: typing?.getBoundingClientRect().height ?? null,
+                });
+            };
+
+            const schedule = () => {
+                probe.frame = window.requestAnimationFrame(() => {
+                    probe.timer = window.setTimeout(() => {
+                        record();
+                        schedule();
+                    }, 0);
+                });
+            };
+
+            probes[probeKey] = probe;
+            record();
+            schedule();
+        },
+        { nextEventId: eventId, probeKey: key },
+    );
+
+    return key;
+}
+
+async function stopTimelineMotionProbe(page: Page, key: string): Promise<TimelineMotionSample[]> {
+    return page.evaluate((probeKey) => {
+        type MotionProbe = {
+            frame: number;
+            timer: number | null;
+            samples: TimelineMotionSample[];
+        };
+        const probeWindow = window as typeof window & {
+            __timelineMotionProbes?: Record<string, MotionProbe>;
+        };
+        const probe = probeWindow.__timelineMotionProbes?.[probeKey];
+
+        if (!probe) {
+            return [];
+        }
+
+        window.cancelAnimationFrame(probe.frame);
+
+        if (probe.timer !== null) {
+            window.clearTimeout(probe.timer);
+        }
+
+        delete probeWindow.__timelineMotionProbes?.[probeKey];
+
+        return probe.samples;
+    }, key);
+}
+
+function motionExcursion(samples: TimelineMotionSample[], key: keyof TimelineMotionSample): number {
+    const values = samples
+        .map((sample) => sample[key])
+        .filter((value): value is number => value !== null);
+
+    return values.length ? Math.max(...values) - Math.min(...values) : Number.POSITIVE_INFINITY;
+}
+
 async function openPreview(page: Page, url = PREVIEW_URL): Promise<void> {
     await page.goto(url);
     await expect(page.locator("#message-composer")).toBeVisible();
@@ -224,6 +315,39 @@ async function waitForMessageTop(page: Page, eventId: string): Promise<number> {
 }
 
 test.describe("composer regression coverage", () => {
+    test("typing presence fades without moving the timeline", async ({ page }) => {
+        await openPreview(page);
+
+        const timeline = page.locator('[data-ui="timeline"]');
+        const textarea = page.locator("#message-composer");
+        const typing = page.locator('[data-ui="typing-line"]');
+
+        await expect(timeline).toHaveAttribute("data-scroll-mode", "attached");
+        await expect(typing).toHaveAttribute("data-active", "false");
+
+        const appearingProbe = await startTimelineMotionProbe(page, "m9");
+
+        await textarea.fill("Quiet carrier note");
+        await expect(typing).toHaveAttribute("data-active", "true");
+        await page.waitForTimeout(250);
+        const appearing = await stopTimelineMotionProbe(page, appearingProbe);
+
+        expect(motionExcursion(appearing, "stageHeight")).toBeLessThanOrEqual(0.5);
+        expect(motionExcursion(appearing, "typingHeight")).toBeLessThanOrEqual(0.5);
+        expect(motionExcursion(appearing, "rowTop")).toBeLessThanOrEqual(1);
+
+        const disappearingProbe = await startTimelineMotionProbe(page, "m9");
+
+        await textarea.fill("");
+        await expect(typing).toHaveAttribute("data-active", "false");
+        await page.waitForTimeout(250);
+        const disappearing = await stopTimelineMotionProbe(page, disappearingProbe);
+
+        expect(motionExcursion(disappearing, "stageHeight")).toBeLessThanOrEqual(0.5);
+        expect(motionExcursion(disappearing, "typingHeight")).toBeLessThanOrEqual(0.5);
+        expect(motionExcursion(disappearing, "rowTop")).toBeLessThanOrEqual(1);
+    });
+
     test("grows through multiple lines, caps, scrolls internally, and collapses", async ({
         context,
         page,
@@ -409,6 +533,7 @@ test("twenty asynchronous message updates preserve a detached reading anchor", a
 
     await expect(timeline).toHaveAttribute("data-scroll-mode", "detached");
     const before = await visibleEventAnchor(scroller);
+    const motionProbe = await startTimelineMotionProbe(page, before.id);
 
     await expect
         .poll(() =>
@@ -419,6 +544,10 @@ test("twenty asynchronous message updates preserve a detached reading anchor", a
             ),
         )
         .toBe(20);
+    const motion = await stopTimelineMotionProbe(page, motionProbe);
+
+    expect(motion.every((sample) => sample.rowTop !== null)).toBe(true);
+    expect(motionExcursion(motion, "rowTop")).toBeLessThanOrEqual(2);
     await expect(timeline).toHaveAttribute("data-item-count", "121");
     const after = await waitForMessageTop(page, before.id);
 
@@ -471,7 +600,7 @@ test("failed history loading exposes retry without concurrent pagination", async
             ),
         )
         .toBe(2);
-    await page.waitForTimeout(300);
+    await page.waitForTimeout(700);
     const anchorAfter = await waitForMessageTop(page, anchorBefore.id);
 
     expect(Math.abs(anchorAfter - anchorBefore.top)).toBeLessThanOrEqual(2);

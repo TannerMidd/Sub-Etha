@@ -865,7 +865,10 @@ export function ChatShell({
                                 </div>
                             ) : (
                                 <>
-                                    <div className={classes("conversation-stage")}>
+                                    <div
+                                        className={classes("conversation-stage")}
+                                        data-ui="conversation-stage"
+                                    >
                                         <Timeline
                                             key={activeRoom.id}
                                             items={snapshot.timeline}
@@ -889,6 +892,8 @@ export function ChatShell({
                                         className={classes(
                                             `typing-line${snapshot.typingNames.length ? " is-active" : ""}`,
                                         )}
+                                        data-ui="typing-line"
+                                        data-active={snapshot.typingNames.length > 0}
                                         aria-live="polite"
                                         aria-atomic="true"
                                     >

@@ -9,7 +9,7 @@ import { clearSession, readSession, saveSession } from "@/lib/matrix/session-sto
 import type { PersistedMatrixSession } from "@/lib/matrix/types";
 import { assertAllowedHomeserverUrl, InsecureHomeserverError } from "@/lib/matrix/url-policy";
 import { BrandMark } from "./BrandMark";
-import { ChatShell } from "./ChatShell";
+import { ChatShell, parseRoomHash } from "./ChatShell";
 import { DesignPreview } from "./DesignPreview";
 import { LoginScreen } from "./LoginScreen";
 import styles from "../styles/App.module.scss";
@@ -92,6 +92,15 @@ export function SubEthaApp() {
 
         try {
             await nextService.start();
+            const routedRoomId = parseRoomHash();
+
+            if (
+                routedRoomId &&
+                nextService.getSnapshot().rooms.some((room) => room.id === routedRoomId)
+            ) {
+                nextService.selectRoom(routedRoomId);
+            }
+
             setService(nextService);
             setBootState("connected");
         } catch (error) {

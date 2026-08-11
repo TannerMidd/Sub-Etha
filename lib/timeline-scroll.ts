@@ -1,13 +1,14 @@
-export type TimelineChangeKind = "initial" | "append" | "prepend" | "items-change" | "replace";
+export type TimelineChangeKind =
+    "initial" | "append" | "prepend" | "items-change" | "window-shift" | "replace";
 
 export interface TimelineIdentity {
     id: string;
-    own?: boolean;
+    local?: boolean;
 }
 
 export interface TimelineChange {
     kind: TimelineChangeKind;
-    appendedOwnItem: boolean;
+    appendedLocalItem: boolean;
 }
 
 export type TimelineScrollMode = "initializing" | "attached" | "detached" | "restoring-history";
@@ -46,11 +47,11 @@ export function classifyTimelineChange(
     nextFirstItemIndex: number,
 ): TimelineChange {
     if (previous.length === 0) {
-        return { kind: "initial", appendedOwnItem: next.some((item) => item.own) };
+        return { kind: "initial", appendedLocalItem: next.some((item) => item.local) };
     }
 
     if (next.length === 0) {
-        return { kind: "replace", appendedOwnItem: false };
+        return { kind: "replace", appendedLocalItem: false };
     }
 
     const firstPreviousId = previous[0].id;
@@ -62,20 +63,30 @@ export function classifyTimelineChange(
         previousOffset === prependedCount &&
         sameIdsAtOffset(previous, next, previousOffset)
     ) {
-        return { kind: "prepend", appendedOwnItem: false };
+        return { kind: "prepend", appendedLocalItem: false };
     }
 
     if (sameIdsAtOffset(previous, next, 0)) {
         const appended = next.slice(previous.length);
 
         if (appended.length > 0) {
-            return { kind: "append", appendedOwnItem: appended.some((item) => item.own) };
+            return { kind: "append", appendedLocalItem: appended.some((item) => item.local) };
         }
 
-        return { kind: "items-change", appendedOwnItem: false };
+        return { kind: "items-change", appendedLocalItem: false };
     }
 
-    return { kind: "replace", appendedOwnItem: next.some((item) => item.own) };
+    const previousIds = new Set(previous.map((item) => item.id));
+    const retainedItem = next.some((item) => previousIds.has(item.id));
+
+    if (retainedItem) {
+        return {
+            kind: "window-shift",
+            appendedLocalItem: next.some((item) => !previousIds.has(item.id) && item.local),
+        };
+    }
+
+    return { kind: "replace", appendedLocalItem: false };
 }
 
 export function shouldFollowTimelineChange(
@@ -86,12 +97,16 @@ export function shouldFollowTimelineChange(
         return false;
     }
 
-    if (change.kind === "append" && change.appendedOwnItem) {
+    if (change.appendedLocalItem) {
         return true;
     }
 
-    if (change.kind === "initial" || change.kind === "replace") {
+    if (change.kind === "initial") {
         return true;
+    }
+
+    if (change.kind === "items-change") {
+        return false;
     }
 
     return mode === "attached";

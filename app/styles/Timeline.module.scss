@@ -792,28 +792,25 @@
 }
 
 .typing-line {
-    min-height: 0;
-    flex: 0 0 0;
+    min-height: 28px;
+    flex: 0 0 28px;
     padding: 0 clamp(18px, 3vw, 44px);
     display: flex;
     align-items: center;
     gap: 8px;
     overflow: hidden;
-    border-top: 0;
+    border-top: 1px solid transparent;
     background: var(--paper);
     color: var(--ink-soft);
     font: 550 10px var(--font-ui);
     opacity: 0;
     transition:
-        flex-basis var(--motion-fast) var(--motion-ease),
-        min-height var(--motion-fast) var(--motion-ease),
-        opacity var(--motion-fast) ease;
+        opacity var(--motion-fast) ease,
+        border-color var(--motion-fast) ease;
 }
 
 .typing-line.is-active {
-    min-height: 28px;
-    flex-basis: 28px;
-    border-top: 1px solid color-mix(in srgb, var(--line) 45%, transparent);
+    border-top-color: color-mix(in srgb, var(--line) 45%, transparent);
     opacity: 1;
 }
 

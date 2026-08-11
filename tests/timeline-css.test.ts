@@ -52,6 +52,17 @@ test("composer theme styles preserve the autosize contract", async () => {
     }
 });
 
+test("typing presence reserves space without animating timeline geometry", async () => {
+    const css = await readFile(TIMELINE_STYLES, "utf8");
+    const baseRule = css.match(/\.typing-line\s*\{([^}]*)\}/)?.[1] ?? "";
+    const activeRule = css.match(/\.typing-line\.is-active\s*\{([^}]*)\}/)?.[1] ?? "";
+
+    assert.match(baseRule, /min-height\s*:\s*28px/);
+    assert.match(baseRule, /flex\s*:\s*0\s+0\s+28px/);
+    assert.doesNotMatch(baseRule, /transition\s*:[^;]*(?:flex-basis|min-height)/);
+    assert.doesNotMatch(activeRule, /(?:min-height|flex-basis)\s*:/);
+});
+
 test("mobile theme styles keep message actions reachable", async () => {
     const css = await readFile(TIMELINE_STYLES, "utf8");
     const hiddenMessageActions =
