@@ -61,17 +61,14 @@ const EmojiPickerPanel = lazy(() =>
     import("./EmojiPickerPanel").then((module) => ({ default: module.EmojiPickerPanel })),
 );
 const QUICK_REACTIONS = ["👍", "❤️", "😂", "😮", "😢", "🎉"];
-const TIMELINE_BOTTOM_CLEARANCE_PX = 12;
-const INITIAL_TIMELINE_LOCATION = {
-    index: "LAST" as const,
-    align: "end" as const,
-    offset: TIMELINE_BOTTOM_CLEARANCE_PX,
-};
 const TIMELINE_VIEWPORT_PADDING = { top: 0, bottom: 300 };
+const TIMELINE_COMPACT_BREAKPOINT_PX = 720;
+const TIMELINE_ESTIMATED_MEDIA_GUTTER_PX = 70;
+const TIMELINE_MAX_ESTIMATED_MEDIA_WIDTH_PX = 520;
 const HISTORY_ANCHOR_MIN_SETTLE_MS = 120;
 const HISTORY_ANCHOR_MAX_SETTLE_MS = 600;
 const HISTORY_ANCHOR_STABLE_FRAMES = 4;
-const USER_SCROLL_INTENT_GRACE_MS = 400;
+const USER_SCROLL_END_DELAY_MS = 160;
 
 type UserScrollDirection = -1 | 0 | 1;
 
@@ -100,6 +97,52 @@ function getAuthorAccentStyle(senderId: string, own: boolean): AuthorAccentStyle
     }
 
     return { "--author-accent": AUTHOR_ACCENTS[hash % AUTHOR_ACCENTS.length] };
+}
+
+function estimateTimelineItemHeight(item: TimelineItem, viewportWidth: number): number {
+    const compact = viewportWidth <= TIMELINE_COMPACT_BREAKPOINT_PX;
+    const textHeight = compact ? 132 : 80;
+    let estimate = textHeight;
+
+    if (!item.redacted && (item.type === "image" || item.type === "video")) {
+        const availableMediaWidth = Math.min(
+            TIMELINE_MAX_ESTIMATED_MEDIA_WIDTH_PX,
+            Math.max(240, viewportWidth - TIMELINE_ESTIMATED_MEDIA_GUTTER_PX),
+        );
+        const mediaWidth = item.media?.width;
+        const mediaHeight = item.media?.height;
+        let frameHeight: number;
+
+        if (mediaWidth && mediaHeight && mediaWidth > 0 && mediaHeight > 0) {
+            const contained = containImageSize(
+                { width: mediaWidth, height: mediaHeight },
+                { width: 620, height: 520 },
+            );
+            const displayedWidth = Math.min(contained.width, availableMediaWidth);
+
+            frameHeight = displayedWidth * (mediaHeight / mediaWidth);
+        } else {
+            frameHeight = availableMediaWidth * 0.75;
+        }
+
+        estimate = (compact ? 110 : 75) + frameHeight;
+    } else if (!item.redacted && item.type === "audio") {
+        estimate = compact ? 190 : 150;
+    } else if (!item.redacted && item.type === "file") {
+        estimate = compact ? 170 : 130;
+    } else if (item.type === "notice" || item.type === "system") {
+        estimate = compact ? 92 : 68;
+    }
+
+    if (item.replyTo) {
+        estimate += compact ? 48 : 42;
+    }
+
+    if (item.reactions.length > 0) {
+        estimate += 30;
+    }
+
+    return Math.round(estimate);
 }
 
 interface TimelineVirtuosoContext {
@@ -1431,8 +1474,8 @@ export function Timeline({
     const previousFirstItemIndex = useRef(firstItemIndex);
     const historyAnchor = useRef<TimelineHistoryAnchor | null>(null);
     const historyAnchorFrame = useRef<number | null>(null);
+    const historyRestoreDeferred = useRef(false);
     const detachedViewportAnchor = useRef<TimelineHistoryAnchor | null>(null);
-    const detachedAnchorFrame = useRef<number | null>(null);
     const detachedRestoreFrame = useRef<number | null>(null);
     const historyRequestInFlight = useRef(false);
     const historyRequestGeneration = useRef(0);
@@ -1443,8 +1486,12 @@ export function Timeline({
     const programmaticResetFrame = useRef<number | null>(null);
     const forcePendingBottom = useRef(false);
     const programmaticScroll = useRef(false);
-    const userScrollIntentUntil = useRef(0);
+    const userScrollActive = useRef(false);
+    const userScrollEndTimer = useRef<number | null>(null);
+    const userScrollEndFrame = useRef<number | null>(null);
+    const finishUserScrollRef = useRef<() => void>(() => undefined);
     const userScrollDirection = useRef<UserScrollDirection>(0);
+    const olderIntentLatched = useRef(false);
     const unreadBoundaryInitialized = useRef(items.length > 0 || !initializing);
     const transitionScrollMode = useCallback((event: TimelineScrollEvent) => {
         const nextMode = transitionTimelineScrollMode(scrollModeRef.current, event);
@@ -1489,23 +1536,64 @@ export function Timeline({
             top: visibleEvent.getBoundingClientRect().top,
         };
     }, []);
-    const scheduleDetachedAnchorCapture = useCallback(() => {
-        if (detachedRestoreFrame.current !== null) {
-            window.cancelAnimationFrame(detachedRestoreFrame.current);
-            detachedRestoreFrame.current = null;
+    const refreshHistoryAnchorPosition = useCallback(() => {
+        const element = scroller.current;
+        const anchor = historyAnchor.current;
+        const scrollerBounds = element?.getBoundingClientRect();
+
+        if (!element || !anchor || !scrollerBounds) {
+            return;
         }
 
-        if (detachedAnchorFrame.current !== null) {
-            window.cancelAnimationFrame(detachedAnchorFrame.current);
+        const anchorElement =
+            anchor.target === "event"
+                ? [...element.querySelectorAll<HTMLElement>("[data-event-id]")].find(
+                      (candidate) => candidate.dataset.eventId === anchor.id,
+                  )
+                : element.querySelector<HTMLElement>(`[data-index="${anchor.index}"]`);
+
+        const anchorBounds = anchorElement?.getBoundingClientRect();
+
+        if (
+            anchorElement &&
+            anchorBounds &&
+            anchorBounds.bottom > scrollerBounds.top &&
+            anchorBounds.top < scrollerBounds.bottom
+        ) {
+            anchor.top = anchorBounds.top;
+            anchor.index = Number.parseInt(
+                anchorElement.closest<HTMLElement>("[data-index]")?.dataset.index ??
+                    `${anchor.index}`,
+                10,
+            );
+
+            return;
         }
 
-        detachedAnchorFrame.current = window.requestAnimationFrame(() => {
-            detachedAnchorFrame.current = window.requestAnimationFrame(() => {
-                detachedAnchorFrame.current = null;
-                captureDetachedAnchor();
-            });
-        });
-    }, [captureDetachedAnchor]);
+        const visibleEvent = [...element.querySelectorAll<HTMLElement>("[data-event-id]")]
+            .filter((candidate) => {
+                const bounds = candidate.getBoundingClientRect();
+
+                return bounds.bottom > scrollerBounds.top && bounds.top < scrollerBounds.bottom;
+            })
+            .sort(
+                (left, right) =>
+                    left.getBoundingClientRect().top - right.getBoundingClientRect().top,
+            )[0];
+
+        if (visibleEvent?.dataset.eventId) {
+            historyAnchor.current = {
+                id: visibleEvent.dataset.eventId,
+                index: Number.parseInt(
+                    visibleEvent.closest<HTMLElement>("[data-index]")?.dataset.index ??
+                        `${anchor.index}`,
+                    10,
+                ),
+                target: "event",
+                top: visibleEvent.getBoundingClientRect().top,
+            };
+        }
+    }, []);
     const scheduleDetachedAnchorRestore = useCallback(() => {
         if (detachedRestoreFrame.current !== null) {
             window.cancelAnimationFrame(detachedRestoreFrame.current);
@@ -1515,10 +1603,7 @@ export function Timeline({
             detachedRestoreFrame.current = window.requestAnimationFrame(() => {
                 detachedRestoreFrame.current = null;
 
-                if (
-                    scrollModeRef.current !== "detached" ||
-                    window.performance.now() <= userScrollIntentUntil.current
-                ) {
+                if (scrollModeRef.current !== "detached" || userScrollActive.current) {
                     return;
                 }
 
@@ -1555,6 +1640,7 @@ export function Timeline({
         }
 
         historyAnchor.current = null;
+        historyRestoreDeferred.current = false;
         programmaticScroll.current = false;
 
         if (scrollModeRef.current === "restoring-history") {
@@ -1565,12 +1651,23 @@ export function Timeline({
         () => items.filter((item) => item.type === "image" && item.media && !item.redacted),
         [items],
     );
+    const estimateViewportWidth = typeof window === "undefined" ? 1_920 : window.innerWidth;
+    const itemHeightEstimates = useMemo(
+        () => items.map((item) => estimateTimelineItemHeight(item, estimateViewportWidth)),
+        [estimateViewportWidth, items],
+    );
     const loadEarlierHistory = useCallback(() => {
-        if (!hasMoreHistory || loadingHistory || historyRequestInFlight.current) {
+        if (
+            scrollModeRef.current === "initializing" ||
+            !hasMoreHistory ||
+            loadingHistory ||
+            historyRequestInFlight.current
+        ) {
             return;
         }
 
         cancelHistoryRestoration();
+        detachedViewportAnchor.current = null;
         const element = scroller.current;
         const scrollerBounds = element?.getBoundingClientRect();
         const visibleEvent =
@@ -1617,10 +1714,6 @@ export function Timeline({
         const requestGeneration = ++historyRequestGeneration.current;
         const requestedFirstItemIndex = firstItemIndex;
 
-        if (historyAnchor.current) {
-            transitionScrollMode({ type: "history-start" });
-        }
-
         void service.paginate().finally(() => {
             if (historyRequestGeneration.current !== requestGeneration) {
                 return;
@@ -1630,12 +1723,21 @@ export function Timeline({
             window.requestAnimationFrame(() => {
                 if (previousFirstItemIndex.current === requestedFirstItemIndex) {
                     historyAnchor.current = null;
-                    transitionScrollMode({ type: "history-complete" });
+                    historyRestoreDeferred.current = false;
+
+                    if (scrollModeRef.current === "restoring-history") {
+                        transitionScrollMode({ type: "history-complete" });
+                    }
+
+                    if (scrollModeRef.current !== "attached" && !userScrollActive.current) {
+                        captureDetachedAnchor();
+                    }
                 }
             });
         });
     }, [
         cancelHistoryRestoration,
+        captureDetachedAnchor,
         firstItemIndex,
         hasMoreHistory,
         items,
@@ -1658,21 +1760,42 @@ export function Timeline({
     const restoreHistoryAnchor = useCallback(() => {
         if (historyAnchorFrame.current !== null) {
             window.cancelAnimationFrame(historyAnchorFrame.current);
+            historyAnchorFrame.current = null;
+        }
+
+        if (userScrollActive.current) {
+            historyRestoreDeferred.current = true;
+            programmaticScroll.current = false;
+            transitionScrollMode({ type: "history-complete" });
+
+            return;
         }
 
         transitionScrollMode({ type: "history-start" });
+        historyRestoreDeferred.current = false;
         const startedAt = window.performance.now();
         let stableFrames = 0;
 
         const restore = () => {
             historyAnchorFrame.current = null;
+
+            if (userScrollActive.current) {
+                historyRestoreDeferred.current = true;
+                programmaticScroll.current = false;
+                transitionScrollMode({ type: "history-complete" });
+
+                return;
+            }
+
             const element = scroller.current;
             const anchor = historyAnchor.current;
 
             if (!element || !anchor) {
                 historyAnchor.current = null;
+                historyRestoreDeferred.current = false;
                 programmaticScroll.current = false;
                 transitionScrollMode({ type: "history-complete" });
+                captureDetachedAnchor();
 
                 return;
             }
@@ -1710,11 +1833,36 @@ export function Timeline({
             }
 
             historyAnchor.current = null;
+            historyRestoreDeferred.current = false;
             programmaticScroll.current = false;
             transitionScrollMode({ type: "history-complete" });
+            captureDetachedAnchor();
         };
 
         restore();
+    }, [captureDetachedAnchor, transitionScrollMode]);
+
+    const pauseHistoryRestoration = useCallback(() => {
+        if (
+            !historyAnchor.current ||
+            (historyAnchorFrame.current === null &&
+                !historyRestoreDeferred.current &&
+                scrollModeRef.current !== "restoring-history")
+        ) {
+            return;
+        }
+
+        if (historyAnchorFrame.current !== null) {
+            window.cancelAnimationFrame(historyAnchorFrame.current);
+            historyAnchorFrame.current = null;
+        }
+
+        historyRestoreDeferred.current = true;
+        programmaticScroll.current = false;
+
+        if (scrollModeRef.current === "restoring-history") {
+            transitionScrollMode({ type: "history-complete" });
+        }
     }, [transitionScrollMode]);
 
     const closeLightbox = () => {
@@ -1722,13 +1870,118 @@ export function Timeline({
         window.requestAnimationFrame(() => lightboxOpener.current?.focus());
     };
 
-    const markUserScrollIntent = useCallback((direction: UserScrollDirection = 0) => {
-        userScrollDirection.current = direction;
-        userScrollIntentUntil.current = window.performance.now() + USER_SCROLL_INTENT_GRACE_MS;
-    }, []);
+    const finishUserScroll = useCallback(() => {
+        if (userScrollEndTimer.current !== null) {
+            window.clearTimeout(userScrollEndTimer.current);
+            userScrollEndTimer.current = null;
+        }
+
+        if (!userScrollActive.current) {
+            return;
+        }
+
+        if (
+            touchY.current !== null ||
+            pointerGesture.current !== null ||
+            scrollbarPointerActive.current
+        ) {
+            userScrollEndTimer.current = window.setTimeout(() => {
+                userScrollEndTimer.current = null;
+                finishUserScrollRef.current();
+            }, USER_SCROLL_END_DELAY_MS);
+
+            return;
+        }
+
+        if (userScrollEndFrame.current !== null) {
+            window.cancelAnimationFrame(userScrollEndFrame.current);
+        }
+
+        userScrollEndFrame.current = window.requestAnimationFrame(() => {
+            userScrollEndFrame.current = null;
+
+            if (!userScrollActive.current) {
+                return;
+            }
+
+            const element = scroller.current;
+            const atBottom = element
+                ? element.scrollHeight - element.clientHeight - element.scrollTop <= 2
+                : false;
+            const direction = userScrollDirection.current;
+            const hadOlderIntent = olderIntentLatched.current;
+            const restoreDeferredHistory =
+                historyRestoreDeferred.current && historyAnchor.current !== null;
+
+            userScrollActive.current = false;
+            userScrollDirection.current = 0;
+            olderIntentLatched.current = false;
+
+            if (restoreDeferredHistory) {
+                historyRestoreDeferred.current = false;
+                restoreHistoryAnchor();
+
+                return;
+            }
+
+            if (
+                atBottom &&
+                scrollModeRef.current === "detached" &&
+                direction === 1 &&
+                !hadOlderIntent
+            ) {
+                transitionScrollMode({ type: "bottom-state", atBottom: true });
+            } else if (scrollModeRef.current === "detached") {
+                captureDetachedAnchor();
+            }
+        });
+    }, [captureDetachedAnchor, restoreHistoryAnchor, transitionScrollMode]);
+
+    useLayoutEffect(() => {
+        finishUserScrollRef.current = finishUserScroll;
+    }, [finishUserScroll]);
+
+    const armUserScrollEnd = useCallback(() => {
+        if (!userScrollActive.current) {
+            return;
+        }
+
+        if (userScrollEndFrame.current !== null) {
+            window.cancelAnimationFrame(userScrollEndFrame.current);
+            userScrollEndFrame.current = null;
+        }
+
+        if (userScrollEndTimer.current !== null) {
+            window.clearTimeout(userScrollEndTimer.current);
+        }
+
+        userScrollEndTimer.current = window.setTimeout(() => {
+            userScrollEndTimer.current = null;
+            finishUserScroll();
+        }, USER_SCROLL_END_DELAY_MS);
+    }, [finishUserScroll]);
+
+    const beginUserScroll = useCallback(
+        (direction: UserScrollDirection = 0) => {
+            pauseHistoryRestoration();
+
+            userScrollActive.current = true;
+
+            if (direction !== 0) {
+                userScrollDirection.current = direction;
+            }
+
+            if (direction < 0) {
+                olderIntentLatched.current = true;
+            }
+
+            armUserScrollEnd();
+        },
+        [armUserScrollEnd, pauseHistoryRestoration],
+    );
 
     const detachFromBottom = useCallback(() => {
-        markUserScrollIntent(-1);
+        beginUserScroll(-1);
 
         if (bottomFrame.current !== null) {
             window.cancelAnimationFrame(bottomFrame.current);
@@ -1740,33 +1993,34 @@ export function Timeline({
             programmaticResetFrame.current = null;
         }
 
+        if (detachedRestoreFrame.current !== null) {
+            window.cancelAnimationFrame(detachedRestoreFrame.current);
+            detachedRestoreFrame.current = null;
+        }
+
         forcePendingBottom.current = false;
         programmaticScroll.current = false;
-        cancelHistoryRestoration();
+        detachedViewportAnchor.current = null;
+
         transitionScrollMode({ type: "user-detach" });
-        scheduleDetachedAnchorCapture();
-    }, [
-        cancelHistoryRestoration,
-        markUserScrollIntent,
-        scheduleDetachedAnchorCapture,
-        transitionScrollMode,
-    ]);
+    }, [beginUserScroll, transitionScrollMode]);
 
     const scheduleBottomPosition = useCallback(
-        (force = false) => {
+        (force = false, immediate = false) => {
             forcePendingBottom.current ||= force;
 
-            if (bottomFrame.current !== null) {
-                return;
-            }
-
-            bottomFrame.current = window.requestAnimationFrame(() => {
+            const position = () => {
                 bottomFrame.current = null;
                 const forced = forcePendingBottom.current;
+                const mode = scrollModeRef.current;
 
                 forcePendingBottom.current = false;
 
-                if (!forced && scrollModeRef.current !== "attached") {
+                if (userScrollActive.current && mode !== "attached") {
+                    return;
+                }
+
+                if (forced ? mode !== "initializing" && mode !== "attached" : mode !== "attached") {
                     return;
                 }
 
@@ -1791,12 +2045,32 @@ export function Timeline({
                         transitionScrollMode({ type: "initial-positioned" });
                     }
                 });
-            });
+            };
+
+            if (immediate) {
+                if (bottomFrame.current !== null) {
+                    window.cancelAnimationFrame(bottomFrame.current);
+                }
+
+                position();
+
+                return;
+            }
+
+            if (bottomFrame.current !== null) {
+                return;
+            }
+
+            bottomFrame.current = window.requestAnimationFrame(position);
         },
         [transitionScrollMode],
     );
 
     const preservePositionAfterGeometryChange = useCallback(() => {
+        if (userScrollActive.current) {
+            return;
+        }
+
         if (scrollModeRef.current === "attached") {
             scheduleBottomPosition();
 
@@ -1807,6 +2081,12 @@ export function Timeline({
             scheduleDetachedAnchorRestore();
         }
     }, [scheduleBottomPosition, scheduleDetachedAnchorRestore]);
+
+    const preserveAttachedBottomAfterTimelineHeightChange = useCallback(() => {
+        if (!userScrollActive.current && scrollModeRef.current === "attached") {
+            scheduleBottomPosition();
+        }
+    }, [scheduleBottomPosition]);
 
     const setScroller = useCallback(
         (value: HTMLElement | Window | null) => {
@@ -1827,42 +2107,50 @@ export function Timeline({
                 lastScrollTop = element.scrollTop;
                 const atBottom =
                     element.scrollHeight - element.clientHeight - element.scrollTop <= 2;
-                const hasUserIntent = window.performance.now() <= userScrollIntentUntil.current;
 
                 if (
-                    hasUserIntent &&
-                    scrollbarPointerActive.current &&
+                    userScrollActive.current &&
                     !programmaticScroll.current &&
                     Math.abs(scrollDelta) > 0.5
                 ) {
-                    userScrollDirection.current = scrollDelta < 0 ? -1 : 1;
-                }
+                    const inputDirection = scrollbarPointerActive.current
+                        ? scrollDelta < 0
+                            ? -1
+                            : 1
+                        : userScrollDirection.current;
+                    const movedInRequestedDirection =
+                        inputDirection !== 0 && Math.sign(scrollDelta) === inputDirection;
 
-                if (atBottom) {
+                    if (historyAnchor.current && movedInRequestedDirection) {
+                        refreshHistoryAnchorPosition();
+                    }
+
+                    if (scrollbarPointerActive.current) {
+                        if (scrollDelta < 0) {
+                            detachFromBottom();
+                        } else {
+                            beginUserScroll(1);
+                        }
+                    } else {
+                        armUserScrollEnd();
+                    }
+
                     if (
-                        scrollModeRef.current !== "detached" ||
-                        (hasUserIntent && userScrollDirection.current >= 0)
+                        atBottom &&
+                        scrollModeRef.current === "detached" &&
+                        userScrollDirection.current === 1 &&
+                        !olderIntentLatched.current
                     ) {
                         transitionScrollMode({ type: "bottom-state", atBottom: true });
                     }
-                } else if (scrollbarPointerActive.current) {
-                    detachFromBottom();
-                } else if (
-                    hasUserIntent &&
-                    !programmaticScroll.current &&
-                    scrollModeRef.current === "detached"
-                ) {
-                    scheduleDetachedAnchorCapture();
                 }
             };
 
             const onWheel = (event: WheelEvent) => {
-                markUserScrollIntent(event.deltaY < 0 ? -1 : event.deltaY > 0 ? 1 : 0);
-
                 if (event.deltaY < 0) {
                     detachFromBottom();
-                } else if (scrollModeRef.current === "detached") {
-                    scheduleDetachedAnchorCapture();
+                } else if (event.deltaY > 0) {
+                    beginUserScroll(1);
                 }
             };
 
@@ -1878,13 +2166,11 @@ export function Timeline({
                 }
 
                 if (touchY.current !== null && Math.abs(nextY - touchY.current) > 1) {
-                    markUserScrollIntent(nextY > touchY.current ? -1 : 1);
-                }
-
-                if (touchY.current !== null && nextY > touchY.current + 3) {
-                    detachFromBottom();
-                } else if (scrollModeRef.current === "detached") {
-                    scheduleDetachedAnchorCapture();
+                    if (nextY > touchY.current) {
+                        detachFromBottom();
+                    } else {
+                        beginUserScroll(1);
+                    }
                 }
 
                 touchY.current = nextY;
@@ -1901,7 +2187,7 @@ export function Timeline({
                     scrollbarPointerActive.current = event.clientX >= bounds.right - 24;
 
                     if (scrollbarPointerActive.current) {
-                        markUserScrollIntent();
+                        beginUserScroll();
                     }
 
                     return;
@@ -1913,7 +2199,7 @@ export function Timeline({
             const onPointerMove = (event: PointerEvent) => {
                 if (event.pointerType === "mouse") {
                     if (scrollbarPointerActive.current) {
-                        markUserScrollIntent();
+                        beginUserScroll();
                     }
 
                     return;
@@ -1928,15 +2214,13 @@ export function Timeline({
                 if (event.clientY > current.y + 3) {
                     detachFromBottom();
                 } else if (Math.abs(event.clientY - current.y) > 1) {
-                    markUserScrollIntent(event.clientY > current.y ? -1 : 1);
-
-                    if (scrollModeRef.current === "detached") {
-                        scheduleDetachedAnchorCapture();
-                    }
+                    beginUserScroll(event.clientY > current.y ? -1 : 1);
                 }
 
                 pointerGesture.current = { id: event.pointerId, y: event.clientY };
             };
+
+            const onScrollEnd = () => armUserScrollEnd();
 
             const clearPointer = (event: PointerEvent) => {
                 if (event.pointerType === "mouse") {
@@ -1960,6 +2244,9 @@ export function Timeline({
             element.addEventListener("pointermove", onPointerMove, { passive: true });
             element.addEventListener("pointerup", clearPointer, { passive: true });
             element.addEventListener("pointercancel", clearPointer, { passive: true });
+            element.addEventListener("scrollend", onScrollEnd, { passive: true });
+            window.addEventListener("pointerup", clearPointer, { passive: true });
+            window.addEventListener("pointercancel", clearPointer, { passive: true });
             resizeObserver.observe(element);
 
             removeScrollerListeners.current = () => {
@@ -1974,13 +2261,17 @@ export function Timeline({
                 element.removeEventListener("pointermove", onPointerMove);
                 element.removeEventListener("pointerup", clearPointer);
                 element.removeEventListener("pointercancel", clearPointer);
+                element.removeEventListener("scrollend", onScrollEnd);
+                window.removeEventListener("pointerup", clearPointer);
+                window.removeEventListener("pointercancel", clearPointer);
             };
         },
         [
+            armUserScrollEnd,
+            beginUserScroll,
             detachFromBottom,
-            markUserScrollIntent,
-            scheduleDetachedAnchorCapture,
             preservePositionAfterGeometryChange,
+            refreshHistoryAnchorPosition,
             transitionScrollMode,
         ],
     );
@@ -2006,18 +2297,14 @@ export function Timeline({
             if (upwardKey && scroller.current) {
                 detachFromBottom();
             } else if (scrollKey && scroller.current) {
-                markUserScrollIntent(1);
-
-                if (scrollModeRef.current === "detached") {
-                    scheduleDetachedAnchorCapture();
-                }
+                beginUserScroll(1);
             }
         };
 
         window.addEventListener("keydown", onKeyDown);
 
         return () => window.removeEventListener("keydown", onKeyDown);
-    }, [detachFromBottom, markUserScrollIntent, scheduleDetachedAnchorCapture]);
+    }, [beginUserScroll, detachFromBottom]);
 
     useLayoutEffect(() => {
         if (unreadBoundaryInitialized.current || initializing || items.length === 0) {
@@ -2045,21 +2332,24 @@ export function Timeline({
         previousFirstItemIndex.current = firstItemIndex;
 
         if (firstItemIndex < previousStartIndex) {
-            if (historyAnchor.current) {
+            detachedViewportAnchor.current = null;
+
+            if (scrollModeRef.current === "attached") {
+                cancelHistoryRestoration();
+            } else if (historyAnchor.current) {
                 restoreHistoryAnchor();
-            } else {
+            } else if (scrollModeRef.current === "restoring-history") {
                 transitionScrollMode({ type: "history-complete" });
             }
         } else if (change.kind === "replace") {
             cancelHistoryRestoration();
             historyRequestGeneration.current += 1;
             historyRequestInFlight.current = false;
-            userScrollIntentUntil.current = 0;
             programmaticScroll.current = false;
         }
 
         if (change.kind === "initial") {
-            scheduleBottomPosition(true);
+            scheduleBottomPosition(true, true);
 
             return;
         }
@@ -2076,6 +2366,7 @@ export function Timeline({
         const force = change.appendedLocalItem;
 
         if (change.appendedLocalItem) {
+            cancelHistoryRestoration();
             transitionScrollMode({ type: "local-append" });
         } else if (wasAttachedRemoteAppend) {
             transitionScrollMode({ type: "bottom-state", atBottom: true });
@@ -2109,45 +2400,27 @@ export function Timeline({
                 window.cancelAnimationFrame(historyAnchorFrame.current);
             }
 
-            if (detachedAnchorFrame.current !== null) {
-                window.cancelAnimationFrame(detachedAnchorFrame.current);
-            }
-
             if (detachedRestoreFrame.current !== null) {
                 window.cancelAnimationFrame(detachedRestoreFrame.current);
             }
 
+            if (userScrollEndTimer.current !== null) {
+                window.clearTimeout(userScrollEndTimer.current);
+            }
+
+            if (userScrollEndFrame.current !== null) {
+                window.cancelAnimationFrame(userScrollEndFrame.current);
+            }
+
             historyAnchor.current = null;
+            historyRestoreDeferred.current = false;
             detachedViewportAnchor.current = null;
             historyRequestGeneration.current += 1;
             historyRequestInFlight.current = false;
             programmaticScroll.current = false;
+            userScrollActive.current = false;
         },
         [],
-    );
-
-    const onAtBottomStateChange = useCallback(
-        (atBottom: boolean) => {
-            const hasUserIntent = window.performance.now() <= userScrollIntentUntil.current;
-
-            if (!atBottom) {
-                if (hasUserIntent) {
-                    transitionScrollMode({ type: "bottom-state", atBottom: false });
-                }
-
-                return;
-            }
-
-            if (
-                scrollModeRef.current === "detached" &&
-                (!hasUserIntent || userScrollDirection.current < 0)
-            ) {
-                return;
-            }
-
-            transitionScrollMode({ type: "bottom-state", atBottom });
-        },
-        [transitionScrollMode],
     );
 
     const onItemsRendered = useCallback(
@@ -2207,16 +2480,14 @@ export function Timeline({
             <Virtuoso
                 data={items}
                 firstItemIndex={firstItemIndex}
-                initialTopMostItemIndex={INITIAL_TIMELINE_LOCATION}
                 alignToBottom
-                defaultItemHeight={96}
+                heightEstimates={itemHeightEstimates}
                 computeItemKey={(_index, item) => item.id}
                 followOutput={false}
                 startReached={loadEarlierHistory}
-                atBottomStateChange={onAtBottomStateChange}
                 scrollerRef={setScroller}
                 itemsRendered={onItemsRendered}
-                totalListHeightChanged={preservePositionAfterGeometryChange}
+                totalListHeightChanged={preserveAttachedBottomAfterTimelineHeightChange}
                 increaseViewportBy={TIMELINE_VIEWPORT_PADDING}
                 components={TIMELINE_COMPONENTS}
                 context={virtuosoContext}
