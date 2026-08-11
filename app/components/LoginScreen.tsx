@@ -114,7 +114,9 @@ export function LoginScreen({
                 <BrandMark />
                 <div className={classes("login-intro__copy")}>
                     <p className={classes("eyebrow")}>AN INDEPENDENT MATRIX RECEIVER</p>
-                    <h1 id="welcome-title">Chat without the administrative weather system.</h1>
+                    <h1 id="welcome-title">
+                        Private Matrix chat, without the operational overhead.
+                    </h1>
                     <p className={classes("lede")}>
                         Your rooms, messages and encryption stay between this device and your Matrix
                         homeserver. Sub-Etha merely makes the controls less alarming.
