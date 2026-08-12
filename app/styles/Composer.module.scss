@@ -528,11 +528,13 @@
         column-gap: 28px;
     }
 
+    /* 16px is the floor that keeps iOS from zooming the shell on focus, so the
+     * single composer line measures 24px and the controls beside it follow. */
     .composer textarea {
-        min-height: 23px;
+        min-height: 24px;
         max-height: min(144px, 32dvh);
         padding: 0;
-        font: 300 15px/1.5 var(--font-display);
+        font: 300 16px/1.5 var(--font-display);
     }
 
     .composer textarea[data-compose-mode="message"]::placeholder {
@@ -545,7 +547,7 @@
         top: 20px;
         left: 72px;
         color: var(--ink-muted, var(--ink-soft));
-        font: 300 15px/1.5 var(--font-display);
+        font: 300 16px/1.5 var(--font-display);
         pointer-events: none;
     }
 
@@ -553,8 +555,8 @@
     .send-button {
         width: auto;
         min-width: 0;
-        height: 23px;
-        min-height: 23px;
+        height: 24px;
+        min-height: 24px;
         padding: 0;
     }
 

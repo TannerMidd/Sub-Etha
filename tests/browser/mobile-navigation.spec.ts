@@ -110,3 +110,39 @@ test("reduced motion removes drawer and dialog transition timing", async ({ page
 
     expect(durations).toEqual(["0s", "0s"]);
 });
+
+test("the installed shell reports safe-area insets and never triggers focus zoom", async ({
+    page,
+}) => {
+    const viewport = await page
+        .locator('meta[name="viewport"]')
+        .evaluate((element) => element.getAttribute("content") ?? "");
+
+    // Without viewport-fit=cover every env(safe-area-inset-*) in the stylesheets
+    // reports 0px, and the black-translucent status bar draws over the header.
+    expect(viewport).toContain("viewport-fit=cover");
+
+    // iOS zooms the page when a control smaller than 16px takes focus, and an
+    // installed shell has no way back out of that zoom.
+    for (const url of [
+        PREVIEW_URL,
+        "/?design-preview&surface-preview=settings#/room/signal-watch",
+        "/?design-preview&surface-preview=login",
+    ]) {
+        await page.goto(url);
+        await expect(page.locator("body")).toBeVisible();
+
+        const fontSizes = await page.evaluate(() =>
+            [...document.querySelectorAll("input, textarea, select")].map((element) =>
+                Number.parseFloat(getComputedStyle(element).fontSize),
+            ),
+        );
+
+        for (const fontSize of fontSizes) {
+            expect(
+                fontSize,
+                `${url} has a control below the iOS zoom threshold`,
+            ).toBeGreaterThanOrEqual(16);
+        }
+    }
+});

@@ -51,6 +51,21 @@ select {
     color: inherit;
 }
 
+/*
+ * iOS Safari zooms the whole page when a form control smaller than 16px takes
+ * focus, and it never zooms back out. In an installed shell that leaves the app
+ * permanently magnified with its edges clipped, so every focusable control keeps
+ * a 16px floor at touch sizes. Modules that set their own control type must hold
+ * the same floor.
+ */
+@media (max-width: 720px) {
+    input,
+    textarea,
+    select {
+        font-size: 16px;
+    }
+}
+
 button {
     touch-action: manipulation;
 }

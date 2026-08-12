@@ -1,6 +1,20 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import { headers } from "next/headers";
 import "./styles/globals.scss";
+
+/*
+ * The installed shell draws edge to edge under the iOS status bar and home
+ * indicator, so `viewport-fit=cover` is what makes every `env(safe-area-inset-*)`
+ * in the stylesheets report a real value instead of 0px. `resizes-content` keeps
+ * `100dvh` honest on Android when the soft keyboard opens, so the composer stays
+ * above it rather than behind it.
+ */
+export const viewport: Viewport = {
+    width: "device-width",
+    initialScale: 1,
+    viewportFit: "cover",
+    interactiveWidget: "resizes-content",
+};
 
 export async function generateMetadata(): Promise<Metadata> {
     const requestHeaders = await headers();
