@@ -670,15 +670,22 @@ function createPreviewService(): MatrixService {
 
 export function DesignPreview() {
     const [service] = useState(createPreviewService);
-    const surfacePreview =
-        typeof window === "undefined"
-            ? null
-            : new URLSearchParams(window.location.search).get("surface-preview");
+    const searchParams =
+        typeof window === "undefined" ? null : new URLSearchParams(window.location.search);
+    const surfacePreview = searchParams?.get("surface-preview") ?? null;
+    /*
+     * The reference document carries the same design in two palettes, so the
+     * preview pins whichever one is being checked. Dark stays the default so
+     * existing captures are unaffected.
+     */
+    const requestedTheme = searchParams?.get("theme");
+    const previewTheme =
+        requestedTheme === "light" || requestedTheme === "system" ? requestedTheme : "dark";
 
     useEffect(() => {
         const previousTheme = document.documentElement.dataset.theme;
 
-        document.documentElement.dataset.theme = "dark";
+        document.documentElement.dataset.theme = previewTheme;
 
         return () => {
             if (previousTheme) {
@@ -687,7 +694,7 @@ export function DesignPreview() {
                 document.documentElement.removeAttribute("data-theme");
             }
         };
-    }, []);
+    }, [previewTheme]);
 
     if (surfacePreview === "login") {
         return <LoginScreen onAuthenticated={async () => undefined} />;

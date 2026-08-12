@@ -111,7 +111,7 @@
     place-items: center;
     padding: calc(20px + var(--safe-top)) calc(20px + var(--safe-right))
         calc(20px + var(--safe-bottom)) calc(20px + var(--safe-left));
-    background: rgb(28 29 31 / 78%);
+    background: var(--scrim);
     animation: panel-fade var(--motion-fast) ease-out both;
 }
 

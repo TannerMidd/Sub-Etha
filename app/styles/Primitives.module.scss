@@ -32,7 +32,7 @@
 .primary-button {
     border-color: var(--signal);
     background: var(--signal);
-    color: #2c2e31;
+    color: var(--on-signal);
 }
 
 .primary-button:hover:not(:disabled) {

@@ -3,6 +3,8 @@ import { expect, test, type Page } from "@playwright/test";
 const PREVIEW_URL = "/?design-preview#/room/signal-watch";
 const LOGIN_PREVIEW_URL = "/?design-preview&surface-preview=login";
 const SETTINGS_PREVIEW_URL = "/?design-preview&surface-preview=settings#/room/signal-watch";
+const LIGHT_SETTINGS_PREVIEW_URL =
+    "/?design-preview&surface-preview=settings&theme=light#/room/signal-watch";
 const ROOMS_PREVIEW_URL = "/?design-preview&surface-preview=rooms";
 const EMPTY_PREVIEW_URL = "/?design-preview&surface-preview=empty";
 const INVITE_PREVIEW_URL = "/?design-preview&surface-preview=invite#/room/observatory-invite";
@@ -74,6 +76,39 @@ test("Zen settings dialog uses the shared line system", async ({ page }, testInf
         fullPage: true,
     });
     expect(runtimeProblems).toEqual([]);
+});
+
+test("settings preview keeps its URL theme, selector, and palette synchronized", async ({
+    page,
+}, testInfo) => {
+    test.skip(testInfo.project.name !== "desktop-1920", "Desktop dialog behavior only.");
+
+    await page.addInitScript(() => {
+        localStorage.setItem("sub-etha-theme", "system");
+    });
+
+    await page.goto(LIGHT_SETTINGS_PREVIEW_URL);
+
+    const themeGroup = page.getByRole("group", { name: "Theme" });
+
+    await expect(themeGroup.getByRole("button", { name: "Light" })).toHaveAttribute(
+        "aria-pressed",
+        "true",
+    );
+    await expect(page.locator("html")).toHaveAttribute("data-theme", "light");
+
+    await themeGroup.getByRole("button", { name: "Dark" }).click();
+
+    await expect(page).toHaveURL(/theme=dark/);
+    await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
+    expect(await page.evaluate(() => localStorage.getItem("sub-etha-theme"))).toBe("system");
+
+    await page.reload();
+    await expect(themeGroup.getByRole("button", { name: "Dark" })).toHaveAttribute(
+        "aria-pressed",
+        "true",
+    );
+    await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
 });
 
 test("Zen mobile room index matches the selected reference", async ({ page }, testInfo) => {

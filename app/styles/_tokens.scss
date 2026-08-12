@@ -22,6 +22,45 @@
     src: url("/fonts/literata-variable-italic.ttf") format("truetype-variations");
 }
 
+/*
+ * Lamplight — the light palette from `Sub-Etha Zen.dc.html` (2a). Paper as it
+ * looks under a lamp rather than as a screen imitates it: the ground sits ten
+ * points below white, ink stops short of black, and the speaker hues read as
+ * dyes soaked into the sheet. Held in a mixin because the same palette has to
+ * serve both the explicit `light` theme and `system` under a light OS.
+ */
+@mixin lamplight {
+    color-scheme: light;
+    --paper: #e6d8bd;
+    --paper-raised: #e6d8bd;
+    --paper-deep: #ddcfb2;
+    --ink: #2b2218;
+    --ink-soft: #4c4032;
+    --ink-muted: #5e5140;
+    --ink-quiet: #5c503f;
+    --line: #cdb994;
+    --line-strong: #b9a077;
+    --control-line: #b9a077;
+    --signal: #6b4708;
+    --signal-dark: #533607;
+    --signal-hover: #533607;
+    --shell-accent: #2f5878;
+    --on-signal: #e6d8bd;
+    --teal: #2c6047;
+    --teal-strong: #1f4a35;
+    --teal-soft: color-mix(in srgb, #2c6047 12%, transparent);
+    --yellow: #6b4708;
+    --participant-steel: #2f5878;
+    --participant-sage: #2c6047;
+    --participant-orchid: #63405f;
+    --participant-clay: #82442a;
+    --participant-sand: #6f5416;
+    --focus: #6b4708;
+    /* Paper needs less veil than a dark room, and a warm one so the sheet
+       underneath still reads as paper rather than turning grey. */
+    --scrim: rgb(43 34 24 / 55%);
+}
+
 :root,
 :root[data-theme="dark"] {
     color-scheme: dark;
@@ -31,10 +70,16 @@
     --ink: #eae5dd;
     --ink-soft: #8f8880;
     --ink-muted: #7a736c;
+    --ink-quiet: #a8a29a;
     --line: #2a2624;
     --line-strong: #38322e;
+    --control-line: #38322e;
     --signal: #c9a86a;
     --signal-dark: #d4b777;
+    --signal-hover: #e0c48c;
+    --shell-accent: #8fa8c4;
+    --on-signal: #2c2e31;
+    --scrim: rgb(28 29 31 / 78%);
     --teal: #8fbaa4;
     --teal-strong: #9fc9b3;
     --teal-soft: color-mix(in srgb, #8fbaa4 12%, transparent);
@@ -62,52 +107,12 @@
 }
 
 :root[data-theme="light"] {
-    color-scheme: light;
-    --paper: #f3efe8;
-    --paper-raised: #f3efe8;
-    --paper-deep: #ebe4da;
-    --ink: #241f1c;
-    --ink-soft: #625b54;
-    --ink-muted: #7a736c;
-    --line: #d8d0c5;
-    --line-strong: #b9aea0;
-    --signal: #80642e;
-    --signal-dark: #694f1e;
-    --teal: #527563;
-    --teal-strong: #3f6250;
-    --teal-soft: color-mix(in srgb, #527563 12%, transparent);
-    --yellow: #80642e;
-    --participant-steel: #3f698c;
-    --participant-sage: #3f735b;
-    --participant-orchid: #76527e;
-    --participant-clay: #934e3e;
-    --participant-sand: #7a5d1f;
-    --focus: #80642e;
+    @include lamplight;
 }
 
 @media (prefers-color-scheme: light) {
     :root[data-theme="system"] {
-        color-scheme: light;
-        --paper: #f3efe8;
-        --paper-raised: #f3efe8;
-        --paper-deep: #ebe4da;
-        --ink: #241f1c;
-        --ink-soft: #625b54;
-        --ink-muted: #7a736c;
-        --line: #d8d0c5;
-        --line-strong: #b9aea0;
-        --signal: #80642e;
-        --signal-dark: #694f1e;
-        --teal: #527563;
-        --teal-strong: #3f6250;
-        --teal-soft: color-mix(in srgb, #527563 12%, transparent);
-        --yellow: #80642e;
-        --participant-steel: #3f698c;
-        --participant-sage: #3f735b;
-        --participant-orchid: #76527e;
-        --participant-clay: #934e3e;
-        --participant-sand: #7a5d1f;
-        --focus: #80642e;
+        @include lamplight;
     }
 }
 

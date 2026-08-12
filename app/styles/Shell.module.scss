@@ -1064,19 +1064,20 @@
     src: url("/fonts/literata-variable-italic.ttf") format("truetype");
 }
 
+/*
+ * The Zen shell sits on a single plane, so raised and deep surfaces collapse
+ * into the page, the strong rule matches the ordinary one, and the accent does
+ * not brighten on its own. These are stated as references rather than literals
+ * so the whole shell follows the active theme — literals here previously pinned
+ * the app to the dark palette no matter what `data-theme` said.
+ */
 .app-shell {
-    --paper: #191614;
-    --paper-raised: #191614;
-    --paper-deep: #191614;
-    --ink: #eae5dd;
-    --ink-soft: #8f8880;
-    --line: #2a2624;
-    --line-strong: #2a2624;
-    --signal: #c9a86a;
-    --signal-dark: #c9a86a;
-    --teal: #8fa8c4;
-    --teal-strong: #8fa8c4;
-    --focus: #c9a86a;
+    --paper-raised: var(--paper);
+    --paper-deep: var(--paper);
+    --line-strong: var(--line);
+    --signal-dark: var(--signal);
+    --teal: var(--shell-accent);
+    --teal-strong: var(--shell-accent);
     --font-ui: "Commissioner", system-ui, sans-serif;
     --font-display: "Literata", Georgia, serif;
     --font-reading: "Literata", Georgia, serif;
@@ -1138,7 +1139,7 @@
 }
 
 .transmission-search input::placeholder {
-    color: #7a736c;
+    color: var(--ink-muted);
     opacity: 1;
 }
 
@@ -1178,7 +1179,7 @@
     clip: auto;
     display: grid;
     grid-template-columns: 64px 82px;
-    border: 1px solid #38322e;
+    border: 1px solid var(--control-line);
     background: var(--paper);
     white-space: normal;
 }
@@ -1201,7 +1202,7 @@
     padding: 18px 0 8px;
     border-top: 1px solid var(--line);
     border-bottom: 0;
-    color: #7a736c;
+    color: var(--ink-muted);
     font: 500 11px/1 var(--font-ui);
     letter-spacing: 0.2em;
     text-transform: uppercase;
@@ -1254,13 +1255,13 @@
 }
 
 .room-list-item__copy strong {
-    color: #a8a29a;
+    color: var(--ink-quiet);
     font: 400 15px/1.2 var(--font-ui);
 }
 
 .room-list-item__copy small {
     margin-top: 0;
-    color: #7a736c;
+    color: var(--ink-muted);
     font: 300 13px/1.2 var(--font-ui);
 }
 
@@ -1283,7 +1284,7 @@
 }
 
 .room-list-item__meta time {
-    color: #7a736c;
+    color: var(--ink-muted);
     font: 300 11px/1 var(--font-ui);
     font-variant-numeric: tabular-nums;
 }
@@ -1298,7 +1299,7 @@
 .room-list-empty {
     min-height: 160px;
     padding: 30px 40px;
-    color: #7a736c;
+    color: var(--ink-muted);
 }
 
 .room-list-empty svg {
@@ -1306,7 +1307,7 @@
 }
 
 .room-list-empty strong {
-    color: #a8a29a;
+    color: var(--ink-quiet);
     font: 400 14px/1.3 var(--font-ui);
 }
 
@@ -1355,7 +1356,7 @@
 
 .profile-strip__identity small {
     margin-top: 5px;
-    color: #7a736c;
+    color: var(--ink-muted);
     font: 300 12px/1 var(--font-ui);
 }
 
@@ -1406,7 +1407,7 @@
 
 .conversation-header__title p {
     margin: 0;
-    color: #7a736c;
+    color: var(--ink-muted);
     font: 300 12px/1 var(--font-ui);
 }
 
@@ -1474,7 +1475,7 @@
 .app-shell .guide-card > p:not(.eyebrow) {
     max-width: none;
     margin: 16px 0 28px;
-    color: #7a736c;
+    color: var(--ink-muted);
     font: 300 15px/1.7 var(--font-display);
     text-wrap: pretty;
 }
@@ -1482,7 +1483,7 @@
 .app-shell .guide-card .secondary-button {
     min-height: 42px;
     padding: 0 26px;
-    border-color: #38322e;
+    border-color: var(--control-line);
     background: transparent;
     color: var(--ink-soft);
     font: 400 13px/1 var(--font-ui);
@@ -1524,7 +1525,7 @@
 
 .app-shell .invite-card > p {
     margin: 14px 0 32px;
-    color: #7a736c;
+    color: var(--ink-muted);
     font: 300 15px/1.7 var(--font-display);
 }
 
@@ -1548,7 +1549,7 @@
 }
 
 .app-shell .invite-card .secondary-button {
-    border-color: #38322e;
+    border-color: var(--control-line);
     color: var(--ink-soft);
 }
 
@@ -1577,9 +1578,9 @@
     }
 
     .app-shell .invite-card .primary-button:hover {
-        border-color: #e0c48c;
+        border-color: var(--signal-hover);
         background: transparent;
-        color: #e0c48c;
+        color: var(--signal-hover);
     }
 }
 
@@ -1670,7 +1671,7 @@
         display: inline-flex;
         align-items: center;
         gap: 6px;
-        border: 1px solid #38322e;
+        border: 1px solid var(--control-line);
         background: var(--paper);
         color: var(--ink-soft);
         font: 400 12px/1 var(--font-ui);

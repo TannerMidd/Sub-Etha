@@ -730,11 +730,21 @@ export function SettingsDialog({
     onVerificationStarted: () => void;
 }) {
     const snapshot = service.getSnapshot();
-    const settingsPreview =
-        new URLSearchParams(window.location.search).get("surface-preview") === "settings";
+    const previewParams = new URLSearchParams(window.location.search);
+    const settingsPreview = previewParams.get("surface-preview") === "settings";
     const [displayName, setDisplayName] = useState(snapshot.displayName);
     const [avatar, setAvatar] = useState<File | undefined>();
-    const [theme, setTheme] = useState(() => localStorage.getItem("sub-etha-theme") ?? "dark");
+    const [theme, setTheme] = useState(() => {
+        const requestedTheme = previewParams.get("theme");
+
+        if (settingsPreview) {
+            return requestedTheme === "light" || requestedTheme === "system"
+                ? requestedTheme
+                : "dark";
+        }
+
+        return localStorage.getItem("sub-etha-theme") ?? "dark";
+    });
     const [pushState, setPushState] = useState<PushState>(() =>
         settingsPreview
             ? { supported: true, enabled: true, permission: "granted", checking: false }
@@ -797,13 +807,17 @@ export function SettingsDialog({
 
     const setThemeChoice = (value: string) => {
         setTheme(value);
-        localStorage.setItem("sub-etha-theme", value);
 
-        if (value === "system") {
-            document.documentElement.setAttribute("data-theme", "system");
+        if (settingsPreview) {
+            const previewUrl = new URL(window.location.href);
+
+            previewUrl.searchParams.set("theme", value);
+            window.history.replaceState(window.history.state, "", previewUrl);
         } else {
-            document.documentElement.setAttribute("data-theme", value);
+            localStorage.setItem("sub-etha-theme", value);
         }
+
+        document.documentElement.setAttribute("data-theme", value);
     };
 
     const currentDevice = devices.find((device) => device.current);
