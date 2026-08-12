@@ -1,36 +1,20 @@
 .brand-mark {
     display: inline-flex;
-    flex-direction: column;
     align-items: flex-start;
-    gap: 9px;
-    color: var(--ink);
-}
-
-.brand-mark::after {
-    content: "";
-    width: 30px;
-    height: 2px;
-    background: var(--signal-dark);
+    color: var(--ink-soft);
 }
 
 .brand-mark__word {
     color: inherit;
-    font: 560 20px/1 var(--font-ui);
-    letter-spacing: 0.26em;
+    font: 500 12px/1 var(--font-ui);
+    letter-spacing: 0.34em;
+    text-transform: uppercase;
     white-space: nowrap;
 }
 
-.brand-mark--compact {
-    gap: 7px;
-}
-
 .brand-mark--compact .brand-mark__word {
-    font-size: 17px;
-    letter-spacing: 0.22em;
-}
-
-.brand-mark--compact::after {
-    width: 24px;
+    font-size: 12px;
+    letter-spacing: 0.34em;
 }
 
 .room-sidebar__header .brand-mark {
@@ -38,7 +22,7 @@
 }
 
 .room-sidebar__header .brand-mark__word {
-    font-size: 20px;
+    font-size: 12px;
 }
 
 .avatar {
@@ -48,10 +32,10 @@
     overflow: hidden;
     border: 1px solid var(--line-strong);
     border-radius: 0;
-    background: var(--paper-deep);
+    background: transparent;
     color: var(--ink-soft);
     font-size: 10px;
-    font-weight: 650;
+    font-weight: 400;
     letter-spacing: 0.06em;
 }
 

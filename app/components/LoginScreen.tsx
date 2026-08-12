@@ -1,17 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import {
-    ArrowRight,
-    Check,
-    ChevronDown,
-    KeyRound,
-    LoaderCircle,
-    LockKeyhole,
-    Radio,
-    Server,
-    ShieldCheck,
-} from "lucide-react";
+import { ArrowRight, LoaderCircle } from "lucide-react";
 import {
     beginOAuth,
     beginSso,
@@ -113,48 +103,31 @@ export function LoginScreen({
             <section className={classes("login-intro")} aria-labelledby="welcome-title">
                 <BrandMark />
                 <div className={classes("login-intro__copy")}>
-                    <p className={classes("eyebrow")}>AN INDEPENDENT MATRIX RECEIVER</p>
-                    <h1 id="welcome-title">
-                        Private Matrix chat, without the operational overhead.
-                    </h1>
+                    <h1 id="welcome-title">A quiet place to talk.</h1>
                     <p className={classes("lede")}>
-                        Your rooms, messages and encryption stay between this device and your Matrix
-                        homeserver. Sub-Etha merely makes the controls less alarming.
+                        Your rooms, messages and keys stay between this device and your Matrix
+                        homeserver. Nothing here asks for your attention twice.
                     </p>
                 </div>
                 <div className={classes("field-notes")} aria-label="Product principles">
                     <div>
-                        <ShieldCheck aria-hidden="true" />
-                        <span>
-                            <strong>Private by design</strong>Keys remain on this device.
-                        </span>
+                        <strong>Private by design</strong>
+                        <span>Keys remain on this device.</span>
                     </div>
                     <div>
-                        <Radio aria-hidden="true" />
-                        <span>
-                            <strong>Works with Matrix</strong>Bring your existing account.
-                        </span>
+                        <strong>Works with Matrix</strong>
+                        <span>Bring your existing account.</span>
                     </div>
                     <div>
-                        <Check aria-hidden="true" />
-                        <span>
-                            <strong>Calmly installable</strong>A proper PWA, not a browser-shaped
-                            apology.
-                        </span>
+                        <strong>Installable</strong>
+                        <span>A proper app, offline included.</span>
                     </div>
                 </div>
-                <p className={classes("edition-note")}>
-                    SUB—ETHA FIELD GUIDE / TRANSMISSION APPARATUS / EARTH SECTOR
-                </p>
             </section>
 
             <section className={classes("login-card")} aria-labelledby="signin-title">
                 <div className={classes("login-card__header")}>
-                    <span className={classes("index-chip")}>01</span>
-                    <div>
-                        <p className={classes("eyebrow")}>FIND YOUR SIGNAL</p>
-                        <h2 id="signin-title">Connect to Matrix</h2>
-                    </div>
+                    <h2 id="signin-title">Sign in</h2>
                 </div>
 
                 {!capabilities ? (
@@ -163,20 +136,17 @@ export function LoginScreen({
                             event.preventDefault();
                             void discover();
                         }}
-                        className={classes("login-form")}
+                        className={classes("login-form login-form--discovery")}
                     >
                         <label htmlFor="homeserver">Matrix ID or homeserver</label>
-                        <div className={classes("field-with-icon")}>
-                            <Server aria-hidden="true" />
-                            <input
-                                id="homeserver"
-                                value={serverInput}
-                                onChange={(event) => setServerInput(event.target.value)}
-                                placeholder="@you:example.org or matrix.org"
-                                autoComplete="username"
-                                spellCheck={false}
-                            />
-                        </div>
+                        <input
+                            id="homeserver"
+                            value={serverInput}
+                            onChange={(event) => setServerInput(event.target.value)}
+                            placeholder="@you:example.org"
+                            autoComplete="username"
+                            spellCheck={false}
+                        />
                         <p className={classes("field-help")}>
                             We use Matrix discovery first, then contact the homeserver directly.
                         </p>
@@ -221,7 +191,7 @@ export function LoginScreen({
                                 disabled={busy}
                                 onClick={() => void redirect("oauth")}
                             >
-                                <LockKeyhole aria-hidden="true" /> Continue securely with OAuth
+                                Continue securely with OAuth
                             </button>
                         ) : null}
 
@@ -305,11 +275,7 @@ export function LoginScreen({
                             aria-expanded={advanced}
                             onClick={() => setAdvanced((value) => !value)}
                         >
-                            <KeyRound aria-hidden="true" /> Advanced access token{" "}
-                            <ChevronDown
-                                className={classes(advanced ? "rotate" : "")}
-                                aria-hidden="true"
-                            />
+                            {advanced ? "Hide access token" : "Use an access token"}
                         </button>
                         {advanced ? (
                             <div className={classes("token-fields")}>
@@ -351,8 +317,7 @@ export function LoginScreen({
                     </div>
                 ) : null}
                 <p className={classes("privacy-footnote")}>
-                    No account data is sent to Sub-Etha’s notification service. Not even the
-                    surprisingly unhelpful bits.
+                    No account data reaches Sub-Etha&apos;s notification service.
                 </p>
             </section>
         </main>

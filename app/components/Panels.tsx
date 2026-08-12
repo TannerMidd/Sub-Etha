@@ -11,15 +11,10 @@ import {
     KeyRound,
     LoaderCircle,
     LockKeyhole,
-    LogOut,
-    Moon,
     Search,
-    Settings,
     ShieldAlert,
     ShieldCheck,
-    Sun,
     UserPlus,
-    Users,
     X,
 } from "lucide-react";
 import type { MatrixService } from "@/lib/matrix/client";
@@ -46,28 +41,90 @@ export function Dialog({
     onClose,
     children,
     wide = false,
+    variant,
 }: {
     title: string;
     eyebrow?: string;
     onClose: () => void;
     children: React.ReactNode;
     wide?: boolean;
+    variant?: "settings";
 }) {
     const dialogRef = useRef<HTMLElement>(null);
+    const onCloseRef = useRef(onClose);
     const titleId = useId();
 
     useEffect(() => {
+        onCloseRef.current = onClose;
+    }, [onClose]);
+
+    useEffect(() => {
+        const previousFocus =
+            document.activeElement instanceof HTMLElement ? document.activeElement : null;
+        const dialog = dialogRef.current;
+        const focusableSelector = [
+            "button:not([disabled])",
+            "a[href]",
+            "input:not([disabled]):not([type='hidden'])",
+            "select:not([disabled])",
+            "textarea:not([disabled])",
+            "[tabindex]:not([tabindex='-1'])",
+        ].join(",");
+        const getFocusable = () =>
+            Array.from(dialog?.querySelectorAll<HTMLElement>(focusableSelector) ?? []).filter(
+                (element) => element.getClientRects().length > 0,
+            );
+
         const handle = (event: KeyboardEvent) => {
             if (event.key === "Escape") {
-                onClose();
+                event.preventDefault();
+                onCloseRef.current();
+
+                return;
+            }
+
+            if (event.key !== "Tab") {
+                return;
+            }
+
+            const focusable = getFocusable();
+
+            if (!focusable.length) {
+                event.preventDefault();
+                dialog?.focus();
+
+                return;
+            }
+
+            const first = focusable[0];
+            const last = focusable.at(-1)!;
+            const active = document.activeElement;
+
+            if (event.shiftKey && (active === first || !dialog?.contains(active))) {
+                event.preventDefault();
+                last.focus();
+            } else if (!event.shiftKey && (active === last || !dialog?.contains(active))) {
+                event.preventDefault();
+                first.focus();
             }
         };
 
         window.addEventListener("keydown", handle);
-        dialogRef.current?.querySelector<HTMLElement>("[data-dialog-autofocus]")?.focus();
+        const initialFocus =
+            dialog?.querySelector<HTMLElement>("[data-dialog-autofocus]") ??
+            getFocusable()[0] ??
+            dialog;
 
-        return () => window.removeEventListener("keydown", handle);
-    }, [onClose]);
+        initialFocus?.focus();
+
+        return () => {
+            window.removeEventListener("keydown", handle);
+
+            if (previousFocus?.isConnected) {
+                previousFocus.focus();
+            }
+        };
+    }, []);
 
     return (
         <div
@@ -82,11 +139,14 @@ export function Dialog({
         >
             <section
                 ref={dialogRef}
-                className={classes(`dialog-card${wide ? " dialog-card--wide" : ""}`)}
+                className={classes(
+                    `dialog-card${wide ? " dialog-card--wide" : ""}${variant ? ` dialog-card--${variant}` : ""}`,
+                )}
                 data-ui="dialog-card"
                 role="dialog"
                 aria-modal="true"
                 aria-labelledby={titleId}
+                tabIndex={-1}
             >
                 <header className={classes("dialog-card__header")}>
                     <div>
@@ -99,7 +159,7 @@ export function Dialog({
                         aria-label="Close"
                         onClick={onClose}
                     >
-                        <X />
+                        {variant === "settings" ? "Close" : <X />}
                     </button>
                 </header>
                 {children}
@@ -384,15 +444,14 @@ export function NewConversationDialog({
         <Dialog title="Open a channel" eyebrow="NEW TRANSMISSION" onClose={onClose}>
             <div
                 className={classes("segmented-control")}
-                role="tablist"
+                role="group"
                 aria-label="Conversation type"
             >
                 {(["dm", "room", "join"] as const).map((value) => (
                     <button
                         key={value}
                         type="button"
-                        role="tab"
-                        aria-selected={mode === value}
+                        aria-pressed={mode === value}
                         onClick={() => setMode(value)}
                     >
                         {value === "dm" ? "Direct" : value === "room" ? "Room" : "Join"}
@@ -513,7 +572,7 @@ export function SearchDialog({
                 </button>
             </form>
             {error ? (
-                <div className={classes("error-note")}>
+                <div className={classes("error-note")} role="alert">
                     <strong>Search unavailable.</strong>
                     <span>{error}</span>
                 </div>
@@ -673,10 +732,16 @@ export function SettingsDialog({
     onVerificationStarted: () => void;
 }) {
     const snapshot = service.getSnapshot();
+    const settingsPreview =
+        new URLSearchParams(window.location.search).get("surface-preview") === "settings";
     const [displayName, setDisplayName] = useState(snapshot.displayName);
     const [avatar, setAvatar] = useState<File | undefined>();
     const [theme, setTheme] = useState(() => localStorage.getItem("sub-etha-theme") ?? "dark");
-    const [pushState, setPushState] = useState<PushState>(() => readPushState());
+    const [pushState, setPushState] = useState<PushState>(() =>
+        settingsPreview
+            ? { supported: true, enabled: true, permission: "granted", checking: false }
+            : readPushState(),
+    );
     const [devices, setDevices] = useState<DeviceSummary[]>([]);
     const [cryptoStatus, setCryptoStatus] = useState<{
         secretStorageReady: boolean;
@@ -686,6 +751,7 @@ export function SettingsDialog({
     const [passphrase, setPassphrase] = useState("");
     const [recoveryInput, setRecoveryInput] = useState("");
     const [generatedRecovery, setGeneratedRecovery] = useState<string | null>(null);
+    const [recoveryExpanded, setRecoveryExpanded] = useState(false);
     const [busyAction, setBusyAction] = useState<string | null>(null);
     const [notice, setNotice] = useState<string | null>(null);
     const [error, setError] = useState<string | null>(null);
@@ -700,6 +766,10 @@ export function SettingsDialog({
     }, [service]);
 
     useEffect(() => {
+        if (settingsPreview) {
+            return;
+        }
+
         let active = true;
 
         void refreshPushState(service).then((state) => {
@@ -711,7 +781,7 @@ export function SettingsDialog({
         return () => {
             active = false;
         };
-    }, [service]);
+    }, [service, settingsPreview]);
 
     const act = async (name: string, action: () => Promise<void>) => {
         setBusyAction(name);
@@ -738,16 +808,15 @@ export function SettingsDialog({
         }
     };
 
+    const currentDevice = devices.find((device) => device.current);
+
     return (
-        <Dialog title="Settings" eyebrow="DEVICE & ACCOUNT" onClose={onClose} wide>
-            <div className={classes("settings-grid")}>
-                <section>
-                    <h3>
-                        <Users />
-                        Profile
-                    </h3>
+        <Dialog title="Settings" onClose={onClose} wide variant="settings">
+            <div className={classes("settings-sheet")}>
+                <section aria-labelledby="settings-profile-heading">
+                    <h3 id="settings-profile-heading">Profile</h3>
                     <form
-                        className={classes("panel-form")}
+                        className={classes("settings-profile")}
                         onSubmit={(event) => {
                             event.preventDefault();
                             void act("profile", async () => {
@@ -756,323 +825,330 @@ export function SettingsDialog({
                             });
                         }}
                     >
-                        <div className={classes("profile-preview")}>
+                        <div className={classes("settings-row")}>
+                            <label htmlFor="display-name">Display name</label>
+                            <input
+                                id="display-name"
+                                value={displayName}
+                                onChange={(event) => setDisplayName(event.target.value)}
+                            />
+                            {displayName !== snapshot.displayName ? (
+                                <button type="submit" disabled={busyAction === "profile"}>
+                                    {busyAction === "profile" ? "Saving" : "Save"}
+                                </button>
+                            ) : null}
+                        </div>
+                        <div className={classes("settings-row")}>
+                            <span>Matrix ID</span>
+                            <output>{snapshot.userId}</output>
+                        </div>
+                        <div className={classes("settings-row settings-row--picture")}>
+                            <span>Picture</span>
                             <Avatar
                                 name={displayName || snapshot.userId}
                                 mxcUrl={snapshot.avatarMxcUrl}
                                 service={service}
-                                size="large"
+                                size="medium"
                             />
-                            <span>
-                                <strong>{displayName || snapshot.userId}</strong>
-                                <small>{snapshot.userId}</small>
-                            </span>
-                        </div>
-                        <label htmlFor="display-name">Display name</label>
-                        <input
-                            id="display-name"
-                            value={displayName}
-                            onChange={(event) => setDisplayName(event.target.value)}
-                        />
-                        <label htmlFor="avatar-file">Profile picture</label>
-                        <input
-                            id="avatar-file"
-                            type="file"
-                            accept="image/*"
-                            onChange={(event) => setAvatar(event.target.files?.[0])}
-                        />
-                        <button
-                            className={classes("secondary-button")}
-                            type="submit"
-                            disabled={busyAction === "profile"}
-                        >
-                            {busyAction === "profile" ? (
-                                <LoaderCircle className={classes("spin")} />
-                            ) : (
-                                <Check />
-                            )}
-                            Save profile
-                        </button>
-                    </form>
-
-                    <h3>
-                        <Sun />
-                        Appearance
-                    </h3>
-                    <div className={classes("theme-options")} role="radiogroup" aria-label="Theme">
-                        {[
-                            { value: "system", label: "System", icon: Settings },
-                            { value: "light", label: "Light", icon: Sun },
-                            { value: "dark", label: "Dark", icon: Moon },
-                        ].map((option) => (
-                            <button
-                                key={option.value}
-                                type="button"
-                                role="radio"
-                                aria-checked={theme === option.value}
-                                onClick={() => setThemeChoice(option.value)}
+                            <label
+                                className={classes("settings-text-action")}
+                                htmlFor="avatar-file"
                             >
-                                <option.icon />
-                                {option.label}
-                                {theme === option.value ? <Check /> : null}
-                            </button>
-                        ))}
-                    </div>
+                                Replace
+                            </label>
+                            <input
+                                className={classes("settings-file-input")}
+                                id="avatar-file"
+                                type="file"
+                                accept="image/*"
+                                onChange={(event) => {
+                                    const file = event.target.files?.[0];
 
-                    <h3>
-                        <Bell />
-                        Notifications
-                    </h3>
-                    <div className={classes("settings-block")}>
-                        <div>
-                            <strong>Closed-app notifications</strong>
-                            <p>
-                                Generic alerts only. The gateway never receives message text, sender
-                                or room names.
-                            </p>
+                                    setAvatar(file);
+
+                                    if (file) {
+                                        void act("profile", async () => {
+                                            await service.updateProfile(displayName, file);
+                                            setNotice("Profile updated.");
+                                        });
+                                    }
+                                }}
+                            />
                         </div>
-                        <button
-                            className={classes("secondary-button")}
-                            type="button"
-                            disabled={
-                                !pushState.supported || pushState.checking || busyAction === "push"
-                            }
-                            onClick={() =>
-                                void act("push", async () => {
-                                    setPushState(
-                                        pushState.enabled
-                                            ? await disablePush(service)
-                                            : await enablePush(service),
-                                    );
-                                })
-                            }
+                    </form>
+                </section>
+
+                <section aria-labelledby="settings-appearance-heading">
+                    <h3 id="settings-appearance-heading">Appearance</h3>
+                    <div className={classes("settings-row")}>
+                        <span>Theme</span>
+                        <div
+                            className={classes("settings-theme-options")}
+                            role="group"
+                            aria-label="Theme"
                         >
-                            {pushState.checking ? (
-                                <>
-                                    <LoaderCircle className={classes("spin")} />
-                                    Checking
-                                </>
-                            ) : pushState.enabled ? (
-                                <>
-                                    <BellOff />
-                                    Disable
-                                </>
-                            ) : (
-                                <>
-                                    <Bell />
-                                    Enable
-                                </>
-                            )}
-                        </button>
-                        {pushState.enabled ? (
+                            {[
+                                { value: "dark", label: "Dark" },
+                                { value: "light", label: "Light" },
+                                { value: "system", label: "System" },
+                            ].map((option) => (
+                                <button
+                                    key={option.value}
+                                    type="button"
+                                    aria-pressed={theme === option.value}
+                                    onClick={() => setThemeChoice(option.value)}
+                                >
+                                    {option.label}
+                                </button>
+                            ))}
+                        </div>
+                    </div>
+                    <div className={classes("settings-row settings-row--notifications")}>
+                        <span>Notifications</span>
+                        <p>Generic alerts only. No message text leaves your device.</p>
+                        <div className={classes("settings-row__actions")}>
+                            {pushState.enabled ? (
+                                <button
+                                    className={classes("settings-row__secondary-action")}
+                                    type="button"
+                                    disabled={busyAction === "push-test"}
+                                    onClick={() =>
+                                        void act("push-test", async () => {
+                                            await sendTestPush();
+                                            setNotice("Test notification sent.");
+                                        })
+                                    }
+                                >
+                                    Test
+                                </button>
+                            ) : null}
                             <button
-                                className={classes("secondary-button")}
                                 type="button"
-                                disabled={busyAction === "push-test"}
+                                disabled={
+                                    !pushState.supported ||
+                                    pushState.checking ||
+                                    busyAction === "push"
+                                }
+                                aria-pressed={pushState.enabled}
                                 onClick={() =>
-                                    void act("push-test", async () => {
-                                        await sendTestPush();
-                                        setNotice(
-                                            "Test notification sent. It should appear on this device momentarily.",
+                                    void act("push", async () => {
+                                        setPushState(
+                                            pushState.enabled
+                                                ? await disablePush(service)
+                                                : await enablePush(service),
                                         );
                                     })
                                 }
                             >
-                                {busyAction === "push-test" ? (
-                                    <LoaderCircle className={classes("spin")} />
-                                ) : (
-                                    <Bell />
-                                )}
-                                Send test
+                                {pushState.checking ? "Checking" : pushState.enabled ? "On" : "Off"}
                             </button>
-                        ) : null}
-                        {pushState.permission === "denied" ? (
-                            <p className={classes("inline-error")}>
-                                Notifications are blocked in browser settings.
-                            </p>
-                        ) : null}
-                        {pushState.error ? (
-                            <p className={classes("inline-error")}>{pushState.error}</p>
-                        ) : null}
+                        </div>
                     </div>
+                    {pushState.permission === "denied" ? (
+                        <p className={classes("inline-error")}>
+                            Notifications are blocked in browser settings.
+                        </p>
+                    ) : null}
+                    {pushState.error ? (
+                        <p className={classes("inline-error")}>{pushState.error}</p>
+                    ) : null}
                 </section>
 
-                <section>
-                    <h3>
-                        <ShieldCheck />
-                        Encryption & recovery
-                    </h3>
-                    <div className={classes("crypto-status")}>
-                        <span
-                            className={classes(cryptoStatus?.secretStorageReady ? "is-ready" : "")}
+                <section aria-labelledby="settings-encryption-heading">
+                    <h3 id="settings-encryption-heading">Encryption</h3>
+                    <div className={classes("settings-row settings-row--recovery")}>
+                        <span>Recovery</span>
+                        <p>
+                            {cryptoStatus?.secretStorageReady && cryptoStatus.crossSigningReady
+                                ? "Secret storage, cross-signing and key backup are active."
+                                : "Finish recovery setup to protect your encrypted history."}
+                        </p>
+                        <button
+                            type="button"
+                            aria-expanded={recoveryExpanded}
+                            onClick={() => setRecoveryExpanded((value) => !value)}
                         >
-                            {cryptoStatus?.secretStorageReady ? <Check /> : <KeyRound />}Secret
-                            storage
-                        </span>
-                        <span
-                            className={classes(cryptoStatus?.crossSigningReady ? "is-ready" : "")}
-                        >
-                            {cryptoStatus?.crossSigningReady ? <Check /> : <KeyRound />}
-                            Cross-signing
-                        </span>
-                        <span className={classes(cryptoStatus?.backupVersion ? "is-ready" : "")}>
-                            {cryptoStatus?.backupVersion ? <Check /> : <KeyRound />}Key backup
-                        </span>
+                            {recoveryExpanded ? "Done" : "Manage"}
+                        </button>
                     </div>
-                    {!cryptoStatus?.secretStorageReady ? (
-                        <div className={classes("settings-block")}>
-                            <label htmlFor="recovery-passphrase">
-                                Optional recovery passphrase
-                            </label>
-                            <input
-                                id="recovery-passphrase"
-                                type="password"
-                                value={passphrase}
-                                onChange={(event) => setPassphrase(event.target.value)}
-                                placeholder="Leave blank for a recovery key"
-                            />
-                            <button
-                                className={classes("secondary-button")}
-                                type="button"
-                                disabled={busyAction === "recovery"}
-                                onClick={() =>
-                                    void act("recovery", async () => {
-                                        const key = await service.setupRecovery(passphrase);
 
-                                        setGeneratedRecovery(key);
-                                        setCryptoStatus(await service.getCryptoStatus());
-                                    })
-                                }
-                            >
-                                <LockKeyhole />
-                                Set up recovery
-                            </button>
-                        </div>
-                    ) : (
-                        <div className={classes("settings-block")}>
-                            <label htmlFor="recovery-key">Recovery key or passphrase</label>
-                            <textarea
-                                id="recovery-key"
-                                rows={3}
-                                value={recoveryInput}
-                                onChange={(event) => setRecoveryInput(event.target.value)}
-                            />
-                            <button
-                                className={classes("secondary-button")}
-                                type="button"
-                                disabled={!recoveryInput.trim() || busyAction === "unlock"}
-                                onClick={() =>
-                                    void act("unlock", async () => {
-                                        await service.unlockRecovery(recoveryInput.trim());
-                                        setNotice("Recovery storage unlocked on this device.");
-                                    })
-                                }
-                            >
-                                <KeyRound />
-                                Unlock recovery
-                            </button>
-                        </div>
-                    )}
-                    {generatedRecovery ? (
-                        <div className={classes("recovery-result")} role="status">
-                            <strong>Save this somewhere safe. It will not be shown again.</strong>
-                            <code>{generatedRecovery}</code>
-                            <button
-                                type="button"
-                                onClick={() =>
-                                    void navigator.clipboard.writeText(generatedRecovery)
-                                }
-                            >
-                                <Copy />
-                                Copy recovery key
-                            </button>
-                        </div>
-                    ) : null}
-                    <button
-                        className={classes("secondary-button full-width")}
-                        type="button"
-                        disabled={busyAction === "verify"}
-                        onClick={() =>
-                            void act("verify", async () => {
-                                await service.startDeviceVerification();
-                                onVerificationStarted();
-                            })
-                        }
-                    >
-                        <ShieldCheck />
-                        Verify with another device
-                    </button>
-
-                    <h3>
-                        <Users />
-                        Devices
-                    </h3>
-                    <div className={classes("device-list")}>
-                        {devices.map((device) => (
-                            <div key={device.deviceId}>
+                    {recoveryExpanded ? (
+                        <div className={classes("settings-recovery-panel")}>
+                            <div className={classes("crypto-status")}>
                                 <span
                                     className={classes(
-                                        device.current
-                                            ? "status-dot status-dot--online"
-                                            : "status-dot",
+                                        cryptoStatus?.secretStorageReady ? "is-ready" : "",
                                     )}
-                                />
-                                <span>
-                                    <strong>
-                                        {device.displayName}
-                                        {device.current ? " · this device" : ""}
-                                    </strong>
-                                    <small>
-                                        {device.deviceId}
-                                        {device.lastSeenTs
-                                            ? ` · ${new Date(device.lastSeenTs).toLocaleDateString()}`
-                                            : ""}
-                                    </small>
-                                    <small
-                                        className={classes(
-                                            device.verified
-                                                ? "device-trust device-trust--verified"
-                                                : "device-trust",
-                                        )}
-                                    >
-                                        {device.verified ? "Verified" : "Not verified"}
-                                    </small>
+                                >
+                                    {cryptoStatus?.secretStorageReady ? <Check /> : <KeyRound />}
+                                    Secret storage
                                 </span>
-                                {!device.current && !device.verified ? (
+                                <span
+                                    className={classes(
+                                        cryptoStatus?.crossSigningReady ? "is-ready" : "",
+                                    )}
+                                >
+                                    {cryptoStatus?.crossSigningReady ? <Check /> : <KeyRound />}
+                                    Cross-signing
+                                </span>
+                                <span
+                                    className={classes(
+                                        cryptoStatus?.backupVersion ? "is-ready" : "",
+                                    )}
+                                >
+                                    {cryptoStatus?.backupVersion ? <Check /> : <KeyRound />}
+                                    Key backup
+                                </span>
+                            </div>
+                            {!cryptoStatus?.secretStorageReady ? (
+                                <div className={classes("settings-block")}>
+                                    <label htmlFor="recovery-passphrase">
+                                        Optional recovery passphrase
+                                    </label>
+                                    <input
+                                        id="recovery-passphrase"
+                                        type="password"
+                                        value={passphrase}
+                                        onChange={(event) => setPassphrase(event.target.value)}
+                                        placeholder="Leave blank for a recovery key"
+                                    />
                                     <button
+                                        className={classes("secondary-button")}
                                         type="button"
-                                        disabled={busyAction === `verify-${device.deviceId}`}
+                                        disabled={busyAction === "recovery"}
                                         onClick={() =>
-                                            void act(`verify-${device.deviceId}`, async () => {
-                                                await service.startDeviceVerification(
-                                                    device.deviceId,
-                                                );
-                                                onVerificationStarted();
+                                            void act("recovery", async () => {
+                                                const key = await service.setupRecovery(passphrase);
+
+                                                setGeneratedRecovery(key);
+                                                setCryptoStatus(await service.getCryptoStatus());
                                             })
                                         }
                                     >
-                                        Verify
+                                        Set up recovery
                                     </button>
-                                ) : null}
-                            </div>
-                        ))}
+                                </div>
+                            ) : (
+                                <div className={classes("settings-block")}>
+                                    <label htmlFor="recovery-key">Recovery key or passphrase</label>
+                                    <textarea
+                                        id="recovery-key"
+                                        rows={3}
+                                        value={recoveryInput}
+                                        onChange={(event) => setRecoveryInput(event.target.value)}
+                                    />
+                                    <button
+                                        className={classes("secondary-button")}
+                                        type="button"
+                                        disabled={!recoveryInput.trim() || busyAction === "unlock"}
+                                        onClick={() =>
+                                            void act("unlock", async () => {
+                                                await service.unlockRecovery(recoveryInput.trim());
+                                                setNotice(
+                                                    "Recovery storage unlocked on this device.",
+                                                );
+                                            })
+                                        }
+                                    >
+                                        Unlock recovery
+                                    </button>
+                                </div>
+                            )}
+                            {generatedRecovery ? (
+                                <div className={classes("recovery-result")} role="status">
+                                    <strong>
+                                        Save this somewhere safe. It will not be shown again.
+                                    </strong>
+                                    <code>{generatedRecovery}</code>
+                                    <button
+                                        type="button"
+                                        onClick={() =>
+                                            void navigator.clipboard.writeText(generatedRecovery)
+                                        }
+                                    >
+                                        <Copy /> Copy recovery key
+                                    </button>
+                                </div>
+                            ) : null}
+                            <button
+                                className={classes("secondary-button")}
+                                type="button"
+                                disabled={busyAction === "verify"}
+                                onClick={() =>
+                                    void act("verify", async () => {
+                                        await service.startDeviceVerification();
+                                        onVerificationStarted();
+                                    })
+                                }
+                            >
+                                Verify with another device
+                            </button>
+                            {devices.some((device) => !device.current) ? (
+                                <div className={classes("device-list")}>
+                                    {devices
+                                        .filter((device) => !device.current)
+                                        .map((device) => (
+                                            <div key={device.deviceId}>
+                                                <span className={classes("status-dot")} />
+                                                <span>
+                                                    <strong>{device.displayName}</strong>
+                                                    <small>{device.deviceId}</small>
+                                                    <small>
+                                                        {device.verified
+                                                            ? "Verified"
+                                                            : "Not verified"}
+                                                    </small>
+                                                </span>
+                                                {!device.verified ? (
+                                                    <button
+                                                        type="button"
+                                                        disabled={
+                                                            busyAction ===
+                                                            `verify-${device.deviceId}`
+                                                        }
+                                                        onClick={() =>
+                                                            void act(
+                                                                `verify-${device.deviceId}`,
+                                                                async () => {
+                                                                    await service.startDeviceVerification(
+                                                                        device.deviceId,
+                                                                    );
+                                                                    onVerificationStarted();
+                                                                },
+                                                            )
+                                                        }
+                                                    >
+                                                        Verify
+                                                    </button>
+                                                ) : null}
+                                            </div>
+                                        ))}
+                                </div>
+                            ) : null}
+                        </div>
+                    ) : null}
+
+                    <div className={classes("settings-row settings-row--device")}>
+                        <span>This device</span>
+                        <p>
+                            {currentDevice?.deviceId ?? snapshot.deviceId} ·{" "}
+                            {currentDevice?.verified === false ? "not verified" : "verified"}
+                        </p>
+                        <button
+                            type="button"
+                            onClick={() => {
+                                if (
+                                    window.confirm(
+                                        "Sign out of Sub-Etha on this device? Local message and encryption stores will be cleared.",
+                                    )
+                                ) {
+                                    void onLogout();
+                                }
+                            }}
+                        >
+                            Sign out
+                        </button>
                     </div>
-                    <button
-                        className={classes("danger-button")}
-                        type="button"
-                        onClick={() => {
-                            if (
-                                window.confirm(
-                                    "Sign out of Sub-Etha on this device? Local message and encryption stores will be cleared.",
-                                )
-                            ) {
-                                void onLogout();
-                            }
-                        }}
-                    >
-                        <LogOut />
-                        Sign out and clear this device
-                    </button>
                 </section>
             </div>
             {notice ? (

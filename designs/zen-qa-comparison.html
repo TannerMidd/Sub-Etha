@@ -1,0 +1,219 @@
+<!doctype html>
+<html lang="en">
+    <head>
+        <meta charset="utf-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1" />
+        <title>Sub-Etha Zen design comparison</title>
+        <style>
+            :root {
+                color-scheme: dark;
+                font-family: Arial, sans-serif;
+                background: #0f0d0c;
+                color: #eae5dd;
+            }
+
+            * {
+                box-sizing: border-box;
+            }
+
+            body {
+                width: min(2120px, 100%);
+                margin: 0 auto;
+                padding: 40px;
+            }
+
+            header {
+                margin-bottom: 40px;
+            }
+
+            h1,
+            h2,
+            p {
+                margin: 0;
+            }
+
+            h1 {
+                font-size: 28px;
+                font-weight: 500;
+            }
+
+            header p,
+            figcaption {
+                color: #8f8880;
+                font-size: 13px;
+            }
+
+            header p {
+                margin-top: 10px;
+            }
+
+            section + section {
+                margin-top: 56px;
+            }
+
+            h2 {
+                margin-bottom: 16px;
+                color: #c9a86a;
+                font-size: 14px;
+                font-weight: 500;
+                letter-spacing: 0.14em;
+                text-transform: uppercase;
+            }
+
+            .pair {
+                display: grid;
+                grid-template-columns: repeat(2, minmax(0, 1fr));
+                gap: 24px;
+                align-items: start;
+            }
+
+            figure {
+                min-width: 0;
+                margin: 0;
+            }
+
+            figcaption {
+                margin-bottom: 8px;
+            }
+
+            img {
+                display: block;
+                max-width: 100%;
+                height: auto;
+                border: 1px solid #2a2624;
+                background: #191614;
+            }
+
+            .compact .pair {
+                grid-template-columns: repeat(2, minmax(0, 520px));
+            }
+
+            @media (max-width: 900px) {
+                body {
+                    padding: 20px;
+                }
+
+                .pair,
+                .compact .pair {
+                    grid-template-columns: minmax(0, 1fr);
+                }
+            }
+        </style>
+    </head>
+    <body>
+        <header>
+            <h1>Sub-Etha · Zen reference vs. implementation</h1>
+            <p>Captured at the source canvas dimensions after automated browser verification.</p>
+        </header>
+
+        <section>
+            <h2>Desktop conversation · 1920 × 1080</h2>
+            <div class="pair">
+                <figure>
+                    <figcaption>Reference</figcaption>
+                    <img src="zen-target-chat-desktop.png" alt="Zen desktop reference" />
+                </figure>
+                <figure>
+                    <figcaption>Implementation</figcaption>
+                    <img
+                        src="zen-implementation-chat-desktop.png"
+                        alt="Zen desktop implementation"
+                    />
+                </figure>
+            </div>
+        </section>
+
+        <section>
+            <h2>Login · 1920 × 1080</h2>
+            <div class="pair">
+                <figure>
+                    <figcaption>Reference</figcaption>
+                    <img src="zen-target-login-desktop.png" alt="Zen login reference" />
+                </figure>
+                <figure>
+                    <figcaption>Implementation</figcaption>
+                    <img
+                        src="zen-implementation-login-desktop.png"
+                        alt="Zen login implementation"
+                    />
+                </figure>
+            </div>
+        </section>
+
+        <section class="compact">
+            <h2>Mobile conversation · 390 × 844</h2>
+            <div class="pair">
+                <figure>
+                    <figcaption>Reference</figcaption>
+                    <img src="zen-target-chat-mobile.png" alt="Zen mobile chat reference" />
+                </figure>
+                <figure>
+                    <figcaption>Implementation</figcaption>
+                    <img
+                        src="zen-implementation-chat-mobile.png"
+                        alt="Zen mobile chat implementation"
+                    />
+                </figure>
+            </div>
+        </section>
+
+        <section class="compact">
+            <h2>Mobile rooms · 390 × 844</h2>
+            <div class="pair">
+                <figure>
+                    <figcaption>Reference</figcaption>
+                    <img src="zen-target-rooms-mobile.png" alt="Zen mobile rooms reference" />
+                </figure>
+                <figure>
+                    <figcaption>Implementation</figcaption>
+                    <img
+                        src="zen-implementation-rooms-mobile.png"
+                        alt="Zen mobile rooms implementation"
+                    />
+                </figure>
+            </div>
+        </section>
+
+        <section>
+            <h2>Empty state · 760 × 404</h2>
+            <div class="pair">
+                <figure>
+                    <figcaption>Reference</figcaption>
+                    <img src="zen-target-empty.png" alt="Zen empty-state reference" />
+                </figure>
+                <figure>
+                    <figcaption>Implementation</figcaption>
+                    <img src="zen-implementation-empty.png" alt="Zen empty-state implementation" />
+                </figure>
+            </div>
+        </section>
+
+        <section>
+            <h2>Invitation · 760 × 404</h2>
+            <div class="pair">
+                <figure>
+                    <figcaption>Reference</figcaption>
+                    <img src="zen-target-invite.png" alt="Zen invitation reference" />
+                </figure>
+                <figure>
+                    <figcaption>Implementation</figcaption>
+                    <img src="zen-implementation-invite.png" alt="Zen invitation implementation" />
+                </figure>
+            </div>
+        </section>
+
+        <section>
+            <h2>Settings · 1040 × 900</h2>
+            <div class="pair">
+                <figure>
+                    <figcaption>Reference</figcaption>
+                    <img src="zen-target-settings.png" alt="Zen settings reference" />
+                </figure>
+                <figure>
+                    <figcaption>Implementation</figcaption>
+                    <img src="zen-implementation-settings.png" alt="Zen settings implementation" />
+                </figure>
+            </div>
+        </section>
+    </body>
+</html>

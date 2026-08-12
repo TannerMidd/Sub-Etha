@@ -446,6 +446,246 @@
     color: var(--teal);
 }
 
+/* Zen settings sheet. The compact summary is the visual default; recovery
+   tools expand in place so none of the existing account controls disappear. */
+.dialog-card--settings {
+    box-sizing: content-box;
+    width: min(1040px, 100%);
+    height: min(900px, calc(100svh - 40px - var(--safe-top) - var(--safe-bottom)));
+    max-height: 900px;
+    overflow-y: auto;
+    border-color: var(--line);
+    background: var(--paper);
+}
+
+.dialog-card--settings .dialog-card__header {
+    min-height: 96px;
+    padding: 0 56px;
+    border-bottom-color: var(--line);
+    background: var(--paper);
+}
+
+.dialog-card--settings .dialog-card__header h2 {
+    font: 400 22px/1 var(--font-ui);
+    letter-spacing: -0.02em;
+}
+
+.dialog-card--settings .dialog-card__header .icon-button {
+    width: auto;
+    min-width: 44px;
+    padding: 0;
+    border: 0;
+    color: var(--ink-soft);
+    font: 300 13px/1 var(--font-ui);
+}
+
+.dialog-card--settings .dialog-card__header .icon-button:hover {
+    color: var(--signal);
+}
+
+.dialog-card--settings > :not(.dialog-card__header) {
+    margin-right: 56px;
+    margin-left: 56px;
+}
+
+.dialog-card--settings > :last-child {
+    margin-bottom: 40px;
+}
+
+.settings-sheet section {
+    min-width: 0;
+}
+
+.settings-sheet h3 {
+    margin: 0;
+    padding: 38px 0 18px;
+    color: var(--ink-soft);
+    font: 500 11px/1 var(--font-ui);
+    letter-spacing: 0.2em;
+    text-transform: uppercase;
+}
+
+.settings-profile {
+    margin: 0;
+}
+
+.settings-row {
+    min-width: 0;
+    min-height: 60px;
+    padding: 22px 0;
+    display: grid;
+    grid-template-columns: 220px 40px minmax(0, 1fr) auto;
+    align-items: center;
+    column-gap: 0;
+    border-top: 1px solid var(--line);
+    color: var(--ink-soft);
+    font: 300 14px/1.5 var(--font-ui);
+}
+
+.settings-row > :first-child {
+    grid-column: 1;
+}
+
+.settings-row > input:not(.settings-file-input),
+.settings-row > output,
+.settings-row > p,
+.settings-row > .settings-theme-options {
+    grid-column: 3;
+}
+
+.settings-row > button,
+.settings-row > .settings-row__actions {
+    grid-column: 4;
+}
+
+.settings-row input:not(.settings-file-input) {
+    min-height: 0;
+    padding: 0 0 6px;
+    border: 0;
+    border-bottom: 1px solid var(--line);
+    border-radius: 0;
+    background: transparent;
+    color: var(--ink);
+    font: 300 16px/1.5 var(--font-display);
+}
+
+.settings-row output,
+.settings-row p {
+    min-width: 0;
+    margin: 0;
+    color: var(--ink-soft);
+    font: 300 14px/1.6 var(--font-display);
+}
+
+.settings-row > button,
+.settings-row__actions button,
+.settings-theme-options button,
+.settings-text-action {
+    position: relative;
+    min-height: 0;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    color: var(--ink-soft);
+    cursor: pointer;
+    font: 300 13px/1 var(--font-ui);
+}
+
+.settings-row > button::before,
+.settings-row__actions button::before,
+.settings-theme-options button::before {
+    content: "";
+    position: absolute;
+    inset: -15px -10px;
+}
+
+.settings-row > button:hover,
+.settings-row__actions button:hover,
+.settings-theme-options button:hover,
+.settings-text-action:hover {
+    color: var(--signal);
+}
+
+.settings-row--picture {
+    min-height: 92px;
+    grid-template-columns: 220px 40px 48px auto minmax(0, 1fr);
+}
+
+.settings-row--picture .avatar {
+    width: 48px;
+    height: 48px;
+    grid-column: 3;
+    border-color: var(--line);
+    background: transparent;
+}
+
+.settings-row--picture .avatar > span {
+    visibility: hidden;
+}
+
+.settings-row--picture .settings-text-action {
+    min-height: 48px;
+    padding-left: 20px;
+    display: inline-flex;
+    align-items: center;
+    grid-column: 4;
+}
+
+.settings-file-input {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+}
+
+.settings-theme-options {
+    display: flex;
+    align-items: center;
+    gap: 32px;
+}
+
+.settings-theme-options button {
+    position: relative;
+    padding-bottom: 8px;
+    color: var(--ink-soft);
+}
+
+.settings-theme-options button[aria-pressed="true"] {
+    color: var(--ink);
+}
+
+.settings-theme-options button[aria-pressed="true"]::after {
+    content: "";
+    position: absolute;
+    right: 0;
+    bottom: 0;
+    left: 0;
+    height: 1px;
+    background: var(--signal);
+}
+
+.settings-row__actions {
+    display: flex;
+    align-items: center;
+    gap: 20px;
+}
+
+.settings-row__actions button:last-child {
+    color: var(--signal);
+}
+
+.settings-row__secondary-action {
+    opacity: 0;
+    transition: opacity var(--motion-fast) var(--motion-ease);
+}
+
+.settings-row:hover .settings-row__secondary-action,
+.settings-row:focus-within .settings-row__secondary-action {
+    opacity: 1;
+}
+
+.settings-recovery-panel {
+    margin-left: 260px;
+    padding: 22px 0 28px;
+    display: grid;
+    gap: 14px;
+    border-top: 1px solid var(--line);
+}
+
+.settings-recovery-panel .crypto-status {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.settings-recovery-panel .secondary-button {
+    justify-self: start;
+}
+
+.settings-row--device > button {
+    color: var(--ink-soft);
+}
+
 .verification-flow {
     padding: 28px 0 4px;
     text-align: center;
@@ -902,6 +1142,76 @@
 
     .dialog-card > .danger-button {
         width: calc(100% - 36px - var(--safe-left) - var(--safe-right));
+    }
+
+    .dialog-card--settings {
+        width: 100%;
+        height: 100svh;
+        max-height: 100svh;
+    }
+
+    .dialog-card--settings .dialog-card__header {
+        min-height: calc(72px + var(--safe-top));
+        padding: var(--safe-top) calc(22px + var(--safe-right)) 0 calc(22px + var(--safe-left));
+    }
+
+    .dialog-card--settings > :not(.dialog-card__header) {
+        margin-right: calc(22px + var(--safe-right));
+        margin-left: calc(22px + var(--safe-left));
+    }
+
+    .settings-sheet h3 {
+        padding-top: 30px;
+    }
+
+    .settings-row {
+        grid-template-columns: minmax(0, 1fr) auto;
+        row-gap: 8px;
+    }
+
+    .settings-row > :first-child {
+        grid-column: 1;
+    }
+
+    .settings-row > input:not(.settings-file-input),
+    .settings-row > output,
+    .settings-row > p,
+    .settings-row > .settings-theme-options {
+        grid-column: 1 / -1;
+        grid-row: 2;
+    }
+
+    .settings-row > button,
+    .settings-row > .settings-row__actions {
+        grid-column: 2;
+        grid-row: 1;
+    }
+
+    .settings-row--picture {
+        grid-template-columns: 48px minmax(0, 1fr) auto;
+    }
+
+    .settings-row--picture > :first-child {
+        grid-column: 1 / -1;
+    }
+
+    .settings-row--picture .avatar {
+        grid-column: 1;
+        grid-row: 2;
+    }
+
+    .settings-row--picture .settings-text-action {
+        grid-column: 2;
+        grid-row: 2;
+        justify-self: start;
+    }
+
+    .settings-recovery-panel {
+        margin-left: 0;
+    }
+
+    .settings-recovery-panel .crypto-status {
+        grid-template-columns: minmax(0, 1fr);
     }
 
     .settings-grid {

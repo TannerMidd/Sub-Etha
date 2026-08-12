@@ -361,8 +361,15 @@ export function Composer({
 
             {uploadProgress !== null ? (
                 <div className={classes("upload-progress")}>
-                    <span style={{ width: `${uploadProgress}%` }} />
-                    <p>Sending attachment · {uploadProgress}%</p>
+                    <span
+                        role="progressbar"
+                        aria-label="Sending attachment"
+                        aria-valuemin={0}
+                        aria-valuemax={100}
+                        aria-valuenow={uploadProgress}
+                        style={{ width: `${uploadProgress}%` }}
+                    />
+                    <p aria-live="polite">Sending attachment · {uploadProgress}%</p>
                     {cancelUpload ? (
                         <button type="button" onClick={cancelUpload} aria-label="Cancel upload">
                             <X />
@@ -388,7 +395,8 @@ export function Composer({
                     onClick={() => fileInput.current?.click()}
                     disabled={sending || Boolean(editing)}
                 >
-                    <Paperclip />
+                    <Paperclip aria-hidden="true" />
+                    <span>Attach</span>
                 </button>
                 <label className={classes("sr-only")} htmlFor="message-composer">
                     {attachment ? "Attachment caption" : "Message"}
@@ -435,8 +443,9 @@ export function Composer({
                             ? "Revise this message…"
                             : attachment
                               ? "Add a caption…"
-                              : `Message ${roomName}`
+                              : `Write to ${roomName}`
                     }
+                    data-compose-mode={editing ? "editing" : attachment ? "attachment" : "message"}
                     rows={1}
                 />
                 <div className={classes("emoji-control")} ref={emojiWrap}>

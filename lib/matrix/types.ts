@@ -88,6 +88,10 @@ export interface TimelineItem {
     decryptionState: "ready" | "decrypting" | "failed";
     media?: MatrixMediaRef;
     replyTo?: string;
+    replySummary?: {
+        senderName: string;
+        body: string;
+    };
     reactions: ReactionSummary[];
     sendingStatus: string | null;
     readBy: string[];

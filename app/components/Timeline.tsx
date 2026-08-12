@@ -75,16 +75,16 @@ type UserScrollDirection = -1 | 0 | 1;
 const AUTHOR_ACCENTS = [
     "var(--participant-steel)",
     "var(--participant-mist)",
+    "var(--participant-orchid, var(--participant-mist))",
     "var(--participant-clay)",
-    "var(--participant-sand)",
-    "var(--participant-sky)",
+    "var(--teal)",
 ] as const;
 
 type AuthorAccentStyle = CSSProperties & { "--author-accent": string };
 
 function getAuthorAccentStyle(senderId: string, own: boolean): AuthorAccentStyle {
     if (own) {
-        return { "--author-accent": "var(--signal)" };
+        return { "--author-accent": "var(--ink)" };
     }
 
     const localpart = senderId.startsWith("@")
@@ -101,14 +101,34 @@ function getAuthorAccentStyle(senderId: string, own: boolean): AuthorAccentStyle
 
 function estimateTimelineItemHeight(item: TimelineItem, viewportWidth: number): number {
     const compact = viewportWidth <= TIMELINE_COMPACT_BREAKPOINT_PX;
-    const textHeight = compact ? 132 : 80;
+    const availableTextWidth = compact
+        ? Math.max(180, viewportWidth - 116)
+        : Math.min(680, Math.max(240, viewportWidth - 600));
+    const approximateCharactersPerLine = Math.max(
+        20,
+        Math.floor(availableTextWidth / (compact ? 7.1 : 7.2)),
+    );
+    const estimatedTextLines = Math.max(
+        1,
+        item.body
+            .split("\n")
+            .filter((line) => line.length > 0)
+            .reduce(
+                (total, line) =>
+                    total + Math.max(1, Math.ceil(line.length / approximateCharactersPerLine)),
+                0,
+            ),
+    );
+    const textHeight = (compact ? 66 : 82) + estimatedTextLines * (compact ? 25.2 : 27.52);
     let estimate = textHeight;
 
     if (!item.redacted && (item.type === "image" || item.type === "video")) {
-        const availableMediaWidth = Math.min(
-            TIMELINE_MAX_ESTIMATED_MEDIA_WIDTH_PX,
-            Math.max(240, viewportWidth - TIMELINE_ESTIMATED_MEDIA_GUTTER_PX),
-        );
+        const availableMediaWidth = compact
+            ? availableTextWidth
+            : Math.min(
+                  TIMELINE_MAX_ESTIMATED_MEDIA_WIDTH_PX,
+                  Math.max(240, viewportWidth - TIMELINE_ESTIMATED_MEDIA_GUTTER_PX),
+              );
         const mediaWidth = item.media?.width;
         const mediaHeight = item.media?.height;
         let frameHeight: number;
@@ -125,7 +145,7 @@ function estimateTimelineItemHeight(item: TimelineItem, viewportWidth: number): 
             frameHeight = availableMediaWidth * 0.75;
         }
 
-        estimate = (compact ? 110 : 75) + frameHeight;
+        estimate = textHeight + frameHeight + 8;
     } else if (!item.redacted && item.type === "audio") {
         estimate = compact ? 190 : 150;
     } else if (!item.redacted && item.type === "file") {
@@ -135,11 +155,11 @@ function estimateTimelineItemHeight(item: TimelineItem, viewportWidth: number): 
     }
 
     if (item.replyTo) {
-        estimate += compact ? 48 : 42;
+        estimate += compact ? 30 : 34;
     }
 
     if (item.reactions.length > 0) {
-        estimate += 30;
+        estimate += compact ? 23 : 34;
     }
 
     return Math.round(estimate);
@@ -213,12 +233,25 @@ function isEditableKeyboardTarget(target: EventTarget | null): boolean {
 }
 
 function formatTime(timestamp: number): string {
-    return new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" }).format(
-        timestamp,
-    );
+    return new Intl.DateTimeFormat(undefined, {
+        hour: "2-digit",
+        minute: "2-digit",
+        hourCycle: "h23",
+    }).format(timestamp);
 }
 
 function formatDate(timestamp: number): string {
+    const date = new Date(timestamp);
+    const today = new Date();
+
+    if (
+        date.getFullYear() === today.getFullYear() &&
+        date.getMonth() === today.getMonth() &&
+        date.getDate() === today.getDate()
+    ) {
+        return "Today";
+    }
+
     return new Intl.DateTimeFormat(undefined, {
         weekday: "long",
         month: "long",
@@ -1083,25 +1116,32 @@ function DayDivider({ timestamp }: { timestamp: number }) {
 }
 
 function PlainMessageBody({ body }: { body: string }) {
-    const segments = useMemo(() => messageTextSegments(body), [body]);
+    const paragraphs = useMemo(
+        () => body.split(/\n{2,}/).map((paragraph) => messageTextSegments(paragraph)),
+        [body],
+    );
 
     return (
-        <p className={classes("message-body")}>
-            {segments.map((segment, index) =>
-                segment.href ? (
-                    <a
-                        key={`${segment.href}-${index}`}
-                        href={segment.href}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                    >
-                        {segment.text}
-                    </a>
-                ) : (
-                    <Fragment key={index}>{segment.text}</Fragment>
-                ),
-            )}
-        </p>
+        <div className={classes("message-body")}>
+            {paragraphs.map((segments, paragraphIndex) => (
+                <p key={paragraphIndex}>
+                    {segments.map((segment, segmentIndex) =>
+                        segment.href ? (
+                            <a
+                                key={`${segment.href}-${segmentIndex}`}
+                                href={segment.href}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                            >
+                                {segment.text}
+                            </a>
+                        ) : (
+                            <Fragment key={segmentIndex}>{segment.text}</Fragment>
+                        ),
+                    )}
+                </p>
+            ))}
+        </div>
     );
 }
 
@@ -1196,9 +1236,16 @@ function FormattedMessageBody({ html }: { html: string }) {
     );
 }
 
+function replyExcerpt(item: TimelineItem): string {
+    const firstLine = item.body.split("\n", 1)[0] ?? item.body;
+
+    return firstLine.match(/^.*?[.!?](?=\s|$)/)?.[0] ?? firstLine;
+}
+
 function MessageRow({
     item,
     next,
+    replyItem,
     service,
     onReply,
     onEdit,
@@ -1206,6 +1253,7 @@ function MessageRow({
 }: {
     item: TimelineItem;
     next?: TimelineItem;
+    replyItem?: TimelineItem;
     service: MatrixService;
     onReply: (item: TimelineItem) => void;
     onEdit: (item: TimelineItem) => void;
@@ -1264,7 +1312,7 @@ function MessageRow({
             <article
                 ref={rowRef}
                 className={classes(
-                    `message-row${item.own ? " message-row--own" : ""}${item.type === "notice" ? " message-row--notice" : ""}${actionsOpen ? " is-actions-open" : ""}`,
+                    `message-row${item.own ? " message-row--own" : ""}${item.type === "notice" ? " message-row--notice" : ""}${next ? "" : " message-row--last"}${actionsOpen ? " is-actions-open" : ""}`,
                 )}
                 style={getAuthorAccentStyle(item.senderId, item.own)}
                 data-ui="message-row"
@@ -1294,7 +1342,11 @@ function MessageRow({
                     {item.replyTo ? (
                         <div className={classes("reply-context")}>
                             <CornerUpLeft aria-hidden="true" />
-                            Reply to an earlier transmission
+                            {replyItem
+                                ? `${replyItem.own ? "You" : replyItem.senderName} — ${replyExcerpt(replyItem)}`
+                                : item.replySummary
+                                  ? `${item.replySummary.senderName} — ${item.replySummary.body}`
+                                  : "Reply to an earlier transmission"}
                         </div>
                     ) : null}
                     {item.redacted ? (
@@ -1651,11 +1703,36 @@ export function Timeline({
         () => items.filter((item) => item.type === "image" && item.media && !item.redacted),
         [items],
     );
+    const itemsById = useMemo(() => new Map(items.map((item) => [item.id, item])), [items]);
     const estimateViewportWidth = typeof window === "undefined" ? 1_920 : window.innerWidth;
     const itemHeightEstimates = useMemo(
         () => items.map((item) => estimateTimelineItemHeight(item, estimateViewportWidth)),
         [estimateViewportWidth, items],
     );
+    const estimateLayoutSignature = useMemo(
+        () =>
+            items
+                .map(
+                    (item) =>
+                        `${item.id}:${item.type}:${item.media ? `${item.media.width ?? "?"}x${item.media.height ?? "?"}` : "none"}`,
+                )
+                .join("|"),
+        [items],
+    );
+    const previousEstimateLayoutSignature = useRef(estimateLayoutSignature);
+    const [estimateLayoutRevision, setEstimateLayoutRevision] = useState(0);
+
+    useLayoutEffect(() => {
+        if (previousEstimateLayoutSignature.current === estimateLayoutSignature) {
+            return;
+        }
+
+        previousEstimateLayoutSignature.current = estimateLayoutSignature;
+
+        if (scrollModeRef.current === "attached" || scrollModeRef.current === "initializing") {
+            setEstimateLayoutRevision((revision) => revision + 1);
+        }
+    }, [estimateLayoutSignature]);
     const loadEarlierHistory = useCallback(() => {
         if (
             scrollModeRef.current === "initializing" ||
@@ -2478,6 +2555,7 @@ export function Timeline({
             data-pagination-state={paginationState}
         >
             <Virtuoso
+                key={estimateLayoutRevision}
                 data={items}
                 firstItemIndex={firstItemIndex}
                 alignToBottom
@@ -2498,12 +2576,13 @@ export function Timeline({
                         <>
                             {item.id === unreadBoundaryId ? (
                                 <div className={classes("unread-divider")} role="separator">
-                                    <span>New messages</span>
+                                    <span>New</span>
                                 </div>
                             ) : null}
                             <MessageRow
                                 item={item}
                                 next={items[itemIndex + 1]}
+                                replyItem={item.replyTo ? itemsById.get(item.replyTo) : undefined}
                                 service={service}
                                 onReply={onReply}
                                 onEdit={onEdit}

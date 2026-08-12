@@ -2,6 +2,10 @@ import { expect, test, type Page } from "@playwright/test";
 
 const PREVIEW_URL = "/?design-preview#/room/signal-watch";
 const LOGIN_PREVIEW_URL = "/?design-preview&surface-preview=login";
+const SETTINGS_PREVIEW_URL = "/?design-preview&surface-preview=settings#/room/signal-watch";
+const ROOMS_PREVIEW_URL = "/?design-preview&surface-preview=rooms";
+const EMPTY_PREVIEW_URL = "/?design-preview&surface-preview=empty";
+const INVITE_PREVIEW_URL = "/?design-preview&surface-preview=invite#/room/observatory-invite";
 
 function captureRuntimeProblems(page: Page): string[] {
     const problems: string[] = [];
@@ -61,12 +65,65 @@ test("Zen settings dialog uses the shared line system", async ({ page }, testInf
         localStorage.setItem("sub-etha-theme", "dark");
         localStorage.removeItem("sub-etha-draft:signal-watch");
     });
-    await page.goto(PREVIEW_URL);
-    await page.getByRole("button", { name: "Settings", exact: true }).click();
+    await page.goto(SETTINGS_PREVIEW_URL);
     await expect(page.getByRole("dialog", { name: "Settings" })).toBeVisible();
     await page.evaluate(() => document.fonts.ready);
 
     await expect(page).toHaveScreenshot("zen-chat-settings-desktop-1920.png", {
+        animations: "disabled",
+        fullPage: true,
+    });
+    expect(runtimeProblems).toEqual([]);
+});
+
+test("Zen mobile room index matches the selected reference", async ({ page }, testInfo) => {
+    test.skip(testInfo.project.name !== "mobile-390", "Mobile room index reference only.");
+    const runtimeProblems = captureRuntimeProblems(page);
+
+    await page.addInitScript(() => {
+        localStorage.setItem("sub-etha-theme", "dark");
+    });
+    await page.goto(ROOMS_PREVIEW_URL);
+    await expect(page.locator('[data-ui="room-sidebar"]')).toBeVisible();
+    await page.evaluate(() => document.fonts.ready);
+
+    await expect(page).toHaveScreenshot("zen-chat-rooms-mobile-390.png", {
+        animations: "disabled",
+        fullPage: true,
+    });
+    expect(runtimeProblems).toEqual([]);
+});
+
+test("Zen empty room state uses the quiet centered treatment", async ({ page }, testInfo) => {
+    test.skip(testInfo.project.name !== "desktop-1920", "Desktop empty-state reference only.");
+    const runtimeProblems = captureRuntimeProblems(page);
+
+    await page.addInitScript(() => {
+        localStorage.setItem("sub-etha-theme", "dark");
+    });
+    await page.goto(EMPTY_PREVIEW_URL);
+    await expect(page.getByRole("heading", { name: "Nothing selected." })).toBeVisible();
+    await page.evaluate(() => document.fonts.ready);
+
+    await expect(page).toHaveScreenshot("zen-chat-empty-desktop-1920.png", {
+        animations: "disabled",
+        fullPage: true,
+    });
+    expect(runtimeProblems).toEqual([]);
+});
+
+test("Zen invitation state uses the quiet decision treatment", async ({ page }, testInfo) => {
+    test.skip(testInfo.project.name !== "desktop-1920", "Desktop invitation reference only.");
+    const runtimeProblems = captureRuntimeProblems(page);
+
+    await page.addInitScript(() => {
+        localStorage.setItem("sub-etha-theme", "dark");
+    });
+    await page.goto(INVITE_PREVIEW_URL);
+    await expect(page.getByRole("heading", { name: /invited you to Observatory/i })).toBeVisible();
+    await page.evaluate(() => document.fonts.ready);
+
+    await expect(page).toHaveScreenshot("zen-chat-invite-desktop-1920.png", {
         animations: "disabled",
         fullPage: true,
     });

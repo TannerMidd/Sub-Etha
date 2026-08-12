@@ -1101,3 +1101,780 @@
         transition: none;
     }
 }
+
+/* Zen shell --------------------------------------------------------------- */
+
+@font-face {
+    font-family: "Commissioner";
+    font-style: normal;
+    font-display: swap;
+    font-weight: 100 900;
+    src: url("/fonts/commissioner-variable.ttf") format("truetype");
+}
+
+@font-face {
+    font-family: "Literata";
+    font-style: normal;
+    font-display: swap;
+    font-weight: 200 900;
+    src: url("/fonts/literata-variable.ttf") format("truetype");
+}
+
+@font-face {
+    font-family: "Literata";
+    font-style: italic;
+    font-display: swap;
+    font-weight: 200 900;
+    src: url("/fonts/literata-variable-italic.ttf") format("truetype");
+}
+
+.app-shell {
+    --paper: #191614;
+    --paper-raised: #191614;
+    --paper-deep: #191614;
+    --ink: #eae5dd;
+    --ink-soft: #8f8880;
+    --line: #2a2624;
+    --line-strong: #2a2624;
+    --signal: #c9a86a;
+    --signal-dark: #c9a86a;
+    --teal: #8fa8c4;
+    --teal-strong: #8fa8c4;
+    --focus: #c9a86a;
+    --font-ui: "Commissioner", system-ui, sans-serif;
+    --font-display: "Literata", Georgia, serif;
+    --font-reading: "Literata", Georgia, serif;
+    --font-label: "Commissioner", system-ui, sans-serif;
+    --font-mono: "Commissioner", system-ui, sans-serif;
+
+    grid-template-columns: 340px minmax(0, 1fr);
+    background: var(--paper);
+    font-family: var(--font-ui);
+    letter-spacing: 0;
+}
+
+.app-shell button:focus-visible,
+.app-shell input:focus-visible {
+    outline-color: var(--focus);
+}
+
+.room-sidebar {
+    border-right-color: var(--line);
+    background: var(--paper);
+}
+
+.room-sidebar__header {
+    min-height: 96px;
+    flex-basis: 96px;
+    padding: 0 40px;
+    border: 0;
+}
+
+.room-sidebar__wordmark {
+    color: var(--ink-soft);
+    font: 500 12px/1 var(--font-ui);
+    letter-spacing: 0.34em;
+    text-transform: uppercase;
+    white-space: nowrap;
+}
+
+.room-sidebar__new,
+.room-sidebar__close {
+    display: none;
+}
+
+.transmission-search {
+    min-height: 56px;
+    flex-basis: 56px;
+    margin: 0 40px;
+    display: flex;
+    align-items: center;
+    border-bottom-color: var(--line);
+}
+
+.transmission-search input {
+    height: 55px;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    color: var(--ink);
+    font: 300 14px/1 var(--font-ui);
+}
+
+.transmission-search input::placeholder {
+    color: #7a736c;
+    opacity: 1;
+}
+
+.transmission-search input:focus-visible {
+    outline: 0;
+    caret-color: var(--signal);
+}
+
+.transmission-search > svg,
+.transmission-search > button,
+.transmission-search__submit,
+.room-column__header {
+    display: none;
+}
+
+/* The alternate unread scope remains available to assistive technology and
+ * keyboard users, but does not add a tab bar to the quiet rail. */
+.room-scope-tabs {
+    position: absolute;
+    z-index: 8;
+    top: 8px;
+    right: 8px;
+    width: 1px;
+    height: 1px;
+    min-height: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
+}
+
+.room-scope-tabs:focus-within {
+    width: auto;
+    height: 40px;
+    min-height: 40px;
+    margin: 0;
+    overflow: visible;
+    clip: auto;
+    display: grid;
+    grid-template-columns: 64px 82px;
+    border: 1px solid #38322e;
+    background: var(--paper);
+    white-space: normal;
+}
+
+.room-scope-tabs button {
+    min-height: 38px;
+    font: 400 11px/1 var(--font-ui);
+    letter-spacing: 0;
+    text-align: center;
+    text-transform: none;
+}
+
+.room-list {
+    padding: 8px 0 18px;
+}
+
+.room-group h2 {
+    min-height: 0;
+    margin: 22px 40px 0;
+    padding: 18px 0 8px;
+    border-top: 1px solid var(--line);
+    border-bottom: 0;
+    color: #7a736c;
+    font: 500 11px/1 var(--font-ui);
+    letter-spacing: 0.2em;
+    text-transform: uppercase;
+}
+
+.room-group h2 span {
+    display: none;
+}
+
+.room-group--rooms h2 {
+    display: none;
+}
+
+.room-group--direct h2 {
+    margin-top: 28px;
+    padding-top: 20px;
+    padding-bottom: 0;
+}
+
+.room-group--direct .room-list-item:first-of-type {
+    margin-top: 6px;
+}
+
+.room-list-item {
+    width: 100%;
+    height: 76px;
+    min-height: 76px;
+    padding: 0 40px;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 16px;
+}
+
+.room-list-item::before {
+    top: 0;
+    bottom: 0;
+    left: 0;
+    width: 1px;
+}
+
+.room-list-item.is-active::before {
+    background: var(--signal);
+}
+
+.room-list-item__copy {
+    gap: 6px;
+}
+
+.room-list-item__copy > span {
+    gap: 6px;
+}
+
+.room-list-item__copy strong {
+    color: #a8a29a;
+    font: 400 15px/1.2 var(--font-ui);
+}
+
+.room-list-item__copy small {
+    margin-top: 0;
+    color: #7a736c;
+    font: 300 13px/1.2 var(--font-ui);
+}
+
+.room-list-item.has-unread .room-list-item__copy strong,
+.room-list-item.is-active .room-list-item__copy strong {
+    color: var(--ink);
+}
+
+.room-list-item.is-active .room-list-item__copy strong {
+    font-weight: 500;
+}
+
+.room-list-item.has-unread .room-list-item__copy small,
+.room-list-item.is-active .room-list-item__copy small {
+    color: var(--ink-soft);
+}
+
+.room-list-item__meta {
+    gap: 7px;
+}
+
+.room-list-item__meta time {
+    color: #7a736c;
+    font: 300 11px/1 var(--font-ui);
+    font-variant-numeric: tabular-nums;
+}
+
+.room-list-item__meta .highlight-badge,
+.room-list-item__meta .unread-dot {
+    color: var(--signal);
+    font: 400 11px/1 var(--font-ui);
+    font-variant-numeric: tabular-nums;
+}
+
+.room-list-empty {
+    min-height: 160px;
+    padding: 30px 40px;
+    color: #7a736c;
+}
+
+.room-list-empty svg {
+    display: none;
+}
+
+.room-list-empty strong {
+    color: #a8a29a;
+    font: 400 14px/1.3 var(--font-ui);
+}
+
+.room-list-empty span {
+    margin-top: 7px;
+    font: 300 12px/1.5 var(--font-ui);
+}
+
+.profile-strip {
+    min-height: 104px;
+    flex: 0 0 104px;
+    margin: 0 40px;
+    padding: 0;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 20px;
+    border-top-color: var(--line);
+}
+
+.profile-strip > .avatar {
+    display: none;
+}
+
+.profile-strip__identity,
+.profile-strip__settings {
+    width: auto;
+    min-width: 0;
+    height: 44px;
+    padding: 0;
+    display: flex;
+    align-items: center;
+    background: transparent;
+}
+
+.profile-strip__identity {
+    flex: 1;
+    grid-row: auto;
+    text-align: left;
+}
+
+.profile-strip__identity strong {
+    color: var(--ink);
+    font: 400 15px/1 var(--font-ui);
+}
+
+.profile-strip__identity small {
+    margin-top: 5px;
+    color: #7a736c;
+    font: 300 12px/1 var(--font-ui);
+}
+
+.profile-strip__settings {
+    flex: 0 0 auto;
+    grid-row: auto;
+    justify-content: flex-end;
+}
+
+.profile-strip__settings svg {
+    display: none;
+}
+
+.profile-strip__settings span {
+    color: var(--ink-soft);
+    font: 400 13px/1 var(--font-ui);
+}
+
+.conversation,
+.conversation--single,
+.conversation-main {
+    background: var(--paper);
+}
+
+.conversation-header {
+    min-height: 96px;
+    flex-basis: 96px;
+    padding: 0 56px;
+    gap: 32px;
+    border-bottom-color: var(--line);
+}
+
+.conversation-header__title {
+    display: flex;
+    flex-direction: column;
+    gap: 7px;
+}
+
+.conversation-header__title h1 {
+    color: var(--ink);
+    font: 500 17px/1.1 var(--font-ui);
+    letter-spacing: -0.01em;
+}
+
+.conversation-header__title h1 svg {
+    display: none;
+}
+
+.conversation-header__title p {
+    margin: 0;
+    color: #7a736c;
+    font: 300 12px/1 var(--font-ui);
+}
+
+.conversation-commands {
+    height: 96px;
+    gap: 32px;
+}
+
+.conversation-commands button {
+    width: auto;
+    min-width: 0;
+    height: 44px;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    color: var(--ink-soft);
+    font: 400 13px/1 var(--font-ui);
+}
+
+.conversation-commands button + button {
+    border-left: 0;
+}
+
+.conversation-commands button svg {
+    display: none;
+}
+
+.conversation-commands button span {
+    display: inline;
+}
+
+.receiver-status {
+    display: none !important;
+}
+
+.app-shell .no-room-view,
+.app-shell .invite-view {
+    background: var(--paper);
+}
+
+.app-shell .guide-card {
+    width: min(420px, 100%);
+    max-width: 420px;
+    padding: 0;
+    overflow: visible;
+    border: 0;
+    background: transparent;
+    box-shadow: none;
+    text-align: center;
+}
+
+.app-shell .guide-card__number,
+.app-shell .guide-card .eyebrow {
+    display: none;
+}
+
+.app-shell .guide-card h1 {
+    margin: 0;
+    color: var(--ink);
+    font: 300 30px/1.3 var(--font-display);
+    letter-spacing: -0.02em;
+    text-transform: none;
+}
+
+.app-shell .guide-card > p:not(.eyebrow) {
+    max-width: none;
+    margin: 16px 0 28px;
+    color: #7a736c;
+    font: 300 15px/1.7 var(--font-display);
+    text-wrap: pretty;
+}
+
+.app-shell .guide-card .secondary-button {
+    min-height: 42px;
+    padding: 0 26px;
+    border-color: #38322e;
+    background: transparent;
+    color: var(--ink-soft);
+    font: 400 13px/1 var(--font-ui);
+}
+
+.app-shell .invite-card {
+    width: min(440px, 100%);
+    padding: 0;
+    overflow: visible;
+    border: 0;
+    background: transparent;
+    text-align: left;
+}
+
+.app-shell .invite-card .index-chip {
+    width: 100%;
+    height: auto;
+    padding: 0 0 14px;
+    display: block;
+    border: 0;
+    border-bottom: 1px solid var(--line);
+    background: transparent;
+    color: var(--signal);
+    font: 400 11px/1 var(--font-ui);
+    letter-spacing: 0.2em;
+    text-transform: uppercase;
+}
+
+.app-shell .invite-card .avatar {
+    display: none;
+}
+
+.app-shell .invite-card h2 {
+    margin: 26px 0 0;
+    color: var(--ink);
+    font: 300 26px/1.35 var(--font-display);
+    letter-spacing: -0.02em;
+}
+
+.app-shell .invite-card > p {
+    margin: 14px 0 32px;
+    color: #7a736c;
+    font: 300 15px/1.7 var(--font-display);
+}
+
+.app-shell .invite-card > div:last-child {
+    display: flex;
+    justify-content: flex-start;
+    gap: 14px;
+}
+
+.app-shell .invite-card .primary-button,
+.app-shell .invite-card .secondary-button {
+    min-height: 43px;
+    padding: 0 26px;
+    background: transparent;
+    font: 400 13px/1 var(--font-ui);
+}
+
+.app-shell .invite-card .primary-button {
+    border-color: var(--signal);
+    color: var(--signal);
+}
+
+.app-shell .invite-card .secondary-button {
+    border-color: #38322e;
+    color: var(--ink-soft);
+}
+
+.app-shell .invite-card button svg {
+    display: none;
+}
+
+@media (hover: hover) and (pointer: fine) {
+    .room-list-item:hover,
+    .room-list-item.is-active:hover {
+        background: transparent;
+    }
+
+    .room-list-item:hover .room-list-item__copy strong,
+    .profile-strip button:hover,
+    .conversation-commands button:hover {
+        color: var(--signal);
+        background: transparent;
+    }
+
+    .app-shell .guide-card .secondary-button:hover,
+    .app-shell .invite-card .secondary-button:hover {
+        border-color: var(--ink-soft);
+        background: transparent;
+        color: var(--ink);
+    }
+
+    .app-shell .invite-card .primary-button:hover {
+        border-color: #e0c48c;
+        background: transparent;
+        color: #e0c48c;
+    }
+}
+
+@media (max-width: 720px) {
+    .app-shell {
+        display: block;
+        width: 100%;
+        height: 100dvh;
+        min-height: 100dvh;
+    }
+
+    .room-sidebar {
+        position: relative;
+        inset: auto;
+        width: 100%;
+        height: 100dvh;
+        display: none;
+        transform: none;
+        visibility: visible;
+        pointer-events: auto;
+        transition: none;
+    }
+
+    .app-shell.mobile-rooms-open .room-sidebar {
+        display: flex;
+        transform: none;
+        visibility: visible;
+    }
+
+    .conversation,
+    .conversation--single {
+        width: 100%;
+        height: 100dvh;
+        display: grid;
+    }
+
+    .app-shell.mobile-rooms-open .conversation {
+        display: none;
+    }
+
+    .room-sidebar__header {
+        min-height: calc(72px + var(--safe-top));
+        flex-basis: calc(72px + var(--safe-top));
+        padding: var(--safe-top) max(22px, var(--safe-right)) 0 max(22px, var(--safe-left));
+        border-bottom: 1px solid var(--line);
+    }
+
+    .room-sidebar__wordmark {
+        font-size: 12px;
+    }
+
+    .room-sidebar__new {
+        min-width: 44px;
+        height: 44px;
+        padding: 0;
+        display: inline-flex;
+        align-items: center;
+        justify-content: flex-end;
+        border: 0;
+        background: transparent;
+        color: var(--ink-soft);
+        font: 400 12px/1 var(--font-ui);
+        cursor: pointer;
+    }
+
+    .room-sidebar__close {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        padding: 0;
+        display: block;
+        overflow: hidden;
+        clip: rect(0 0 0 0);
+        border: 0;
+        white-space: nowrap;
+    }
+
+    .room-sidebar__close:focus-visible {
+        position: absolute;
+        z-index: 4;
+        top: calc(14px + var(--safe-top));
+        right: max(70px, calc(70px + var(--safe-right)));
+        width: auto;
+        height: 44px;
+        padding: 0 12px;
+        overflow: visible;
+        clip: auto;
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        border: 1px solid #38322e;
+        background: var(--paper);
+        color: var(--ink-soft);
+        font: 400 12px/1 var(--font-ui);
+    }
+
+    .room-sidebar__close svg {
+        width: 15px;
+        height: 15px;
+    }
+
+    .transmission-search {
+        min-height: 56px;
+        flex-basis: 56px;
+        margin: 0 max(22px, var(--safe-right)) 0 max(22px, var(--safe-left));
+    }
+
+    .room-list {
+        padding: 8px 0 12px;
+    }
+
+    .room-group h2 {
+        margin-right: max(22px, var(--safe-right));
+        margin-left: max(22px, var(--safe-left));
+    }
+
+    .room-group--direct h2 {
+        margin-top: 24px;
+        padding-top: 18px;
+    }
+
+    .room-group--direct .room-list-item:first-of-type {
+        margin-top: 4px;
+    }
+
+    .room-list-item {
+        height: 80px;
+        min-height: 80px;
+        padding-right: max(22px, var(--safe-right));
+        padding-left: max(22px, var(--safe-left));
+    }
+
+    .room-list-item::before {
+        top: 0;
+        bottom: 0;
+        left: 0;
+    }
+
+    .room-list-item__copy strong {
+        font-size: 15px;
+    }
+
+    .room-list-item__copy small {
+        font-size: 13px;
+    }
+
+    .profile-strip {
+        min-height: calc(92px + var(--safe-bottom));
+        flex-basis: calc(92px + var(--safe-bottom));
+        margin: 0 max(22px, var(--safe-right)) 0 max(22px, var(--safe-left));
+        padding-bottom: var(--safe-bottom);
+    }
+
+    .conversation-header {
+        min-height: calc(72px + var(--safe-top));
+        flex: 0 0 calc(72px + var(--safe-top));
+        padding: var(--safe-top) max(22px, var(--safe-right)) 0 max(22px, var(--safe-left));
+        display: grid;
+        grid-template-columns: 28px minmax(0, 1fr) auto;
+        gap: 0;
+    }
+
+    .mobile-menu-button {
+        width: 28px;
+        height: 44px;
+        padding: 0;
+        display: flex;
+        align-items: center;
+        justify-content: flex-start;
+        border: 0;
+        background: transparent;
+        color: var(--ink-soft);
+    }
+
+    .mobile-menu-button svg {
+        width: 18px;
+        height: 18px;
+        stroke-width: 1.4;
+    }
+
+    .conversation-header__title {
+        padding: 0 16px;
+        gap: 5px;
+    }
+
+    .conversation-header__title h1 {
+        font-size: 15px;
+    }
+
+    .conversation-header__title p {
+        margin: 0;
+        font-size: 11px;
+    }
+
+    .conversation-commands {
+        width: auto;
+        height: 72px;
+        display: flex;
+    }
+
+    .conversation-commands button:first-child {
+        display: none;
+    }
+
+    .conversation-commands button {
+        width: auto;
+        min-width: 0;
+        height: 44px;
+        padding: 0;
+        display: inline-flex;
+        border: 0;
+        font-size: 12px;
+    }
+
+    .conversation-commands button span {
+        display: inline;
+    }
+
+    .app-shell .guide-card {
+        max-width: min(420px, calc(100% - 44px));
+    }
+
+    .app-shell .invite-card {
+        width: min(440px, 100%);
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .room-sidebar,
+    .app-shell button {
+        transition: none;
+    }
+}

@@ -23,6 +23,7 @@ function previewRoom(
     favourite = false,
     topic: string | null = null,
     classification?: string,
+    membership: RoomSummary["membership"] = "join",
 ): RoomSummary {
     return {
         id,
@@ -31,7 +32,7 @@ function previewRoom(
         topic,
         classification,
         avatarMxcUrl: id === "signal-watch" ? "mxc://preview/zen-mark" : null,
-        membership: "join",
+        membership,
         lastMessage,
         timestamp,
         unread,
@@ -118,53 +119,51 @@ function createPreviewService(): MatrixService {
         typeof window === "undefined" ? null : new URLSearchParams(window.location.search);
     const verificationPreview = previewParams?.get("verification-preview") ?? null;
     const uxPreview = previewParams?.get("ux-preview") ?? null;
+    const surfacePreview = previewParams?.get("surface-preview") ?? null;
+    const mobilePreview = typeof window !== "undefined" && window.innerWidth <= 720;
     const timelineStressPreview = uxPreview?.startsWith("timeline-stress") ?? false;
     let failNextStressPagination = uxPreview === "timeline-stress-failure";
     let nextStressStart = STRESS_INITIAL_START;
     let localStressSequence = 0;
     let stopTimelineStress: (() => void) | null = null;
-    const standardTimeline = [
-        previewMessage(
-            "m1",
-            "Vera",
-            "Weak carrier riding the band. Not our bird.\nLogging and letting it pass.",
-            at(10, 18),
-            false,
-            {
-                reactions: [
-                    { key: "👍", count: 3, mine: true },
-                    { key: "👁", count: 1, mine: false },
-                ],
+    const solMessage = previewMessage(
+        "m2",
+        "Sol",
+        "Copy. I’ll continue the sweep on the north arc and report any anomalies.\n\nLooks like background ion wash. Within margin.",
+        at(10, 21),
+    );
+    const tamsinMessage = previewMessage(
+        "m3",
+        "Tamsin",
+        "Power fluctuation on Relay 7B at 03:17. Nothing persistent.",
+        at(10, 24),
+    );
+    const veraReply = previewMessage(
+        "m4",
+        "Vera",
+        "Thanks. I’ve annotated the spike.",
+        at(10, 25),
+        false,
+        {
+            replyTo: "m3",
+            replySummary: {
+                senderName: "Tamsin",
+                body: mobilePreview
+                    ? "Power fluctuation on Relay 7B."
+                    : "Power fluctuation on Relay 7B at 03:17.",
             },
-        ),
-        previewMessage(
-            "m2",
-            "Sol",
-            "Copy. I’ll continue the sweep on the north arc\nand report any anomalies.",
-            at(10, 21),
-        ),
-        previewMessage(
-            "m3",
-            "Tamsin",
-            "Power fluctuation on Relay 7B at 03:17.\nNothing persistent.",
-            at(10, 24),
-        ),
-        previewMessage("m4", "Vera", "Thanks. I’ve annotated the spike.", at(10, 25), false, {
-            replyTo: "m2",
-        }),
-        previewMessage(
-            "m5",
-            "Sol",
-            "Looks like background ion wash. Within margin.",
-            at(10, 26),
-            false,
-        ),
-        previewMessage(
-            "m6",
-            "Rook",
-            "Did we get the new coil batch manifest?\nLogistics said it cleared customs.",
-            at(10, 31),
-        ),
+        },
+    );
+    const rookMessage = previewMessage(
+        "m6",
+        "Rook",
+        "Did we get the new coil batch manifest? Logistics said it cleared customs.",
+        at(10, 31),
+    );
+    const standardTimeline = [
+        ...(mobilePreview ? [] : [solMessage, tamsinMessage]),
+        veraReply,
+        ...(mobilePreview ? [rookMessage] : []),
         previewMessage("m7", "Vera", "Yes. Dockside locker. Seal intact.", at(10, 33), false, {
             reactions: [{ key: "👍", count: 2, mine: false }],
         }),
@@ -207,7 +206,7 @@ function createPreviewService(): MatrixService {
                 "Signal Watch",
                 "42-B",
                 7,
-                "Yes. Dockside locker. Seal intact.",
+                "Dockside locker. Seal intact.",
                 at(10, 42),
                 2,
                 true,
@@ -250,9 +249,31 @@ function createPreviewService(): MatrixService {
                 at(6, 51),
             ),
             previewRoom("maris", "Maris", "M", 2, "See you on the far side.", at(5, 48)),
-            previewRoom("ilya", "Ilya", "I", 2, "Typing…", at(5, 42), 1),
+            ...(mobilePreview ? [] : [previewRoom("ilya", "Ilya", "I", 2, "Typing", at(5, 42), 1)]),
+            ...(surfacePreview === "invite"
+                ? [
+                      previewRoom(
+                          "observatory-invite",
+                          "Observatory",
+                          "29-D",
+                          5,
+                          "Maris invited you.",
+                          at(10, 44),
+                          0,
+                          false,
+                          null,
+                          undefined,
+                          "invite",
+                      ),
+                  ]
+                : []),
         ],
-        activeRoomId: "signal-watch",
+        activeRoomId:
+            surfacePreview === "empty" || surfacePreview === "rooms"
+                ? null
+                : surfacePreview === "invite"
+                  ? "observatory-invite"
+                  : "signal-watch",
         timeline:
             uxPreview === "loading"
                 ? []
@@ -266,7 +287,7 @@ function createPreviewService(): MatrixService {
         error: null,
         userId: "@rayne:sub-etha.test",
         displayName: "Rayne",
-        avatarMxcUrl: "mxc://preview/zen-mark",
+        avatarMxcUrl: surfacePreview === "settings" ? null : "mxc://preview/zen-mark",
         deviceId: "FIELD-GUIDE-01",
         verification: verificationPreview
             ? {
@@ -670,6 +691,16 @@ export function DesignPreview() {
 
     if (surfacePreview === "login") {
         return <LoginScreen onAuthenticated={async () => undefined} />;
+    }
+
+    if (surfacePreview === "settings") {
+        return (
+            <ChatShell
+                service={service}
+                onLogout={async () => undefined}
+                initialDialog="settings"
+            />
+        );
     }
 
     return <ChatShell service={service} onLogout={async () => undefined} />;

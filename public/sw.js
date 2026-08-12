@@ -1,5 +1,13 @@
-const CACHE_NAME = "sub-etha-shell-v6";
-const SHELL = ["/", "/manifest.webmanifest", "/icon-192.png", "/icon-512.png"];
+const CACHE_NAME = "sub-etha-shell-v7";
+const SHELL = [
+    "/",
+    "/manifest.webmanifest",
+    "/icon-192.png",
+    "/icon-512.png",
+    "/fonts/commissioner-variable.ttf",
+    "/fonts/literata-variable.ttf",
+    "/fonts/literata-variable-italic.ttf",
+];
 const PUSH_DB = "sub-etha-push";
 const PUSH_STORE = "settings";
 const ROOM_NOTIFICATION_PREFIX = "sub-etha-room:";
@@ -169,7 +177,10 @@ self.addEventListener("fetch", (event) => {
             }
 
             return fetch(event.request).then((response) => {
-                if (response.ok && url.pathname.match(/\.(?:js|css|png|ico|webmanifest)$/)) {
+                if (
+                    response.ok &&
+                    url.pathname.match(/\.(?:js|css|png|ico|webmanifest|woff2?|ttf)$/)
+                ) {
                     const copy = response.clone();
 
                     caches.open(CACHE_NAME).then((cache) => cache.put(event.request, copy));

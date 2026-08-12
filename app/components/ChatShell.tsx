@@ -17,12 +17,10 @@ import {
     Check,
     Info,
     LockKeyhole,
-    MessageSquarePlus,
     Search,
     Settings,
     Signal,
     SignalLow,
-    UserPlus,
     Users,
     WifiOff,
     X,
@@ -40,7 +38,7 @@ import {
     totalUnreadCount,
 } from "@/lib/matrix/notifications";
 import type { RoomSummary, TimelineItem } from "@/lib/matrix/types";
-import { Avatar, BrandMark } from "./BrandMark";
+import { Avatar } from "./BrandMark";
 import { Composer } from "./Composer";
 import {
     NewConversationDialog,
@@ -169,15 +167,21 @@ function ConnectionPill({
 function RoomListItem({
     room,
     active,
+    accented = active,
     onClick,
 }: {
     room: RoomSummary;
     active: boolean;
+    accented?: boolean;
     onClick: () => void;
 }) {
     return (
         <button
-            className={classes(`room-list-item${active ? " is-active" : ""}`)}
+            className={classes(
+                `room-list-item${accented ? " is-active" : ""}${
+                    room.unread || room.highlights ? " has-unread" : ""
+                }${room.membership === "invite" ? " is-invite" : ""}`,
+            )}
             type="button"
             onClick={onClick}
             aria-current={active ? "page" : undefined}
@@ -200,8 +204,9 @@ function RoomListItem({
                 {room.timestamp ? (
                     <time>
                         {new Intl.DateTimeFormat(undefined, {
-                            hour: "numeric",
+                            hour: "2-digit",
                             minute: "2-digit",
+                            hourCycle: "h23",
                         }).format(room.timestamp)}
                     </time>
                 ) : null}
@@ -218,12 +223,59 @@ function RoomListItem({
     );
 }
 
+function inviteSenderName(room: RoomSummary, ownUserId: string): string | null {
+    const inviterId = room.room?.getMember?.(ownUserId)?.events.member?.getSender();
+
+    if (!inviterId || inviterId === ownUserId) {
+        return room.lastMessage.match(/^(.+?)\s+invited you\b/i)?.[1]?.trim() ?? null;
+    }
+
+    const memberName = room.room.getMember?.(inviterId)?.name?.trim();
+
+    if (memberName) {
+        return memberName;
+    }
+
+    return inviterId.match(/^@([^:]+)/)?.[1] ?? inviterId;
+}
+
+function roomAudience(room: RoomSummary, spellSmallCount = false): string {
+    const smallCountWords = [
+        "Zero",
+        "One",
+        "Two",
+        "Three",
+        "Four",
+        "Five",
+        "Six",
+        "Seven",
+        "Eight",
+        "Nine",
+        "Ten",
+    ];
+    const count =
+        spellSmallCount && room.memberCount <= 10
+            ? smallCountWords[room.memberCount]
+            : String(room.memberCount);
+    const people = `${count} ${room.memberCount === 1 ? "person" : "people"}`;
+
+    return `${people} · ${room.encrypted ? "private" : "open"}`;
+}
+
+function displayMatrixAddress(userId: string): string {
+    const match = userId.match(/^@([^:]+):(.+)$/);
+
+    return match ? `${match[1]}@${match[2]}` : userId;
+}
+
 export function ChatShell({
     service,
     onLogout,
+    initialDialog = null,
 }: {
     service: MatrixService;
     onLogout: () => Promise<void>;
+    initialDialog?: OpenDialog;
 }) {
     const snapshot = useSyncExternalStore(
         service.subscribe,
@@ -233,7 +285,7 @@ export function ChatShell({
     const [roomFilter, setRoomFilter] = useState("");
     const [roomScope, setRoomScope] = useState<RoomScope>("all");
     const deferredFilter = useDeferredValue(roomFilter);
-    const [dialog, setDialog] = useState<OpenDialog>(null);
+    const [dialog, setDialog] = useState<OpenDialog>(initialDialog);
     const [replyingTo, setReplyingTo] = useState<TimelineItem | null>(null);
     const [editing, setEditing] = useState<TimelineItem | null>(null);
     const [mobileRoomsOpen, setMobileRoomsOpen] = useState(!snapshot.activeRoomId);
@@ -247,6 +299,8 @@ export function ChatShell({
     const activeEntryCode = activeRoom
         ? (activeRoom.guideCode ?? guideEntryCode(activeRoom.id))
         : null;
+    const activeInviteSender =
+        activeRoom?.membership === "invite" ? inviteSenderName(activeRoom, snapshot.userId) : null;
 
     const showRoomIndex = useCallback(() => {
         if (!isMobileLayout()) {
@@ -600,6 +654,10 @@ export function ChatShell({
                         key={room.id}
                         room={room}
                         active={room.id === snapshot.activeRoomId}
+                        accented={
+                            room.id === snapshot.activeRoomId ||
+                            (!snapshot.activeRoomId && title === "Rooms" && room === rooms[0])
+                        }
                         onClick={() => selectRoom(room.id)}
                     />
                 ))}
@@ -625,7 +683,17 @@ export function ChatShell({
         >
             <aside className={classes("room-sidebar")} data-ui="room-sidebar" aria-label="Rooms">
                 <header className={classes("room-sidebar__header")}>
-                    <BrandMark />
+                    <span className={classes("room-sidebar__wordmark")} aria-label="Sub-Etha">
+                        SUB—ETHA
+                    </span>
+                    <button
+                        className={classes("room-sidebar__new")}
+                        type="button"
+                        aria-label="New conversation"
+                        onClick={() => setDialog("new")}
+                    >
+                        New
+                    </button>
                     <button
                         className={classes("room-sidebar__close")}
                         type="button"
@@ -639,7 +707,6 @@ export function ChatShell({
                 <div className={classes("room-sidebar__body")}>
                     <div className={classes("room-column")}>
                         <div className={classes("transmission-search")}>
-                            <Search aria-hidden="true" />
                             <label className={classes("sr-only")} htmlFor="transmission-search">
                                 Search rooms
                             </label>
@@ -648,20 +715,8 @@ export function ChatShell({
                                 id="transmission-search"
                                 value={roomFilter}
                                 onChange={(event) => setRoomFilter(event.target.value)}
-                                placeholder="Search rooms"
+                                placeholder="Search"
                             />
-                            <Search
-                                className={classes("transmission-search__submit")}
-                                aria-hidden="true"
-                            />
-                            <button
-                                type="button"
-                                aria-label="New conversation"
-                                title="New conversation"
-                                onClick={() => setDialog("new")}
-                            >
-                                <MessageSquarePlus />
-                            </button>
                         </div>
                         <div className={classes("room-column__header")}>
                             <span>
@@ -702,7 +757,7 @@ export function ChatShell({
                                 joinedRooms,
                                 `${joinedRooms.length + directMessages.length} tuned`,
                             )}
-                            {roomGroup("Direct messages", directMessages, "")}
+                            {roomGroup("Direct", directMessages, "")}
                             {!filteredRooms.length ? (
                                 <div className={classes("room-list-empty")}>
                                     <Search />
@@ -712,15 +767,6 @@ export function ChatShell({
                             ) : null}
                         </nav>
                         <footer className={classes("profile-strip")}>
-                            <button
-                                className={classes("profile-strip__settings")}
-                                type="button"
-                                aria-label="Settings"
-                                onClick={() => setDialog("settings")}
-                            >
-                                <Settings />
-                                <span>Settings</span>
-                            </button>
                             <Avatar
                                 name={snapshot.displayName}
                                 mxcUrl={snapshot.avatarMxcUrl}
@@ -735,8 +781,17 @@ export function ChatShell({
                             >
                                 <span>
                                     <strong>{snapshot.displayName}</strong>
-                                    <small>Operator</small>
+                                    <small>{displayMatrixAddress(snapshot.userId)}</small>
                                 </span>
+                            </button>
+                            <button
+                                className={classes("profile-strip__settings")}
+                                type="button"
+                                aria-label="Settings"
+                                onClick={() => setDialog("settings")}
+                            >
+                                <Settings />
+                                <span>Settings</span>
                             </button>
                         </footer>
                     </div>
@@ -748,8 +803,8 @@ export function ChatShell({
                     `conversation${!activeRoom || activeRoom.membership === "invite" ? " conversation--single" : ""}`,
                 )}
                 aria-label={activeRoom ? activeRoom.name : "No room selected"}
-                aria-hidden={mobileRoomsOpen || undefined}
-                inert={mobileRoomsOpen || undefined}
+                aria-hidden={(mobileRoomsOpen && !!activeRoom) || undefined}
+                inert={(mobileRoomsOpen && !!activeRoom) || undefined}
             >
                 {activeRoom ? (
                     <>
@@ -778,9 +833,7 @@ export function ChatShell({
                                     </h1>
                                     <p>
                                         <span className={classes("room-presence-summary")}>
-                                            {activeRoom.encrypted ? "Private" : "Open"} ·{" "}
-                                            {activeRoom.memberCount}{" "}
-                                            {activeRoom.memberCount === 1 ? "member" : "members"}
+                                            {roomAudience(activeRoom)}
                                         </span>
                                         <span className={classes("room-classification")}>
                                             Classification:{" "}
@@ -831,18 +884,19 @@ export function ChatShell({
                             {activeRoom.membership === "invite" ? (
                                 <div className={classes("invite-view")}>
                                     <div className={classes("invite-card")}>
-                                        <span className={classes("index-chip")}>INVITE</span>
+                                        <span className={classes("index-chip")}>Invitation</span>
                                         <Avatar
                                             name={activeRoom.name}
                                             mxcUrl={activeRoom.avatarMxcUrl}
                                             service={service}
                                             size="large"
                                         />
-                                        <h2>You have been invited to {activeRoom.name}</h2>
-                                        <p>
-                                            The room would like to contain you. This is more
-                                            courteous than most rooms manage.
-                                        </p>
+                                        <h2>
+                                            {activeInviteSender
+                                                ? `${activeInviteSender} invited you to ${activeRoom.name}.`
+                                                : `You were invited to ${activeRoom.name}.`}
+                                        </h2>
+                                        <p>{roomAudience(activeRoom, true)}</p>
                                         <div>
                                             <button
                                                 className={classes("primary-button")}
@@ -850,7 +904,7 @@ export function ChatShell({
                                                 onClick={() => void service.joinRoom(activeRoom.id)}
                                             >
                                                 <Check />
-                                                Accept invitation
+                                                Accept
                                             </button>
                                             <button
                                                 className={classes("secondary-button")}
@@ -972,19 +1026,15 @@ export function ChatShell({
                     <div className={classes("no-room-view")}>
                         <div className={classes("guide-card")}>
                             <span className={classes("guide-card__number")}>01</span>
-                            <p className={classes("eyebrow")}>CHANNEL SELECTOR</p>
-                            <h1>Choose a conversation.</h1>
-                            <p>
-                                Your messages are all present, assuming the universe and your
-                                homeserver are both behaving within published tolerances.
-                            </p>
+                            <p className={classes("eyebrow")}>No room selected</p>
+                            <h1>Nothing selected.</h1>
+                            <p>Choose a room on the left, or start something new.</p>
                             <button
-                                className={classes("primary-button")}
+                                className={classes("secondary-button")}
                                 type="button"
                                 onClick={() => setDialog("new")}
                             >
-                                <UserPlus />
-                                Start a transmission
+                                New conversation
                             </button>
                         </div>
                     </div>

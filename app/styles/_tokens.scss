@@ -1,58 +1,61 @@
 @font-face {
-    font-family: "Inter Variable";
+    font-family: "Commissioner Variable";
     font-style: normal;
     font-display: swap;
-    font-weight: 100 900;
-    src: url("/fonts/inter-latin-ext-wght-normal.woff2") format("woff2-variations");
-    unicode-range:
-        U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329,
-        U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113,
-        U+2C60-2C7F, U+A720-A7FF;
+    font-weight: 200 700;
+    src: url("/fonts/commissioner-variable.ttf") format("truetype-variations");
 }
 
 @font-face {
-    font-family: "Inter Variable";
+    font-family: "Literata Variable";
     font-style: normal;
     font-display: swap;
-    font-weight: 100 900;
-    src: url("/fonts/inter-latin-wght-normal.woff2") format("woff2-variations");
-    unicode-range:
-        U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308,
-        U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+    font-weight: 300 600;
+    src: url("/fonts/literata-variable.ttf") format("truetype-variations");
+}
+
+@font-face {
+    font-family: "Literata Variable";
+    font-style: italic;
+    font-display: swap;
+    font-weight: 300 500;
+    src: url("/fonts/literata-variable-italic.ttf") format("truetype-variations");
 }
 
 :root,
 :root[data-theme="dark"] {
     color-scheme: dark;
-    --paper: #2c2e31;
-    --paper-raised: #323438;
-    --paper-deep: #2c2e31;
-    --ink: #eeece6;
-    --ink-soft: #a9a7a1;
-    --line: #4c4e50;
-    --line-strong: color-mix(in srgb, #4c4e50 70%, #a9a7a1);
-    --signal: #de8068;
-    --signal-dark: #e1846c;
-    --teal: #839cb0;
-    --teal-strong: #6f8fa8;
-    --teal-soft: color-mix(in srgb, #839cb0 14%, transparent);
-    --yellow: #b59a70;
-    --participant-steel: #96c0d7;
-    --participant-sky: #86a9bf;
-    --participant-clay: #df866f;
-    --participant-sand: #d4ae78;
-    --participant-mist: #b9b5ac;
-    --focus: #839cb0;
+    --paper: #191614;
+    --paper-raised: #191614;
+    --paper-deep: #151210;
+    --ink: #eae5dd;
+    --ink-soft: #8f8880;
+    --ink-muted: #7a736c;
+    --line: #2a2624;
+    --line-strong: #38322e;
+    --signal: #c9a86a;
+    --signal-dark: #d4b777;
+    --teal: #8fbaa4;
+    --teal-strong: #9fc9b3;
+    --teal-soft: color-mix(in srgb, #8fbaa4 12%, transparent);
+    --yellow: #c9a86a;
+    --participant-steel: #8fa8c4;
+    --participant-sky: #8fa8c4;
+    --participant-clay: #c99b8a;
+    --participant-sand: #c9a86a;
+    --participant-mist: #a8a29a;
+    --participant-orchid: #bb9dbb;
+    --focus: #c9a86a;
     --shadow: none;
     --shadow-tight: none;
     --surface-inset: none;
     --motion-fast: 120ms;
     --motion-standard: 180ms;
     --motion-ease: cubic-bezier(0.2, 0.7, 0.2, 1);
-    --font-ui: "Inter Variable", Inter, system-ui, sans-serif;
-    --font-display: "Inter Variable", Inter, system-ui, sans-serif;
-    --font-label: "Inter Variable", Inter, system-ui, sans-serif;
-    --font-mono: "Inter Variable", Inter, system-ui, sans-serif;
+    --font-ui: "Commissioner Variable", Commissioner, system-ui, sans-serif;
+    --font-display: "Literata Variable", Literata, Georgia, serif;
+    --font-label: "Commissioner Variable", Commissioner, system-ui, sans-serif;
+    --font-mono: "Commissioner Variable", Commissioner, ui-monospace, monospace;
     --safe-top: env(safe-area-inset-top, 0px);
     --safe-right: env(safe-area-inset-right, 0px);
     --safe-bottom: env(safe-area-inset-bottom, 0px);
@@ -61,49 +64,53 @@
 
 :root[data-theme="light"] {
     color-scheme: light;
-    --paper: #eeece6;
-    --paper-raised: color-mix(in srgb, #eeece6 90%, white);
-    --paper-deep: color-mix(in srgb, #eeece6 86%, #a9a7a1);
-    --ink: #2c2e31;
-    --ink-soft: #4c4e50;
-    --line: #a9a7a1;
-    --line-strong: #4c4e50;
-    --signal: #a74737;
-    --signal-dark: #96392c;
-    --teal: #6f8fa8;
-    --teal-strong: #58778f;
-    --teal-soft: color-mix(in srgb, #6f8fa8 14%, transparent);
-    --yellow: #8b7049;
-    --participant-steel: #355e78;
-    --participant-sky: #3f647a;
-    --participant-clay: #9d3f2d;
-    --participant-sand: #735826;
-    --participant-mist: #4f5759;
-    --focus: #6f8fa8;
+    --paper: #f3efe8;
+    --paper-raised: #f3efe8;
+    --paper-deep: #ebe4da;
+    --ink: #241f1c;
+    --ink-soft: #625b54;
+    --ink-muted: #7a736c;
+    --line: #d8d0c5;
+    --line-strong: #b9aea0;
+    --signal: #80642e;
+    --signal-dark: #694f1e;
+    --teal: #527563;
+    --teal-strong: #3f6250;
+    --teal-soft: color-mix(in srgb, #527563 12%, transparent);
+    --yellow: #80642e;
+    --participant-steel: #526f8b;
+    --participant-sky: #526f8b;
+    --participant-clay: #8d5847;
+    --participant-sand: #80642e;
+    --participant-mist: #6f6961;
+    --participant-orchid: #755f75;
+    --focus: #80642e;
 }
 
 @media (prefers-color-scheme: light) {
     :root[data-theme="system"] {
         color-scheme: light;
-        --paper: #eeece6;
-        --paper-raised: color-mix(in srgb, #eeece6 90%, white);
-        --paper-deep: color-mix(in srgb, #eeece6 86%, #a9a7a1);
-        --ink: #2c2e31;
-        --ink-soft: #4c4e50;
-        --line: #a9a7a1;
-        --line-strong: #4c4e50;
-        --signal: #a74737;
-        --signal-dark: #96392c;
-        --teal: #6f8fa8;
-        --teal-strong: #58778f;
-        --teal-soft: color-mix(in srgb, #6f8fa8 14%, transparent);
-        --yellow: #8b7049;
-        --participant-steel: #355e78;
-        --participant-sky: #3f647a;
-        --participant-clay: #9d3f2d;
-        --participant-sand: #735826;
-        --participant-mist: #4f5759;
-        --focus: #6f8fa8;
+        --paper: #f3efe8;
+        --paper-raised: #f3efe8;
+        --paper-deep: #ebe4da;
+        --ink: #241f1c;
+        --ink-soft: #625b54;
+        --ink-muted: #7a736c;
+        --line: #d8d0c5;
+        --line-strong: #b9aea0;
+        --signal: #80642e;
+        --signal-dark: #694f1e;
+        --teal: #527563;
+        --teal-strong: #3f6250;
+        --teal-soft: color-mix(in srgb, #527563 12%, transparent);
+        --yellow: #80642e;
+        --participant-steel: #526f8b;
+        --participant-sky: #526f8b;
+        --participant-clay: #8d5847;
+        --participant-sand: #80642e;
+        --participant-mist: #6f6961;
+        --participant-orchid: #755f75;
+        --focus: #80642e;
     }
 }
 

@@ -11,7 +11,7 @@ export function BrandMark({ compact = false }: { compact?: boolean }) {
             className={classes(`brand-mark${compact ? " brand-mark--compact" : ""}`)}
             aria-label="Sub-Etha"
         >
-            <span className={classes("brand-mark__word")}>SUB—ETHA</span>
+            <span className={classes("brand-mark__word")}>Sub—Etha</span>
         </div>
     );
 }

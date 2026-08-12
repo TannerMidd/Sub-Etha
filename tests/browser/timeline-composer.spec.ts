@@ -4,7 +4,10 @@ const PREVIEW_URL = "/?design-preview#/room/signal-watch";
 const STRESS_PREVIEW_URL = "/?design-preview&ux-preview=timeline-stress#/room/signal-watch";
 const FAILURE_PREVIEW_URL =
     "/?design-preview&ux-preview=timeline-stress-failure#/room/signal-watch";
-const MESSAGE_COMPOSER_CLEARANCE_PX = 12;
+// The fixed 28px typing-presence reserve separates the timeline scroller from
+// the composer in the Zen layout, so the last row only needs to clear the
+// scroller edge itself.
+const MESSAGE_COMPOSER_CLEARANCE_PX = 0;
 const SUBPIXEL_TOLERANCE_PX = 0.5;
 
 interface TextareaMetrics {

@@ -565,7 +565,7 @@ textarea::placeholder {
     border-right: 0;
 }
 
-.segmented-control button[aria-selected="true"] {
+.segmented-control button[aria-pressed="true"] {
     background: var(--teal-soft);
     color: var(--teal);
 }
