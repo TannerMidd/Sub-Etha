@@ -752,6 +752,75 @@ test("a planted touch keeps older-message intent until the contact ends", async 
     await session.detach();
 });
 
+test("scrolling up into unmeasured history never lurches the visible rows", async ({ page }) => {
+    await openPreview(page, STRESS_PREVIEW_URL);
+
+    const scroller = page.locator('[data-virtuoso-scroller="true"]');
+
+    // Let the preview's delayed decryption and late attachment land first, so
+    // this measures steady-state reading rather than fixture start-up.
+    await page.waitForTimeout(2_500);
+
+    // Sample every rendered row's screen position each frame. Reading upward
+    // should only ever move rows downward; any upward jerk is the timeline
+    // correcting a row-height estimate after it has already been painted.
+    await page.evaluate(() => {
+        const testWindow = window as typeof window & {
+            __timelineLurch?: number;
+            __timelineLurchFrame?: number;
+        };
+        let previous = new Map<string, number>();
+
+        testWindow.__timelineLurch = 0;
+
+        const sample = () => {
+            const current = new Map<string, number>();
+
+            for (const row of document.querySelectorAll<HTMLElement>("[data-event-id]")) {
+                current.set(row.dataset.eventId ?? "", row.getBoundingClientRect().top);
+            }
+
+            for (const [id, top] of current) {
+                const before = previous.get(id);
+
+                if (before !== undefined) {
+                    testWindow.__timelineLurch = Math.max(
+                        testWindow.__timelineLurch ?? 0,
+                        before - top,
+                    );
+                }
+            }
+
+            previous = current;
+            testWindow.__timelineLurchFrame = window.requestAnimationFrame(sample);
+        };
+
+        testWindow.__timelineLurchFrame = window.requestAnimationFrame(sample);
+    });
+
+    for (let pass = 0; pass < 16; pass += 1) {
+        await wheelTimeline(scroller, -420);
+        await page.waitForTimeout(160);
+    }
+
+    const lurch = await page.evaluate(() => {
+        const testWindow = window as typeof window & {
+            __timelineLurch?: number;
+            __timelineLurchFrame?: number;
+        };
+
+        window.cancelAnimationFrame(testWindow.__timelineLurchFrame ?? 0);
+
+        return testWindow.__timelineLurch ?? 0;
+    });
+
+    // Estimate corrections are inherent to virtualization, so this guards
+    // their magnitude rather than their existence. Per-item heightEstimates
+    // hold this to roughly 91px wide and 231px compact; a flat estimate for
+    // every row put it over 600px.
+    expect(lurch).toBeLessThan(400);
+});
+
 test("rapid real scrolling never swaps messages for seek skeletons or reattaches", async ({
     page,
 }) => {
