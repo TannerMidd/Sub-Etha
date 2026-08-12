@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useId, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState, type SubmitEvent } from "react";
 import {
     Bell,
     BellOff,
@@ -416,7 +416,7 @@ export function NewConversationDialog({
     const [busy, setBusy] = useState(false);
     const [error, setError] = useState<string | null>(null);
 
-    const submit = async (event: React.FormEvent) => {
+    const submit = async (event: SubmitEvent<HTMLFormElement>) => {
         event.preventDefault();
         setBusy(true);
         setError(null);
@@ -535,7 +535,7 @@ export function SearchDialog({
     const [busy, setBusy] = useState(false);
     const [error, setError] = useState<string | null>(null);
 
-    const search = async (event: React.FormEvent) => {
+    const search = async (event: SubmitEvent<HTMLFormElement>) => {
         event.preventDefault();
         setBusy(true);
         setError(null);
@@ -588,9 +588,7 @@ export function SearchDialog({
                         key={result.id}
                         type="button"
                         onClick={() => {
-                            window.location.assign(
-                                `#/room/${encodeURIComponent(service.getSnapshot().activeRoomId ?? "")}/event/${encodeURIComponent(result.id)}`,
-                            );
+                            window.location.hash = `/room/${encodeURIComponent(service.getSnapshot().activeRoomId ?? "")}/event/${encodeURIComponent(result.id)}`;
                             onClose();
                         }}
                     >
@@ -631,7 +629,7 @@ export function RoomDetailsDialog({
     const [error, setError] = useState<string | null>(null);
     const [muted, setMuted] = useState(room.muted);
 
-    const invite = async (event: React.FormEvent) => {
+    const invite = async (event: SubmitEvent<HTMLFormElement>) => {
         event.preventDefault();
         setBusy(true);
         setError(null);

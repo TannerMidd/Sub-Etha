@@ -97,10 +97,6 @@ input[type="file"]::file-selector-button:hover {
     animation: spin 1s linear infinite;
 }
 
-.rotate {
-    transform: rotate(180deg);
-}
-
 @keyframes spin {
     to {
         transform: rotate(360deg);

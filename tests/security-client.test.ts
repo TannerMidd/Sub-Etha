@@ -29,6 +29,74 @@ const LOCAL_POLICY = {
     production: false,
 };
 
+function rasterFixture(
+    mimeType: "image/gif" | "image/jpeg" | "image/png" | "image/webp",
+    width: number,
+    height: number,
+): Uint8Array {
+    if (mimeType === "image/gif") {
+        const bytes = new Uint8Array(13);
+
+        bytes.set(new TextEncoder().encode("GIF89a"));
+        const view = new DataView(bytes.buffer);
+
+        view.setUint16(6, width, true);
+        view.setUint16(8, height, true);
+
+        return bytes;
+    }
+
+    if (mimeType === "image/png") {
+        const bytes = new Uint8Array(24);
+
+        bytes.set([137, 80, 78, 71, 13, 10, 26, 10], 0);
+        bytes.set([0, 0, 0, 13, 73, 72, 68, 82], 8);
+        const view = new DataView(bytes.buffer);
+
+        view.setUint32(16, width);
+        view.setUint32(20, height);
+
+        return bytes;
+    }
+
+    if (mimeType === "image/jpeg") {
+        const bytes = Uint8Array.from([
+            0xff,
+            0xd8,
+            0xff,
+            0xc0,
+            0x00,
+            0x0b,
+            0x08,
+            height >> 8,
+            height & 0xff,
+            width >> 8,
+            width & 0xff,
+            0x01,
+            0x01,
+            0x11,
+            0x00,
+        ]);
+
+        return bytes;
+    }
+
+    const bytes = new Uint8Array(30);
+
+    bytes.set(new TextEncoder().encode("RIFF"), 0);
+    new DataView(bytes.buffer).setUint32(4, 22, true);
+    bytes.set(new TextEncoder().encode("WEBPVP8X"), 8);
+    new DataView(bytes.buffer).setUint32(16, 10, true);
+    bytes[24] = (width - 1) & 0xff;
+    bytes[25] = ((width - 1) >> 8) & 0xff;
+    bytes[26] = ((width - 1) >> 16) & 0xff;
+    bytes[27] = (height - 1) & 0xff;
+    bytes[28] = ((height - 1) >> 8) & 0xff;
+    bytes[29] = ((height - 1) >> 16) & 0xff;
+
+    return bytes;
+}
+
 test("homeserver transport requires HTTPS outside loopback development", () => {
     assert.equal(
         assertAllowedHomeserverUrl("https://matrix.example", {
@@ -377,6 +445,14 @@ test("image previews validate actual dimensions rather than declared MIME metada
     );
 
     assert.doesNotThrow(() => assertSafeImageBytes(onePixelPng));
+
+    for (const mimeType of ["image/gif", "image/jpeg", "image/webp"] as const) {
+        const safety = assertSafeImageBytes(rasterFixture(mimeType, 32, 24));
+
+        assert.equal(safety.mimeType, mimeType);
+        assert.equal(safety.width, 32);
+        assert.equal(safety.height, 24);
+    }
 
     const oversizedPngHeader = new Uint8Array(24);
 

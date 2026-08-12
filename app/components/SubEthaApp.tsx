@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState, useSyncExternalStore } from "react";
+import { lazy, Suspense, useCallback, useEffect, useState, useSyncExternalStore } from "react";
 import { LoaderCircle, RadioTower, RefreshCw, ShieldAlert } from "lucide-react";
 import { completeRedirectLogin, humanizeMatrixError } from "@/lib/matrix/auth";
 import type { MatrixService } from "@/lib/matrix/client";
@@ -10,7 +10,6 @@ import type { PersistedMatrixSession } from "@/lib/matrix/types";
 import { assertAllowedHomeserverUrl, InsecureHomeserverError } from "@/lib/matrix/url-policy";
 import { BrandMark } from "./BrandMark";
 import { ChatShell, parseRoomHash } from "./ChatShell";
-import { DesignPreview } from "./DesignPreview";
 import { LoginScreen } from "./LoginScreen";
 import styles from "../styles/App.module.scss";
 import { classes, configureStyles } from "../styles/appStyles";
@@ -19,7 +18,15 @@ configureStyles(styles);
 
 type BootState = "booting" | "login" | "connected" | "duplicate" | "error";
 
+const DesignPreview = import.meta.env.DEV
+    ? lazy(() => import("./DesignPreview").then((module) => ({ default: module.DesignPreview })))
+    : null;
+
 const subscribeToPreviewFlag = (onStoreChange: () => void) => {
+    if (!import.meta.env.DEV) {
+        return () => undefined;
+    }
+
     const refresh = () => onStoreChange();
     const hydrationTimer = window.setTimeout(refresh, 0);
 
@@ -34,6 +41,7 @@ const subscribeToPreviewFlag = (onStoreChange: () => void) => {
 };
 
 const readPreviewFlag = () =>
+    import.meta.env.DEV &&
     ["localhost", "127.0.0.1", "[::1]"].includes(window.location.hostname) &&
     new URLSearchParams(window.location.search).has("design-preview");
 
@@ -237,8 +245,12 @@ export function SubEthaApp() {
         waitingWorker.postMessage({ type: "SKIP_WAITING" });
     };
 
-    if (designPreview) {
-        return <DesignPreview />;
+    if (designPreview && DesignPreview) {
+        return (
+            <Suspense fallback={null}>
+                <DesignPreview />
+            </Suspense>
+        );
     }
 
     if (bootState === "login") {

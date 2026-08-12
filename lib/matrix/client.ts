@@ -1,5 +1,6 @@
 import {
     ClientEvent,
+    EventTimeline,
     EventType,
     IndexedDBStore,
     MatrixClient,
@@ -92,6 +93,12 @@ function emptySnapshot(session: PersistedMatrixSession): MatrixSnapshot {
         deviceId: session.deviceId,
         verification: null,
     };
+}
+
+function hasMoreRoomHistory(room: Room | null | undefined): boolean {
+    const oldestState = room?.getLiveTimeline().getState(EventTimeline.BACKWARDS);
+
+    return Boolean(oldestState && oldestState.paginationToken !== null);
 }
 
 interface ActiveVerification {
@@ -729,7 +736,7 @@ export class MatrixService {
         this.emit({
             rooms,
             activeRoomId,
-            hasMoreHistory: Boolean(room && room.oldState.paginationToken !== null),
+            hasMoreHistory: hasMoreRoomHistory(room),
             loadingHistory: activeRoomChanged ? false : this.snapshot.loadingHistory,
             timeline:
                 shouldRefreshTimeline && room
@@ -794,7 +801,7 @@ export class MatrixService {
             timeline: room ? normalizeTimeline(room, client) : [],
             timelineStartIndex: INITIAL_TIMELINE_ITEM_INDEX,
             loadingHistory: false,
-            hasMoreHistory: Boolean(room && room.oldState.paginationToken !== null),
+            hasMoreHistory: hasMoreRoomHistory(room),
             error: null,
         });
         this.refreshTyping();
@@ -846,7 +853,7 @@ export class MatrixService {
                     timeline.map((item) => item.id),
                 ),
                 loadingHistory: false,
-                hasMoreHistory: room.oldState.paginationToken !== null,
+                hasMoreHistory: hasMoreRoomHistory(room),
             });
             void this.decryptRoomTimeline(room);
         } catch (error) {

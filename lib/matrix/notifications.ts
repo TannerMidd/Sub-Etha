@@ -499,7 +499,3 @@ export async function sendTestPush(): Promise<void> {
 
     await gatewayRequest("POST", { managementKey: credentials.managementKey }, "/api/push/test");
 }
-
-export function getPushKey(): string | null {
-    return readPushCredentials(false)?.deliveryKey ?? null;
-}

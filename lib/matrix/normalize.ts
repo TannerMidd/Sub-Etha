@@ -1,5 +1,6 @@
 import DOMPurify from "dompurify";
 import {
+    EventTimeline,
     EventType,
     NotificationCountType,
     type MatrixClient,
@@ -371,7 +372,8 @@ export function normalizeRooms(client: MatrixClient): RoomSummary[] {
         .filter((room) => ["join", "invite"].includes(room.getMyMembership()))
         .map((room) => {
             const mutedRule = client.getRoomPushRule("global", room.roomId);
-            const topicEvent = room.currentState.getStateEvents(EventType.RoomTopic, "");
+            const currentState = room.getLiveTimeline().getState(EventTimeline.FORWARDS);
+            const topicEvent = currentState?.getStateEvents(EventType.RoomTopic, "");
             const topic = String(topicEvent?.getContent().topic ?? "").trim() || null;
 
             return {

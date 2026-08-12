@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, type SubmitEvent } from "react";
 import { ArrowRight, LoaderCircle } from "lucide-react";
 import {
     beginOAuth,
@@ -42,7 +42,7 @@ export function LoginScreen({
         }
     };
 
-    const passwordLogin = async (event: React.FormEvent) => {
+    const passwordLogin = async (event: SubmitEvent<HTMLFormElement>) => {
         event.preventDefault();
 
         if (!capabilities) {

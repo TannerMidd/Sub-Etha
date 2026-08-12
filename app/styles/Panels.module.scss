@@ -277,92 +277,6 @@
     width: 17px;
 }
 
-.settings-grid {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-    gap: 34px;
-    margin-top: 20px;
-}
-
-.settings-grid section {
-    min-width: 0;
-}
-
-.settings-grid h3 {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    margin: 24px 0 11px;
-    padding-bottom: 8px;
-    border-bottom: 1px solid var(--line-strong);
-    font: 620 12px var(--font-ui);
-}
-
-.settings-grid h3:first-child {
-    margin-top: 0;
-}
-
-.settings-grid h3 svg {
-    width: 16px;
-    color: var(--teal);
-    stroke-width: 1.6;
-}
-
-.settings-grid input[type="file"] {
-    font-size: 10px;
-}
-
-.settings-grid .secondary-button {
-    align-self: flex-start;
-    min-height: 38px;
-    font-size: 11px;
-}
-
-.theme-options {
-    display: grid;
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-    border: 1px solid var(--line-strong);
-}
-
-.theme-options button {
-    min-height: 68px;
-    padding: 8px;
-    position: relative;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    gap: 5px;
-    border: 0;
-    border-right: 1px solid var(--line);
-    border-radius: 0;
-    background: transparent;
-    color: var(--ink-soft);
-    cursor: pointer;
-    font-size: 10px;
-}
-
-.theme-options button:last-child {
-    border-right: 0;
-}
-
-.theme-options button[aria-checked="true"] {
-    background: var(--teal-soft);
-    color: var(--teal);
-}
-
-.theme-options button > svg {
-    width: 17px;
-}
-
-.theme-options button > svg:last-child:not(:first-child) {
-    position: absolute;
-    top: 5px;
-    right: 5px;
-    width: 11px;
-    color: var(--teal);
-}
-
 .settings-block {
     padding: 12px;
     display: flex;
@@ -432,17 +346,6 @@
 
 .device-list button:hover {
     border-color: var(--teal);
-    color: var(--teal);
-}
-
-.device-list .device-trust {
-    margin-top: 3px;
-    color: var(--signal);
-    font-family: var(--font-ui);
-    font-weight: 620;
-}
-
-.device-list .device-trust--verified {
     color: var(--teal);
 }
 
@@ -1212,11 +1115,6 @@
 
     .settings-recovery-panel .crypto-status {
         grid-template-columns: minmax(0, 1fr);
-    }
-
-    .settings-grid {
-        grid-template-columns: minmax(0, 1fr);
-        gap: 4px;
     }
 
     .verification-actions {

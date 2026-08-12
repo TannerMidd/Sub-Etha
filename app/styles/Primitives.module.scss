@@ -139,26 +139,6 @@ textarea::placeholder {
     color: color-mix(in srgb, var(--ink-soft) 72%, transparent);
 }
 
-.field-with-icon {
-    position: relative;
-}
-
-.field-with-icon svg {
-    position: absolute;
-    z-index: 1;
-    width: 17px;
-    height: 17px;
-    left: 13px;
-    top: 14px;
-    color: var(--ink-soft);
-    stroke-width: 1.6;
-    pointer-events: none;
-}
-
-.field-with-icon input {
-    padding-left: 42px;
-}
-
 .field-help,
 .privacy-footnote {
     margin: 0;
@@ -321,15 +301,6 @@ textarea::placeholder {
 .tuning-indicator svg {
     width: 23px;
     color: var(--signal);
-}
-
-.new-room-button:hover {
-    border-color: var(--signal-dark);
-    color: var(--signal-dark);
-}
-
-.new-room-button svg {
-    width: 18px;
 }
 
 .highlight-badge {
@@ -799,18 +770,6 @@ textarea::placeholder {
     grid-template-columns: repeat(6, 1fr);
     gap: 4px;
     padding: 2px 2px 7px;
-}
-
-.new-room-button {
-    width: 36px;
-    height: 36px;
-    display: grid;
-    place-items: center;
-    border: 1px solid var(--signal);
-    border-radius: 0;
-    background: transparent;
-    color: var(--signal);
-    cursor: pointer;
 }
 
 @keyframes guide-fade {

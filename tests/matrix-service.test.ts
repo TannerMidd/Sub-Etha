@@ -51,12 +51,16 @@ function timelineEvent(id: string) {
 
 function timelineRoom(roomId: string, token: string | null, ids: string[]) {
     const events = ids.map(timelineEvent);
+    const historyState = { paginationToken: token };
 
     return {
         roomId,
-        oldState: { paginationToken: token },
         events,
-        getLiveTimeline: () => ({ getEvents: () => events }),
+        historyState,
+        getLiveTimeline: () => ({
+            getEvents: () => events,
+            getState: () => historyState,
+        }),
         getMember: () => ({ name: "Ford", getMxcAvatarUrl: () => null }),
         getMembers: () => [],
         hasUserReadEvent: () => false,
@@ -203,7 +207,7 @@ test("pagination prepends one page, preserves the anchor, and stops at history e
                 releaseScrollback = resolve;
             });
             target.events.unshift(timelineEvent("$older-1"), timelineEvent("$older-2"));
-            target.oldState.paginationToken = null;
+            target.historyState.paginationToken = null;
         },
     };
     internals.snapshot.activeRoomId = room.roomId;
@@ -251,7 +255,7 @@ test("failed pagination remains retryable", async () => {
             }
 
             target.events.unshift(timelineEvent("$older"));
-            target.oldState.paginationToken = null;
+            target.historyState.paginationToken = null;
         },
     };
     internals.snapshot.activeRoomId = room.roomId;
@@ -292,7 +296,7 @@ test("a stale pagination request cannot overwrite a newly selected room", async 
         scrollback: async (target) => {
             await new Promise<void>((resolve) => releases.set(target.roomId, resolve));
             target.events.unshift(timelineEvent(`${target.roomId}-older`));
-            target.oldState.paginationToken = null;
+            target.historyState.paginationToken = null;
         },
     };
     internals.snapshot.activeRoomId = oldRoom.roomId;

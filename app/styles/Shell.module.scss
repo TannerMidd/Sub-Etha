@@ -70,11 +70,6 @@
     transform: translateY(14px);
 }
 
-.room-sidebar__header .brand-mark__signal,
-.room-sidebar__header .brand-mark__edition {
-    display: none;
-}
-
 .room-sidebar__header .brand-mark__word {
     position: relative;
     color: var(--ink);
@@ -121,10 +116,6 @@
 .transmission-search input::placeholder {
     color: var(--ink-soft);
     opacity: 0.82;
-}
-
-.transmission-search__submit {
-    display: none;
 }
 
 .transmission-search > button {
@@ -376,8 +367,7 @@
     cursor: pointer;
 }
 
-.profile-strip__settings,
-.profile-strip__saved {
+.profile-strip__settings {
     width: auto;
     height: 44px;
     display: flex;
@@ -385,8 +375,7 @@
     justify-content: flex-start;
 }
 
-.profile-strip__settings svg,
-.profile-strip__saved svg {
+.profile-strip__settings svg {
     display: none;
 }
 
@@ -677,37 +666,6 @@
     line-height: 1.6;
 }
 
-.room-filter {
-    position: relative;
-    margin: 14px;
-}
-
-.room-filter > svg {
-    position: absolute;
-    top: 13px;
-    left: 12px;
-    width: 16px;
-    color: var(--ink-soft);
-}
-
-.room-filter input {
-    min-height: 44px;
-    padding: 8px 42px 8px 38px;
-    border-radius: 0;
-    background: transparent;
-}
-
-.room-filter kbd {
-    position: absolute;
-    top: 12px;
-    right: 10px;
-    padding: 3px 5px;
-    border: 1px solid var(--line);
-    border-radius: 0;
-    color: var(--ink-soft);
-    font: 9px var(--font-mono);
-}
-
 .room-profile {
     margin-top: 20px;
     padding-bottom: 20px;
@@ -722,31 +680,9 @@
     flex-direction: column;
 }
 
-.room-profile span,
-.profile-preview small {
+.room-profile span {
     color: var(--ink-soft);
     font-size: 11px;
-}
-
-.profile-preview {
-    margin-bottom: 4px;
-    padding: 12px;
-    display: flex;
-    align-items: center;
-    gap: 12px;
-    border: 1px solid var(--line);
-    border-radius: 0;
-    background: transparent;
-}
-
-.profile-preview > span:last-child {
-    min-width: 0;
-    display: grid;
-}
-
-.profile-preview small {
-    overflow: hidden;
-    text-overflow: ellipsis;
 }
 
 @media (hover: hover) and (pointer: fine) {
@@ -1213,7 +1149,6 @@
 
 .transmission-search > svg,
 .transmission-search > button,
-.transmission-search__submit,
 .room-column__header {
     display: none;
 }

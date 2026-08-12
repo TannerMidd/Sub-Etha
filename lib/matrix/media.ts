@@ -1,5 +1,3 @@
-import { imageSize } from "image-size";
-
 const GIF_87A = "GIF87a";
 const GIF_89A = "GIF89a";
 
@@ -406,13 +404,184 @@ function safeRasterMimeType(bytes: Uint8Array): ImageSafety["mimeType"] {
     throw new MediaLimitError("This image format cannot be safely previewed.");
 }
 
+interface ImageDimensions {
+    width: number;
+    height: number;
+}
+
+function gifDimensions(bytes: Uint8Array): ImageDimensions | null {
+    if (!bytesAreGif(bytes) || bytes.byteLength < 13) {
+        return null;
+    }
+
+    const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+
+    return { width: view.getUint16(6, true), height: view.getUint16(8, true) };
+}
+
+function pngDimensions(bytes: Uint8Array): ImageDimensions | null {
+    if (bytes.byteLength < 24 || pngFrameCount(bytes) === 0) {
+        return null;
+    }
+
+    const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    const chunkType = String.fromCharCode(...bytes.slice(12, 16));
+
+    if (view.getUint32(8) !== 13 || chunkType !== "IHDR") {
+        return null;
+    }
+
+    return { width: view.getUint32(16), height: view.getUint32(20) };
+}
+
+function isJpegStartOfFrame(marker: number): boolean {
+    return marker >= 0xc0 && marker <= 0xcf && ![0xc4, 0xc8, 0xcc].includes(marker);
+}
+
+function jpegDimensions(bytes: Uint8Array): ImageDimensions | null {
+    if (bytes.byteLength < 4 || bytes[0] !== 0xff || bytes[1] !== 0xd8) {
+        return null;
+    }
+
+    let offset = 2;
+
+    while (offset < bytes.byteLength) {
+        if (bytes[offset] !== 0xff) {
+            return null;
+        }
+
+        while (offset < bytes.byteLength && bytes[offset] === 0xff) {
+            offset += 1;
+        }
+
+        if (offset >= bytes.byteLength) {
+            return null;
+        }
+
+        const marker = bytes[offset++];
+
+        if (marker === 0xd9 || marker === 0xda) {
+            return null;
+        }
+
+        if (marker === 0x01 || marker === 0xd8 || (marker >= 0xd0 && marker <= 0xd7)) {
+            continue;
+        }
+
+        if (offset + 2 > bytes.byteLength) {
+            return null;
+        }
+
+        const segmentLength = (bytes[offset] << 8) | bytes[offset + 1];
+
+        if (segmentLength < 2 || segmentLength > bytes.byteLength - offset) {
+            return null;
+        }
+
+        if (isJpegStartOfFrame(marker)) {
+            if (segmentLength < 7) {
+                return null;
+            }
+
+            return {
+                width: (bytes[offset + 5] << 8) | bytes[offset + 6],
+                height: (bytes[offset + 3] << 8) | bytes[offset + 4],
+            };
+        }
+
+        offset += segmentLength;
+    }
+
+    return null;
+}
+
+function uint24LittleEndian(bytes: Uint8Array, offset: number): number {
+    return bytes[offset] | (bytes[offset + 1] << 8) | (bytes[offset + 2] << 16);
+}
+
+function webpDimensions(bytes: Uint8Array): ImageDimensions | null {
+    if (
+        bytes.byteLength < 20 ||
+        String.fromCharCode(...bytes.slice(0, 4)) !== "RIFF" ||
+        String.fromCharCode(...bytes.slice(8, 12)) !== "WEBP"
+    ) {
+        return null;
+    }
+
+    const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    let offset = 12;
+
+    while (offset + 8 <= bytes.byteLength) {
+        const type = String.fromCharCode(...bytes.slice(offset, offset + 4));
+        const length = view.getUint32(offset + 4, true);
+
+        if (length > bytes.byteLength - offset - 8) {
+            return null;
+        }
+
+        const dataOffset = offset + 8;
+
+        if (type === "VP8X" && length >= 10) {
+            return {
+                width: uint24LittleEndian(bytes, dataOffset + 4) + 1,
+                height: uint24LittleEndian(bytes, dataOffset + 7) + 1,
+            };
+        }
+
+        if (
+            type === "VP8 " &&
+            length >= 10 &&
+            bytes[dataOffset + 3] === 0x9d &&
+            bytes[dataOffset + 4] === 0x01 &&
+            bytes[dataOffset + 5] === 0x2a
+        ) {
+            return {
+                width: view.getUint16(dataOffset + 6, true) & 0x3fff,
+                height: view.getUint16(dataOffset + 8, true) & 0x3fff,
+            };
+        }
+
+        if (type === "VP8L" && length >= 5 && bytes[dataOffset] === 0x2f) {
+            return {
+                width: 1 + bytes[dataOffset + 1] + ((bytes[dataOffset + 2] & 0x3f) << 8),
+                height:
+                    1 +
+                    (bytes[dataOffset + 2] >> 6) +
+                    (bytes[dataOffset + 3] << 2) +
+                    ((bytes[dataOffset + 4] & 0x0f) << 10),
+            };
+        }
+
+        offset += 8 + length + (length % 2);
+    }
+
+    return null;
+}
+
+function rasterDimensions(
+    bytes: Uint8Array,
+    mimeType: ImageSafety["mimeType"],
+): ImageDimensions | null {
+    if (mimeType === "image/gif") {
+        return gifDimensions(bytes);
+    }
+
+    if (mimeType === "image/png") {
+        return pngDimensions(bytes);
+    }
+
+    if (mimeType === "image/jpeg") {
+        return jpegDimensions(bytes);
+    }
+
+    return webpDimensions(bytes);
+}
+
 export function assertSafeImageBytes(bytes: Uint8Array): ImageSafety {
     const mimeType = safeRasterMimeType(bytes);
-    let dimensions: ReturnType<typeof imageSize>;
+    const dimensions = rasterDimensions(bytes, mimeType);
 
-    try {
-        dimensions = imageSize(bytes);
-    } catch {
+    if (!dimensions) {
         throw new MediaLimitError("This image format cannot be safely previewed.");
     }
 
