@@ -1043,7 +1043,7 @@
     bottom: 40px;
     left: calc(var(--timeline-inline) + var(--timeline-time));
     display: block;
-    width: 1px;
+    width: 2px;
     background: var(--author-accent);
     pointer-events: none;
 }

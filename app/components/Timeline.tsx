@@ -74,10 +74,10 @@ type UserScrollDirection = -1 | 0 | 1;
 
 const AUTHOR_ACCENTS = [
     "var(--participant-steel)",
-    "var(--participant-mist)",
-    "var(--participant-orchid, var(--participant-mist))",
+    "var(--participant-sage)",
+    "var(--participant-orchid)",
     "var(--participant-clay)",
-    "var(--teal)",
+    "var(--participant-sand)",
 ] as const;
 
 type AuthorAccentStyle = CSSProperties & { "--author-accent": string };
