@@ -1019,3 +1019,123 @@ test("a local send stays attached while an earlier-history request completes", a
     await expectNewestMessageClearOfComposer(page, "stress-local-1");
     await expect(timeline).toHaveAttribute("data-scroll-mode", "attached");
 });
+
+test("a local send reaches the live edge during the scroll-end window", async ({ page }) => {
+    await openPreview(page, STRESS_PREVIEW_URL);
+
+    const timeline = page.locator('[data-ui="timeline"]');
+    const scroller = page.locator('[data-virtuoso-scroller="true"]');
+    const textarea = page.locator("#message-composer");
+
+    await textarea.fill("Follow this transmission despite the unsettled gesture.");
+    await scroller.evaluate((element) => {
+        const pointerOptions = {
+            bubbles: true,
+            cancelable: true,
+            pointerId: 41,
+            pointerType: "touch",
+        };
+
+        element.dispatchEvent(new PointerEvent("pointerdown", { ...pointerOptions, clientY: 200 }));
+        element.dispatchEvent(new PointerEvent("pointermove", { ...pointerOptions, clientY: 220 }));
+        element.scrollTop = Math.max(0, element.scrollHeight - element.clientHeight - 220);
+    });
+    await expect(timeline).toHaveAttribute("data-scroll-mode", "detached");
+    expect(
+        await scroller.evaluate(
+            (element) => element.scrollHeight - element.clientHeight - element.scrollTop,
+        ),
+    ).toBeGreaterThan(200);
+
+    // Send while the planted pointer keeps user-scroll ownership active, then
+    // let Virtuoso finish measuring the append before ending the gesture.
+    await textarea.evaluate((element) => {
+        element.dispatchEvent(
+            new KeyboardEvent("keydown", {
+                bubbles: true,
+                cancelable: true,
+                key: "Enter",
+            }),
+        );
+    });
+
+    await expect(timeline).toHaveAttribute("data-scroll-mode", "attached");
+    await expect(page.locator('[data-event-id="stress-local-1"]')).toBeAttached();
+    await page.waitForTimeout(300);
+    await scroller.evaluate((element) => {
+        element.dispatchEvent(
+            new PointerEvent("pointerup", {
+                bubbles: true,
+                pointerId: 41,
+                pointerType: "touch",
+            }),
+        );
+    });
+    await expectNewestMessageClearOfComposer(page, "stress-local-1");
+});
+
+test("opening a room never reports attachment before reaching the newest message", async ({
+    page,
+}) => {
+    // `attached` is the mode that arms `startReached` and hands position control
+    // to the height-change handlers. Reporting it while the list is still parked
+    // in unmeasured history paginates more history in and strands the reader far
+    // above the newest message, so sample every frame of an untouched open.
+    await page.addInitScript(() => {
+        type OpenSample = { mode: string | null; bottomDistance: number };
+        const probeWindow = window as typeof window & { __openSamples?: OpenSample[] };
+
+        probeWindow.__openSamples = [];
+
+        const sample = () => {
+            const scroller = document.querySelector<HTMLElement>('[data-virtuoso-scroller="true"]');
+
+            if (scroller) {
+                probeWindow.__openSamples?.push({
+                    mode:
+                        document.querySelector<HTMLElement>('[data-ui="timeline"]')?.dataset
+                            .scrollMode ?? null,
+                    bottomDistance:
+                        scroller.scrollHeight - scroller.clientHeight - scroller.scrollTop,
+                });
+            }
+
+            window.requestAnimationFrame(sample);
+        };
+
+        window.requestAnimationFrame(sample);
+    });
+    await page.goto(STRESS_PREVIEW_URL, { waitUntil: "domcontentloaded" });
+
+    const timeline = page.locator('[data-ui="timeline"]');
+
+    await expect(timeline).toHaveAttribute("data-scroll-mode", "attached");
+    await page.waitForTimeout(2_500);
+
+    const samples = await page.evaluate(
+        () =>
+            (
+                window as typeof window & {
+                    __openSamples?: Array<{ mode: string | null; bottomDistance: number }>;
+                }
+            ).__openSamples ?? [],
+    );
+    const firstAttached = samples.find((entry) => entry.mode === "attached");
+
+    expect(firstAttached).toBeDefined();
+    expect(
+        Math.round(firstAttached?.bottomDistance ?? Number.POSITIVE_INFINITY),
+    ).toBeLessThanOrEqual(SUBPIXEL_TOLERANCE_PX + 2);
+
+    // An untouched open must not reach backwards for history it never needed.
+    expect(
+        await page.evaluate(
+            () =>
+                (window as typeof window & { __previewPaginationRequests?: number })
+                    .__previewPaginationRequests ?? 0,
+        ),
+    ).toBe(0);
+
+    await expect(timeline).toHaveAttribute("data-scroll-mode", "attached");
+    await expectNewestMessageClearOfComposer(page, "stress-remote-append");
+});

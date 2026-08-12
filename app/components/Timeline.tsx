@@ -69,6 +69,10 @@ const HISTORY_ANCHOR_MIN_SETTLE_MS = 120;
 const HISTORY_ANCHOR_MAX_SETTLE_MS = 600;
 const HISTORY_ANCHOR_STABLE_FRAMES = 4;
 const USER_SCROLL_END_DELAY_MS = 160;
+const TIMELINE_BOTTOM_TOLERANCE_PX = 2;
+const NEWEST_MESSAGE_MIN_SETTLE_MS = 200;
+const NEWEST_MESSAGE_MAX_SETTLE_MS = 2_000;
+const NEWEST_MESSAGE_STABLE_FRAMES = 3;
 
 type UserScrollDirection = -1 | 0 | 1;
 
@@ -1535,8 +1539,10 @@ export function Timeline({
     const pointerGesture = useRef<{ id: number; y: number } | null>(null);
     const scrollbarPointerActive = useRef(false);
     const bottomFrame = useRef<number | null>(null);
+    const bottomPositionPending = useRef(false);
+    const scheduleBottomPositionRef = useRef<() => void>(() => undefined);
     const programmaticResetFrame = useRef<number | null>(null);
-    const forcePendingBottom = useRef(false);
+    const newestMessageFrame = useRef<number | null>(null);
     const programmaticScroll = useRef(false);
     const userScrollActive = useRef(false);
     const userScrollEndTimer = useRef<number | null>(null);
@@ -1983,7 +1989,8 @@ export function Timeline({
 
             const element = scroller.current;
             const atBottom = element
-                ? element.scrollHeight - element.clientHeight - element.scrollTop <= 2
+                ? element.scrollHeight - element.clientHeight - element.scrollTop <=
+                  TIMELINE_BOTTOM_TOLERANCE_PX
                 : false;
             const direction = userScrollDirection.current;
             const hadOlderIntent = olderIntentLatched.current;
@@ -2010,6 +2017,10 @@ export function Timeline({
                 transitionScrollMode({ type: "bottom-state", atBottom: true });
             } else if (scrollModeRef.current === "detached") {
                 captureDetachedAnchor();
+            }
+
+            if (bottomPositionPending.current && scrollModeRef.current === "attached") {
+                scheduleBottomPositionRef.current();
             }
         });
     }, [captureDetachedAnchor, restoreHistoryAnchor, transitionScrollMode]);
@@ -2065,6 +2076,8 @@ export function Timeline({
             bottomFrame.current = null;
         }
 
+        bottomPositionPending.current = false;
+
         if (programmaticResetFrame.current !== null) {
             window.cancelAnimationFrame(programmaticResetFrame.current);
             programmaticResetFrame.current = null;
@@ -2075,73 +2088,128 @@ export function Timeline({
             detachedRestoreFrame.current = null;
         }
 
-        forcePendingBottom.current = false;
+        if (newestMessageFrame.current !== null) {
+            window.cancelAnimationFrame(newestMessageFrame.current);
+            newestMessageFrame.current = null;
+        }
+
         programmaticScroll.current = false;
         detachedViewportAnchor.current = null;
 
         transitionScrollMode({ type: "user-detach" });
     }, [beginUserScroll, transitionScrollMode]);
 
-    const scheduleBottomPosition = useCallback(
-        (force = false, immediate = false) => {
-            forcePendingBottom.current ||= force;
+    const scheduleBottomPosition = useCallback(() => {
+        bottomPositionPending.current = true;
 
-            const position = () => {
-                bottomFrame.current = null;
-                const forced = forcePendingBottom.current;
-                const mode = scrollModeRef.current;
+        if (bottomFrame.current !== null) {
+            return;
+        }
 
-                forcePendingBottom.current = false;
+        bottomFrame.current = window.requestAnimationFrame(() => {
+            bottomFrame.current = null;
 
-                if (userScrollActive.current && mode !== "attached") {
-                    return;
-                }
+            if (scrollModeRef.current !== "attached") {
+                bottomPositionPending.current = false;
 
-                if (forced ? mode !== "initializing" && mode !== "attached" : mode !== "attached") {
-                    return;
-                }
+                return;
+            }
 
-                const element = scroller.current;
+            if (userScrollActive.current) {
+                return;
+            }
 
-                if (!element) {
-                    return;
-                }
+            const element = scroller.current;
 
+            if (!element) {
+                bottomPositionPending.current = false;
+
+                return;
+            }
+
+            bottomPositionPending.current = false;
+            programmaticScroll.current = true;
+            element.scrollTo({ top: element.scrollHeight, behavior: "auto" });
+
+            if (programmaticResetFrame.current !== null) {
+                window.cancelAnimationFrame(programmaticResetFrame.current);
+            }
+
+            programmaticResetFrame.current = window.requestAnimationFrame(() => {
+                programmaticScroll.current = false;
+                programmaticResetFrame.current = null;
+            });
+        });
+    }, []);
+
+    useLayoutEffect(() => {
+        scheduleBottomPositionRef.current = scheduleBottomPosition;
+    }, [scheduleBottomPosition]);
+
+    // Virtuoso reports a viewport-sized scroll height until it has measured the
+    // rows, so "already at the bottom" is meaningless on the first frames after
+    // a room opens. Hold the timeline against the newest message until the end
+    // of the list stays put across consecutive frames; only then hand over to
+    // the attached-mode handlers. Leaving `initializing` early stranded readers
+    // at the top of an unmeasured list, where `startReached` then paginated more
+    // history in and pushed the newest message even further out of reach.
+    const settleAtNewestMessage = useCallback(() => {
+        if (newestMessageFrame.current !== null || scrollModeRef.current !== "initializing") {
+            return;
+        }
+
+        let startedAt: number | null = null;
+        let stableFrames = 0;
+
+        const settle = () => {
+            newestMessageFrame.current = null;
+
+            if (scrollModeRef.current !== "initializing") {
+                programmaticScroll.current = false;
+
+                return;
+            }
+
+            const element = scroller.current;
+
+            if (!element) {
+                // The list is not mounted yet; `itemsRendered` restarts the settle.
+                programmaticScroll.current = false;
+
+                return;
+            }
+
+            startedAt ??= window.performance.now();
+            const distanceFromBottom =
+                element.scrollHeight - element.clientHeight - element.scrollTop;
+
+            if (userScrollActive.current) {
+                stableFrames = 0;
+            } else if (distanceFromBottom > TIMELINE_BOTTOM_TOLERANCE_PX) {
                 programmaticScroll.current = true;
                 element.scrollTo({ top: element.scrollHeight, behavior: "auto" });
+                stableFrames = 0;
+            } else {
+                stableFrames += 1;
+            }
 
-                if (programmaticResetFrame.current !== null) {
-                    window.cancelAnimationFrame(programmaticResetFrame.current);
-                }
+            const elapsed = window.performance.now() - startedAt;
+            const stillSettling =
+                elapsed < NEWEST_MESSAGE_MIN_SETTLE_MS ||
+                stableFrames < NEWEST_MESSAGE_STABLE_FRAMES;
 
-                programmaticResetFrame.current = window.requestAnimationFrame(() => {
-                    programmaticScroll.current = false;
-                    programmaticResetFrame.current = null;
-
-                    if (scrollModeRef.current === "initializing") {
-                        transitionScrollMode({ type: "initial-positioned" });
-                    }
-                });
-            };
-
-            if (immediate) {
-                if (bottomFrame.current !== null) {
-                    window.cancelAnimationFrame(bottomFrame.current);
-                }
-
-                position();
+            if (elapsed < NEWEST_MESSAGE_MAX_SETTLE_MS && stillSettling) {
+                newestMessageFrame.current = window.requestAnimationFrame(settle);
 
                 return;
             }
 
-            if (bottomFrame.current !== null) {
-                return;
-            }
+            programmaticScroll.current = false;
+            transitionScrollMode({ type: "initial-positioned" });
+        };
 
-            bottomFrame.current = window.requestAnimationFrame(position);
-        },
-        [transitionScrollMode],
-    );
+        newestMessageFrame.current = window.requestAnimationFrame(settle);
+    }, [transitionScrollMode]);
 
     const preservePositionAfterGeometryChange = useCallback(() => {
         if (userScrollActive.current) {
@@ -2183,7 +2251,8 @@ export function Timeline({
 
                 lastScrollTop = element.scrollTop;
                 const atBottom =
-                    element.scrollHeight - element.clientHeight - element.scrollTop <= 2;
+                    element.scrollHeight - element.clientHeight - element.scrollTop <=
+                    TIMELINE_BOTTOM_TOLERANCE_PX;
 
                 if (
                     userScrollActive.current &&
@@ -2422,11 +2491,12 @@ export function Timeline({
             cancelHistoryRestoration();
             historyRequestGeneration.current += 1;
             historyRequestInFlight.current = false;
+            bottomPositionPending.current = false;
             programmaticScroll.current = false;
         }
 
         if (change.kind === "initial") {
-            scheduleBottomPosition(true, true);
+            settleAtNewestMessage();
 
             return;
         }
@@ -2440,7 +2510,6 @@ export function Timeline({
         }
 
         const wasAttachedRemoteAppend = change.kind === "append" && scrollMode === "attached";
-        const force = change.appendedLocalItem;
 
         if (change.appendedLocalItem) {
             cancelHistoryRestoration();
@@ -2449,7 +2518,7 @@ export function Timeline({
             transitionScrollMode({ type: "bottom-state", atBottom: true });
         }
 
-        scheduleBottomPosition(force);
+        scheduleBottomPosition();
     }, [
         cancelHistoryRestoration,
         firstItemIndex,
@@ -2458,6 +2527,7 @@ export function Timeline({
         scheduleBottomPosition,
         scheduleDetachedAnchorRestore,
         scrollMode,
+        settleAtNewestMessage,
         transitionScrollMode,
     ]);
 
@@ -2481,6 +2551,10 @@ export function Timeline({
                 window.cancelAnimationFrame(detachedRestoreFrame.current);
             }
 
+            if (newestMessageFrame.current !== null) {
+                window.cancelAnimationFrame(newestMessageFrame.current);
+            }
+
             if (userScrollEndTimer.current !== null) {
                 window.clearTimeout(userScrollEndTimer.current);
             }
@@ -2494,6 +2568,7 @@ export function Timeline({
             detachedViewportAnchor.current = null;
             historyRequestGeneration.current += 1;
             historyRequestInFlight.current = false;
+            bottomPositionPending.current = false;
             programmaticScroll.current = false;
             userScrollActive.current = false;
         },
@@ -2502,11 +2577,11 @@ export function Timeline({
 
     const onItemsRendered = useCallback(
         (renderedItems: readonly unknown[]) => {
-            if (renderedItems.length > 0 && scrollModeRef.current === "initializing") {
-                scheduleBottomPosition(true);
+            if (renderedItems.length > 0) {
+                settleAtNewestMessage();
             }
         },
-        [scheduleBottomPosition],
+        [settleAtNewestMessage],
     );
 
     const paginationState = loadingHistory ? "loading" : hasMoreHistory ? "idle" : "exhausted";
