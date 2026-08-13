@@ -1015,7 +1015,7 @@
 }
 
 .unread-divider {
-    padding: 0 var(--timeline-inline) 40px;
+    padding: 0 var(--timeline-inline) 36px;
     color: var(--yellow);
 }
 
@@ -1038,7 +1038,7 @@
 .message-row {
     --message-surface-accent: var(--author-accent);
     min-height: 0;
-    padding: 0 var(--timeline-inline) 40px;
+    padding: 0 var(--timeline-inline) 36px;
     grid-template-columns: var(--timeline-time) minmax(0, 1fr);
     column-gap: var(--timeline-gap);
     background: transparent;
@@ -1060,16 +1060,24 @@
     letter-spacing: 0;
 }
 
+/*
+ * The speaker's rule. It hangs off the block rather than the row so it measures
+ * exactly the message — on mobile the row also carries a strip of action
+ * buttons, which the rule should not claim — and reaches back across the gutter
+ * to straddle the axis, overhanging it by a pixel on each side. `top` resolves
+ * against the padding box, so it is stated a pixel short of the reference's 18
+ * to leave room for the hairline above the block.
+ */
 .message-row__marker {
     position: absolute;
     z-index: 1;
-    top: 23px;
-    bottom: auto;
-    left: calc(var(--timeline-inline) + var(--timeline-time) - 2px);
+    top: 17px;
+    bottom: 0;
+    left: calc(-1 * var(--timeline-gap) - 1px);
     display: block;
-    width: 5px;
-    height: 5px;
-    border-radius: 50%;
+    width: 3px;
+    height: auto;
+    border-radius: 0;
     background: var(--author-accent);
     pointer-events: none;
 }
@@ -1095,8 +1103,8 @@
 
 .message-row__main > header strong {
     color: var(--author-accent);
-    font: 600 13px/1 var(--font-ui);
-    letter-spacing: 0.01em;
+    font: 650 14px/1 var(--font-ui);
+    letter-spacing: 0.02em;
     text-transform: none;
 }
 
@@ -1145,10 +1153,6 @@
 
 .message-row--last {
     padding-bottom: 12px;
-}
-
-.message-row--last .message-row__marker {
-    bottom: auto;
 }
 
 /* The quote carries the hue of whoever is being quoted, not of whoever is
@@ -1272,9 +1276,7 @@
     }
 
     .message-row__marker {
-        top: 20px;
-        bottom: auto;
-        left: calc(var(--timeline-inline) + var(--timeline-time) - 2px);
+        top: 14px;
     }
 
     .message-row__main {
@@ -1291,7 +1293,7 @@
     }
 
     .message-row__main > header strong {
-        font-size: 12px;
+        font-size: 13px;
         line-height: 1;
     }
 

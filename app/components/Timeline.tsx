@@ -81,7 +81,7 @@ const AUTHOR_ACCENTS = [
     "var(--participant-sage)",
     "var(--participant-orchid)",
     "var(--participant-clay)",
-    "var(--participant-sand)",
+    "var(--participant-rose)",
 ] as const;
 
 type AuthorAccentStyle = CSSProperties & {
@@ -150,7 +150,7 @@ function estimateTimelineItemHeight(item: TimelineItem, viewportWidth: number): 
     );
     /* The constant covers the row's fixed chrome: the rule above the block, its
        padding, the sender line, and the gap below. */
-    const textHeight = (compact ? 67 : 83) + estimatedTextLines * (compact ? 25.2 : 27.52);
+    const textHeight = (compact ? 68 : 80) + estimatedTextLines * (compact ? 25.2 : 27.52);
     let estimate = textHeight;
 
     if (!item.redacted && (item.type === "image" || item.type === "video")) {
@@ -1381,8 +1381,8 @@ function MessageRow({
                 >
                     {formatTime(item.timestamp)}
                 </time>
-                <span className={classes("message-row__marker")} aria-hidden="true" />
                 <div className={classes("message-row__main")} data-ui="message-content">
+                    <span className={classes("message-row__marker")} aria-hidden="true" />
                     <header>
                         <strong>{item.own ? "You" : item.senderName}</strong>
                         {item.edited ? (
