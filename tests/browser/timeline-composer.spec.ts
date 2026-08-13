@@ -318,6 +318,92 @@ async function waitForMessageTop(page: Page, eventId: string): Promise<number> {
 }
 
 test.describe("composer regression coverage", () => {
+    test("mobile text and selection stay clear of composer controls", async ({
+        page,
+    }, testInfo) => {
+        test.skip(testInfo.project.name !== "mobile-390", "Mobile layout coverage only.");
+        await openPreview(page);
+
+        const textarea = page.locator("#message-composer");
+        const attachment = page.getByRole("button", { name: "Attach a file" });
+        const emoji = page.getByRole("button", { name: "Choose an emoji" });
+        const send = page.getByRole("button", { name: "Send message" });
+
+        for (const width of [390, 320]) {
+            await page.setViewportSize({ width, height: 844 });
+            const nearWrap =
+                width === 390 ? "Draft reaches the control edge" : "Draft reaches edge";
+            const draft = `${nearWrap}\nSelection remains inside the editable message.`;
+
+            await textarea.fill(nearWrap);
+            await expect(textarea).toHaveValue(nearWrap);
+            await textarea.fill(draft);
+
+            const [textareaBox, attachmentBox, emojiBox, sendBox] = await Promise.all([
+                textarea.boundingBox(),
+                attachment.boundingBox(),
+                emoji.boundingBox(),
+                send.boundingBox(),
+            ]);
+
+            expect(textareaBox).not.toBeNull();
+            expect(attachmentBox).not.toBeNull();
+            expect(emojiBox).not.toBeNull();
+            expect(sendBox).not.toBeNull();
+
+            const textareaLeft = textareaBox?.x ?? 0;
+            const textareaRight = textareaLeft + (textareaBox?.width ?? 0);
+
+            expect((attachmentBox?.x ?? 0) + (attachmentBox?.width ?? 0)).toBeLessThanOrEqual(
+                textareaLeft,
+            );
+            expect(textareaRight).toBeLessThanOrEqual(emojiBox?.x ?? 0);
+            expect(textareaRight).toBeLessThanOrEqual(sendBox?.x ?? 0);
+
+            const hitTargets = await textarea.evaluate((element) => {
+                const input = element as HTMLTextAreaElement;
+                const bounds = input.getBoundingClientRect();
+                const y = bounds.top + Math.min(12, bounds.height / 2);
+
+                return [bounds.left + 1, bounds.right - 1].map((x) => {
+                    const target = document.elementFromPoint(x, y);
+
+                    return target === input || target?.closest("#message-composer") === input;
+                });
+            });
+
+            expect(hitTargets).toEqual([true, true]);
+
+            await textarea.evaluate((element) => {
+                const input = element as HTMLTextAreaElement;
+
+                input.focus();
+                input.setSelectionRange(2, input.value.length - 2);
+                input.dispatchEvent(new Event("select", { bubbles: true }));
+            });
+
+            const selection = await textarea.evaluate((element) => {
+                const input = element as HTMLTextAreaElement;
+
+                return {
+                    active: document.activeElement === input,
+                    start: input.selectionStart,
+                    end: input.selectionEnd,
+                    documentSelection: window.getSelection()?.toString() ?? "",
+                };
+            });
+
+            expect(selection).toEqual({
+                active: true,
+                start: 2,
+                end: draft.length - 2,
+                documentSelection: draft.slice(2, -2),
+            });
+            await expect(emoji).toHaveAttribute("aria-expanded", "false");
+            await expect(textarea).toHaveValue(draft);
+        }
+    });
+
     test("typing presence fades without moving the timeline", async ({ page }) => {
         await openPreview(page);
 

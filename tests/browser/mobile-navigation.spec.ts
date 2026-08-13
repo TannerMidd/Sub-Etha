@@ -84,16 +84,26 @@ test("dialogs and text controls exclude the global edge swipe", async ({ page })
 
 test("header Back, room selection, and browser Back preserve mobile history", async ({ page }) => {
     const shell = page.locator('[data-ui="app-shell"]');
+    const indexButton = page.getByRole("button", { name: "Open transmission index" });
 
-    await page.getByRole("button", { name: "Open transmission index" }).click();
+    await indexButton.click();
     await expect(shell).toHaveAttribute("data-rooms-state", "open");
     await page.getByRole("button", { name: /Hab Drift Crew/ }).click();
-    await expect(page.getByRole("heading", { name: "Hab Drift Crew" })).toBeVisible();
+    const roomHeading = page.getByRole("heading", { name: "Hab Drift Crew" });
+
+    await expect(roomHeading).toBeVisible();
     await expect(shell).toHaveAttribute("data-rooms-state", "closed");
+    await expect(roomHeading).toBeFocused();
+    await expect(indexButton).not.toBeFocused();
+    expect(await indexButton.evaluate((element) => element.matches(":focus-visible"))).toBe(false);
 
     await page.goBack();
     await expect(shell).toHaveAttribute("data-rooms-state", "open");
     await expect(page.locator('[data-ui="room-sidebar"]')).toBeVisible();
+
+    await page.keyboard.press("Escape");
+    await expect(shell).toHaveAttribute("data-rooms-state", "closed");
+    await expect(indexButton).toBeFocused();
 });
 
 test("reduced motion removes drawer and dialog transition timing", async ({ page }) => {

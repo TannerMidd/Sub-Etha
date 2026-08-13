@@ -52,6 +52,7 @@ import { classes } from "../styles/appStyles";
 
 type OpenDialog = "new" | "search" | "settings" | "details" | null;
 type RoomScope = "all" | "unread";
+type MobileFocusTarget = "conversation-heading" | "index-button" | null;
 
 interface SubEthaHistoryState {
     subEthaView?: "rooms" | "room";
@@ -291,6 +292,8 @@ export function ChatShell({
     const [mobileRoomsOpen, setMobileRoomsOpen] = useState(!snapshot.activeRoomId);
     const roomSearchInput = useRef<HTMLInputElement>(null);
     const mobileMenuButton = useRef<HTMLButtonElement>(null);
+    const conversationHeading = useRef<HTMLHeadingElement>(null);
+    const mobileFocusTarget = useRef<MobileFocusTarget>(null);
     const mobileRoomsWasOpen = useRef(mobileRoomsOpen);
     const swipeStart = useRef<SwipeStart | null>(null);
     const suppressSwipeClickUntil = useRef(0);
@@ -341,6 +344,7 @@ export function ChatShell({
             roomUrl(room.id),
         );
         historySeeded.current = true;
+        mobileFocusTarget.current = "index-button";
         setMobileRoomsOpen(false);
     }, [service]);
 
@@ -440,21 +444,30 @@ export function ChatShell({
     useEffect(() => {
         const selectFromLocation = () => {
             const roomId = parseRoomHash();
+            const mobile = isMobileLayout();
 
             if (
                 roomId &&
                 snapshot.rooms.some((room) => room.id === roomId) &&
                 roomId !== service.getSnapshot().activeRoomId
             ) {
+                if (mobile) {
+                    mobileFocusTarget.current = "conversation-heading";
+                }
+
                 service.selectRoom(roomId);
                 setMobileRoomsOpen(false);
 
                 return;
             }
 
-            if (!roomId && isMobileLayout()) {
+            if (!roomId && mobile) {
                 setMobileRoomsOpen(true);
             } else if (roomId) {
+                if (mobile && mobileRoomsOpen) {
+                    mobileFocusTarget.current = "conversation-heading";
+                }
+
                 setMobileRoomsOpen(false);
             }
         };
@@ -467,7 +480,7 @@ export function ChatShell({
             window.removeEventListener("hashchange", selectFromLocation);
             window.removeEventListener("popstate", selectFromLocation);
         };
-    }, [service, snapshot.rooms]);
+    }, [mobileRoomsOpen, service, snapshot.rooms]);
 
     useEffect(() => {
         if (!activeRoom || mobileRoomsOpen || !historySeeded.current) {
@@ -519,24 +532,38 @@ export function ChatShell({
             return;
         }
 
+        const requestedTarget = mobileFocusTarget.current;
         const focusTarget = mobileRoomsOpen
             ? roomSearchInput.current
-            : wasOpen
-              ? mobileMenuButton.current
-              : null;
+            : requestedTarget === "conversation-heading"
+              ? conversationHeading.current
+              : wasOpen && requestedTarget === "index-button"
+                ? mobileMenuButton.current
+                : null;
 
         if (!focusTarget) {
             return;
         }
 
-        const frame = window.requestAnimationFrame(() => focusTarget.focus());
+        if (!mobileRoomsOpen) {
+            mobileFocusTarget.current = null;
+        }
+
+        const frame = window.requestAnimationFrame(() =>
+            focusTarget.focus({ preventScroll: true }),
+        );
 
         return () => window.cancelAnimationFrame(frame);
-    }, [mobileRoomsOpen]);
+    }, [mobileRoomsOpen, snapshot.activeRoomId]);
 
     const selectRoom = (roomId: string) => {
-        service.selectRoom(roomId);
         const mobile = isMobileLayout();
+
+        if (mobile) {
+            mobileFocusTarget.current = "conversation-heading";
+        }
+
+        service.selectRoom(roomId);
         let state = (window.history.state ?? {}) as SubEthaHistoryState;
 
         if (mobile && mobileRoomsOpen && state.subEthaView !== "rooms") {
@@ -827,7 +854,7 @@ export function ChatShell({
                                     <span className={classes("conversation-entry")}>
                                         Entry {activeEntryCode}
                                     </span>
-                                    <h1>
+                                    <h1 ref={conversationHeading} tabIndex={-1}>
                                         {activeRoom.name}
                                         {activeRoom.muted ? <BellOff aria-label="Muted" /> : null}
                                     </h1>

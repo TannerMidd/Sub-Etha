@@ -524,13 +524,14 @@
     .composer {
         min-height: 0;
         padding-top: 20px;
-        grid-template-columns: 44px minmax(0, 1fr) auto;
-        column-gap: 28px;
+        grid-template-columns: 44px 28px minmax(0, 1fr) 44px auto;
+        column-gap: 0;
     }
 
     /* 16px is the floor that keeps iOS from zooming the shell on focus, so the
      * single composer line measures 24px and the controls beside it follow. */
     .composer textarea {
+        grid-column: 3;
         min-height: 24px;
         max-height: min(144px, 32dvh);
         padding: 0;
@@ -565,13 +566,17 @@
     }
 
     .send-button {
+        grid-column: 5;
         font-size: 10px;
         letter-spacing: 0.18em;
     }
 
     .emoji-control {
-        top: 10px;
-        right: 34px;
+        position: relative;
+        top: -10px;
+        right: auto;
+        grid-column: 4;
+        grid-row: 1;
     }
 
     .composer-context {
