@@ -59,11 +59,11 @@
     --teal-strong: #1f4a35;
     --teal-soft: color-mix(in srgb, #2c6047 12%, transparent);
     --yellow: #6b4708;
-    --participant-steel: #2f5878;
-    --participant-sage: #2c6047;
-    --participant-orchid: #63405f;
-    --participant-clay: #82442a;
-    --participant-sand: #6f5416;
+    --participant-steel: #1a5580;
+    --participant-sage: #1c6244;
+    --participant-orchid: #6b3a67;
+    --participant-clay: #8d4318;
+    --participant-rose: #803a45;
     --focus: #6b4708;
     /* Paper needs less veil than a dark room, and a warm one so the sheet
        underneath still reads as paper rather than turning grey. */
@@ -97,17 +97,19 @@
     --yellow: #c9a86a;
     /*
      * The four speaker hues are the reference values. They sit together at
-     * roughly L 0.73 / C 0.055 in OKLCH, which is what makes them read as one
-     * family rather than five separate decisions; the fifth slot has no
-     * reference value, so it is placed on that same ring at the warm hue. It
-     * deliberately stays clear of `--signal` (L 0.75 / C 0.089) so a speaker is
-     * never mistaken for the accent. All five clear 7:1 on the plane.
+     * roughly L 0.75 / C 0.091 in OKLCH, which is what makes them read as one
+     * family rather than five separate decisions, and the reference now carries
+     * them at enough chroma to survive being drawn as a 3px rule rather than a
+     * dot. The fifth slot has no reference value and is placed on that same
+     * ring. It sits at rose rather than the warm hue it used to hold, because
+     * `--signal` (L 0.75 / C 0.089 / h 82) now lands inside this family: a warm
+     * fifth speaker would be the accent. All five clear 7:1 on the plane.
      */
-    --participant-steel: #8fa8c4;
-    --participant-sage: #8fbaa4;
-    --participant-orchid: #bb9dbb;
-    --participant-clay: #c99b8a;
-    --participant-sand: #b9a781;
+    --participant-steel: #82b4de;
+    --participant-sage: #74c39c;
+    --participant-orchid: #c78fc7;
+    --participant-clay: #dfa47f;
+    --participant-rose: #e1969e;
     --focus: #c9a86a;
     --shadow: none;
     --shadow-tight: none;
