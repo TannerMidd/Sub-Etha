@@ -474,11 +474,17 @@
     transition: opacity var(--motion-fast) ease;
 }
 
-.composer:hover .emoji-control,
 .composer:focus-within .emoji-control,
 .emoji-control:focus-within {
     opacity: 1;
     pointer-events: auto;
+}
+
+@media (hover: hover) and (pointer: fine) {
+    .composer:hover .emoji-control {
+        opacity: 1;
+        pointer-events: auto;
+    }
 }
 
 .emoji-control > .icon-button {

@@ -342,6 +342,7 @@ test.describe("composer regression coverage", () => {
         const textarea = page.locator("#message-composer");
         const attachment = page.getByRole("button", { name: "Attach a file" });
         const emoji = page.getByRole("button", { name: "Choose an emoji" });
+        const emojiControl = emoji.locator("..");
         const send = page.getByRole("button", { name: "Send message" });
 
         for (const width of [390, 320]) {
@@ -352,6 +353,9 @@ test.describe("composer regression coverage", () => {
 
             await textarea.fill("");
             await textarea.evaluate((element) => element.blur());
+
+            await expect(emojiControl).toHaveCSS("opacity", "0");
+            await expect(emojiControl).toHaveCSS("pointer-events", "none");
 
             const singleLineBox = await textarea.boundingBox();
 
@@ -364,7 +368,10 @@ test.describe("composer regression coverage", () => {
 
                 await page.touchscreen.tap(x, y);
                 await expect(textarea).toBeFocused();
+                await expect(emojiControl).toHaveCSS("opacity", "1");
+                await expect(emojiControl).toHaveCSS("pointer-events", "auto");
                 await textarea.evaluate((element) => element.blur());
+                await expect(emojiControl).toHaveCSS("opacity", "0");
             }
 
             await textarea.fill(nearWrap);

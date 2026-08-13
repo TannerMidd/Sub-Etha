@@ -84,3 +84,18 @@ test("mobile theme styles keep quick actions directly reachable", async () => {
         "The explicit mobile overflow state must reveal secondary actions.",
     );
 });
+
+test("touch composers do not reveal controls through a hover-only first tap", async () => {
+    const css = await readFile(COMPOSER_STYLES, "utf8");
+
+    assert.doesNotMatch(
+        css,
+        /\.composer:hover \.emoji-control\s*,\s*\.composer:focus-within/,
+        "Touch focus must not share the desktop hover disclosure rule.",
+    );
+    assert.match(
+        css,
+        /@media \(hover: hover\) and \(pointer: fine\)[\s\S]*?\.composer:hover \.emoji-control/,
+        "Composer hover disclosure must be limited to a real hover-capable pointer.",
+    );
+});
