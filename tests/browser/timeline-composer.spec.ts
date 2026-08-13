@@ -229,7 +229,7 @@ async function expectNewestMessageClearOfComposer(page: Page, eventId: string): 
         .toBeLessThanOrEqual(SUBPIXEL_TOLERANCE_PX);
 }
 
-async function openMessageActions(row: Locator): Promise<void> {
+async function openMessageActions(row: Locator, actionName = "Reply"): Promise<void> {
     await row.evaluate(
         () =>
             new Promise<void>((resolve) => {
@@ -237,25 +237,40 @@ async function openMessageActions(row: Locator): Promise<void> {
             }),
     );
 
-    const toggle = row.locator('[data-ui="message-actions-toggle"]');
+    const action = row.getByRole("button", { name: actionName, includeHidden: true });
+    const reachable = await action.evaluate((button) => {
+        const bounds = button.getBoundingClientRect();
 
-    const usesToggle = await toggle.evaluate(
-        (button) => getComputedStyle(button).display !== "none",
-    );
+        if (!bounds.width || !bounds.height || getComputedStyle(button).pointerEvents === "none") {
+            return false;
+        }
 
-    if (usesToggle) {
-        await toggle.click();
-        await expect(row).toHaveAttribute("data-actions-state", "open");
-    } else {
-        await row.hover();
+        const hit = document.elementFromPoint(
+            bounds.left + bounds.width / 2,
+            bounds.top + bounds.height / 2,
+        );
+
+        return hit === button || button.contains(hit);
+    });
+
+    if (!reachable) {
+        const toggle = row.locator('[data-ui="message-actions-toggle"]');
+        const usesToggle =
+            (await toggle.count()) > 0 &&
+            (await toggle.evaluate((button) => getComputedStyle(button).display !== "none"));
+
+        if (usesToggle) {
+            await toggle.click();
+            await expect(row).toHaveAttribute("data-actions-state", "open");
+        } else {
+            await row.hover();
+        }
     }
-
-    const reply = row.getByRole("button", { name: "Reply", includeHidden: true });
 
     try {
         await expect
             .poll(() =>
-                reply.evaluate((button) => {
+                action.evaluate((button) => {
                     const bounds = button.getBoundingClientRect();
                     const hit = document.elementFromPoint(
                         bounds.left + bounds.width / 2,
@@ -267,7 +282,7 @@ async function openMessageActions(row: Locator): Promise<void> {
             )
             .toBe(true);
     } catch (cause) {
-        const diagnostics = await reply.evaluate((button) => {
+        const diagnostics = await action.evaluate((button) => {
             const actions = button.closest<HTMLElement>('[data-ui="message-actions"]');
             const messageRow = button.closest<HTMLElement>('[data-ui="message-row"]');
             const bounds = button.getBoundingClientRect();
@@ -295,7 +310,7 @@ async function openMessageActions(row: Locator): Promise<void> {
             };
         });
 
-        throw new Error(`Message actions never became reachable: ${JSON.stringify(diagnostics)}`, {
+        throw new Error(`${actionName} never became reachable: ${JSON.stringify(diagnostics)}`, {
             cause,
         });
     }
@@ -335,6 +350,23 @@ test.describe("composer regression coverage", () => {
                 width === 390 ? "Draft reaches the control edge" : "Draft reaches edge";
             const draft = `${nearWrap}\nSelection remains inside the editable message.`;
 
+            await textarea.fill("");
+            await textarea.evaluate((element) => element.blur());
+
+            const singleLineBox = await textarea.boundingBox();
+
+            expect(singleLineBox).not.toBeNull();
+            expect(singleLineBox?.height ?? 0).toBeGreaterThanOrEqual(44);
+
+            for (const yRatio of [0.1, 0.5, 0.9]) {
+                const x = (singleLineBox?.x ?? 0) + (singleLineBox?.width ?? 0) / 2;
+                const y = (singleLineBox?.y ?? 0) + (singleLineBox?.height ?? 0) * yRatio;
+
+                await page.touchscreen.tap(x, y);
+                await expect(textarea).toBeFocused();
+                await textarea.evaluate((element) => element.blur());
+            }
+
             await textarea.fill(nearWrap);
             await expect(textarea).toHaveValue(nearWrap);
             await textarea.fill(draft);
@@ -363,16 +395,23 @@ test.describe("composer regression coverage", () => {
             const hitTargets = await textarea.evaluate((element) => {
                 const input = element as HTMLTextAreaElement;
                 const bounds = input.getBoundingClientRect();
-                const y = bounds.top + Math.min(12, bounds.height / 2);
+                const points = [
+                    [bounds.left + 1, bounds.top + 1],
+                    [bounds.right - 1, bounds.top + 1],
+                    [bounds.left + 1, bounds.top + bounds.height / 2],
+                    [bounds.right - 1, bounds.top + bounds.height / 2],
+                    [bounds.left + 1, bounds.bottom - 1],
+                    [bounds.right - 1, bounds.bottom - 1],
+                ];
 
-                return [bounds.left + 1, bounds.right - 1].map((x) => {
+                return points.map(([x, y]) => {
                     const target = document.elementFromPoint(x, y);
 
                     return target === input || target?.closest("#message-composer") === input;
                 });
             });
 
-            expect(hitTargets).toEqual([true, true]);
+            expect(hitTargets).toEqual([true, true, true, true, true, true]);
 
             await textarea.evaluate((element) => {
                 const input = element as HTMLTextAreaElement;
@@ -401,6 +440,92 @@ test.describe("composer regression coverage", () => {
             });
             await expect(emoji).toHaveAttribute("aria-expanded", "false");
             await expect(textarea).toHaveValue(draft);
+        }
+    });
+
+    test("mobile messages expose one-tap reply and reaction actions", async ({
+        page,
+    }, testInfo) => {
+        test.skip(testInfo.project.name !== "mobile-390", "Mobile layout coverage only.");
+        await openPreview(page);
+
+        const textarea = page.locator("#message-composer");
+
+        for (const width of [390, 320]) {
+            await page.setViewportSize({ width, height: 844 });
+            const remoteRow = page.locator('[data-event-id="m8"]');
+
+            await remoteRow.scrollIntoViewIfNeeded();
+
+            const content = remoteRow.locator('[data-ui="message-content"]');
+            const actions = remoteRow.locator('[data-ui="message-actions"]');
+            const reply = remoteRow.getByRole("button", { name: "Reply" });
+            const reaction = remoteRow.getByRole("button", { name: "Add reaction" });
+
+            await expect(reply).toBeVisible();
+            await expect(reaction).toBeVisible();
+            await expect(remoteRow.locator('[data-ui="message-actions-toggle"]')).toHaveCount(0);
+
+            const [contentBox, actionsBox, replyBox, reactionBox] = await Promise.all([
+                content.boundingBox(),
+                actions.boundingBox(),
+                reply.boundingBox(),
+                reaction.boundingBox(),
+            ]);
+
+            expect(contentBox).not.toBeNull();
+            expect(actionsBox).not.toBeNull();
+            expect(replyBox?.width ?? 0).toBeGreaterThanOrEqual(44);
+            expect(replyBox?.height ?? 0).toBeGreaterThanOrEqual(44);
+            expect(reactionBox?.width ?? 0).toBeGreaterThanOrEqual(44);
+            expect(reactionBox?.height ?? 0).toBeGreaterThanOrEqual(44);
+            expect((contentBox?.y ?? 0) + (contentBox?.height ?? 0)).toBeLessThanOrEqual(
+                (actionsBox?.y ?? 0) + SUBPIXEL_TOLERANCE_PX,
+            );
+
+            await reaction.click();
+            await expect(
+                page.getByRole("dialog", { name: "React to message from Tamsin" }),
+            ).toBeVisible();
+            await page.keyboard.press("Escape");
+            await expect(reaction).toHaveAttribute("aria-expanded", "false");
+
+            await textarea.fill("Mobile reply draft");
+            await textarea.evaluate((element) => element.blur());
+            await reply.click();
+            await expect(page.getByText("Replying to Tamsin")).toBeVisible();
+            await expect(textarea).toBeFocused();
+
+            const selection = await textarea.evaluate((element) => {
+                const input = element as HTMLTextAreaElement;
+
+                return { start: input.selectionStart, end: input.selectionEnd };
+            });
+
+            expect(selection).toEqual({ start: 18, end: 18 });
+            await page.getByRole("button", { name: "Cancel reply" }).click();
+
+            const ownRow = page.locator('[data-event-id="m9"]');
+
+            await ownRow.scrollIntoViewIfNeeded();
+            await ownRow.locator('[data-ui="message-actions-toggle"]').click();
+            await expect(ownRow).toHaveAttribute("data-actions-state", "open");
+
+            const edit = ownRow.getByRole("button", { name: "Edit" });
+            const remove = ownRow.getByRole("button", { name: "Remove" });
+
+            await expect(edit).toBeVisible();
+            await expect(remove).toBeVisible();
+
+            for (const control of [edit, remove]) {
+                const bounds = await control.boundingBox();
+
+                expect(bounds?.width ?? 0).toBeGreaterThanOrEqual(44);
+                expect(bounds?.height ?? 0).toBeGreaterThanOrEqual(44);
+            }
+
+            await page.keyboard.press("Escape");
+            await expect(ownRow).toHaveAttribute("data-actions-state", "closed");
         }
     });
 
@@ -542,7 +667,7 @@ test.describe("composer regression coverage", () => {
         const ownRow = page.locator('[data-event-id="m9"]');
 
         await ownRow.scrollIntoViewIfNeeded();
-        await openMessageActions(ownRow);
+        await openMessageActions(ownRow, "Edit");
         await ownRow.getByRole("button", { name: "Edit" }).click();
         await expect(page.getByText("Editing message")).toBeVisible();
         await textarea.fill("Edit one\nEdit two\nEdit three\nEdit four");

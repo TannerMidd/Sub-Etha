@@ -63,7 +63,7 @@ test("typing presence reserves space without animating timeline geometry", async
     assert.doesNotMatch(activeRule, /(?:min-height|flex-basis)\s*:/);
 });
 
-test("mobile theme styles keep message actions reachable", async () => {
+test("mobile theme styles keep quick actions directly reachable", async () => {
     const css = await readFile(TIMELINE_STYLES, "utf8");
     const hiddenMessageActions =
         /\.message-actions(?:-toggle)?\s*\{[^}]*display\s*:\s*none\s*!important/;
@@ -75,7 +75,12 @@ test("mobile theme styles keep message actions reachable", async () => {
     );
     assert.match(
         css,
-        /\.message-row\.is-actions-open \.message-actions[^{]*\{[^}]*display\s*:\s*flex/,
-        "The explicit mobile action state must reveal the full action menu.",
+        /\.message-actions\s*\{[^}]*grid-column\s*:\s*2[^}]*display\s*:\s*flex[^}]*opacity\s*:\s*1[^}]*pointer-events\s*:\s*auto/,
+        "The mobile quick-action strip must stay visible and interactive.",
+    );
+    assert.match(
+        css,
+        /\.message-row\.is-actions-open \.message-actions-overflow\s*\{[^}]*display\s*:\s*flex/,
+        "The explicit mobile overflow state must reveal secondary actions.",
     );
 });

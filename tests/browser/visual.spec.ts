@@ -1,6 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 
 const PREVIEW_URL = "/?design-preview#/room/signal-watch";
+const LIGHT_PREVIEW_URL = "/?design-preview&theme=light#/room/signal-watch";
 const LOGIN_PREVIEW_URL = "/?design-preview&surface-preview=login";
 const SETTINGS_PREVIEW_URL = "/?design-preview&surface-preview=settings#/room/signal-watch";
 const LIGHT_SETTINGS_PREVIEW_URL =
@@ -22,7 +23,7 @@ function captureRuntimeProblems(page: Page): string[] {
     return problems;
 }
 
-test("Zen chat shell matches the selected line-driven reference", async ({ page }, testInfo) => {
+test("Zen chat shell keeps message rows quiet and unboxed", async ({ page }, testInfo) => {
     const runtimeProblems = captureRuntimeProblems(page);
 
     await page.addInitScript(() => {
@@ -36,6 +37,26 @@ test("Zen chat shell matches the selected line-driven reference", async ({ page 
     await page.locator("#message-composer").evaluate((element) => element.blur());
 
     await expect(page).toHaveScreenshot(`zen-chat-shell-${testInfo.project.name}.png`, {
+        animations: "disabled",
+        fullPage: true,
+    });
+    expect(runtimeProblems).toEqual([]);
+});
+
+test("Zen chat sender cues remain subtle in the light theme", async ({ page }, testInfo) => {
+    const runtimeProblems = captureRuntimeProblems(page);
+
+    await page.addInitScript(() => {
+        localStorage.setItem("sub-etha-theme", "light");
+        localStorage.removeItem("sub-etha-draft:signal-watch");
+    });
+    await page.goto(LIGHT_PREVIEW_URL);
+    await expect(page.locator('[data-ui="app-shell"]')).toBeVisible();
+    await page.evaluate(() => document.fonts.ready);
+    await page.locator("#message-composer").fill("");
+    await page.locator("#message-composer").evaluate((element) => element.blur());
+
+    await expect(page).toHaveScreenshot(`zen-chat-shell-light-${testInfo.project.name}.png`, {
         animations: "disabled",
         fullPage: true,
     });

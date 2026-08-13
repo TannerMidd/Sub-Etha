@@ -528,13 +528,13 @@
         column-gap: 0;
     }
 
-    /* 16px is the floor that keeps iOS from zooming the shell on focus, so the
-     * single composer line measures 24px and the controls beside it follow. */
+    /* Keep the native textarea as the full touch target so the first tap can
+     * focus it and summon the iOS keyboard without an intermediary handler. */
     .composer textarea {
         grid-column: 3;
-        min-height: 24px;
+        min-height: 44px;
         max-height: min(144px, 32dvh);
-        padding: 0;
+        padding: 10px 0;
         font: 300 16px/1.5 var(--font-display);
     }
 
@@ -547,6 +547,9 @@
         position: absolute;
         top: 20px;
         left: 72px;
+        height: 44px;
+        display: flex;
+        align-items: center;
         color: var(--ink-muted, var(--ink-soft));
         font: 300 16px/1.5 var(--font-display);
         pointer-events: none;
@@ -556,9 +559,14 @@
     .send-button {
         width: auto;
         min-width: 0;
-        height: 24px;
-        min-height: 24px;
+        height: 44px;
+        min-height: 44px;
         padding: 0;
+    }
+
+    .composer > .icon-button::before,
+    .send-button::before {
+        inset: 0;
     }
 
     .composer > .icon-button {
@@ -573,7 +581,7 @@
 
     .emoji-control {
         position: relative;
-        top: -10px;
+        top: 0;
         right: auto;
         grid-column: 4;
         grid-row: 1;

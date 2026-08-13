@@ -10,6 +10,7 @@ import {
     useState,
     useSyncExternalStore,
 } from "react";
+import { flushSync } from "react-dom";
 import {
     ArrowLeft,
     ArrowRight,
@@ -39,7 +40,7 @@ import {
 } from "@/lib/matrix/notifications";
 import type { RoomSummary, TimelineItem } from "@/lib/matrix/types";
 import { Avatar } from "./BrandMark";
-import { Composer } from "./Composer";
+import { Composer, type ComposerHandle } from "./Composer";
 import {
     NewConversationDialog,
     RoomDetailsDialog,
@@ -293,6 +294,7 @@ export function ChatShell({
     const roomSearchInput = useRef<HTMLInputElement>(null);
     const mobileMenuButton = useRef<HTMLButtonElement>(null);
     const conversationHeading = useRef<HTMLHeadingElement>(null);
+    const composer = useRef<ComposerHandle>(null);
     const mobileFocusTarget = useRef<MobileFocusTarget>(null);
     const mobileRoomsWasOpen = useRef(mobileRoomsOpen);
     const swipeStart = useRef<SwipeStart | null>(null);
@@ -960,6 +962,16 @@ export function ChatShell({
                                             initializing={snapshot.connection === "starting"}
                                             unreadCount={activeRoom.unread}
                                             onReply={(item) => {
+                                                if (isMobileLayout()) {
+                                                    flushSync(() => {
+                                                        setReplyingTo(item);
+                                                        setEditing(null);
+                                                    });
+                                                    composer.current?.focus();
+
+                                                    return;
+                                                }
+
                                                 setReplyingTo(item);
                                                 setEditing(null);
                                             }}
@@ -999,6 +1011,7 @@ export function ChatShell({
                                         ) : null}
                                     </div>
                                     <Composer
+                                        ref={composer}
                                         key={`${activeRoom.id}:${editing?.id ?? "compose"}`}
                                         roomId={activeRoom.id}
                                         roomName={activeRoom.name}

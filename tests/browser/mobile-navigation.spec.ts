@@ -74,10 +74,13 @@ test("dialogs and text controls exclude the global edge swipe", async ({ page })
     const attachmentBounds = await attachmentControl.boundingBox();
 
     expect(attachmentBounds).not.toBeNull();
+    const attachmentX = (attachmentBounds?.x ?? 0) + 1;
+    const attachmentY = (attachmentBounds?.y ?? 0) + (attachmentBounds?.height ?? 0) / 2;
+
     await dispatchTouchSwipe(
         page,
-        { x: 12, y: (attachmentBounds?.y ?? 0) + (attachmentBounds?.height ?? 0) / 2 },
-        { x: 120, y: (attachmentBounds?.y ?? 0) + (attachmentBounds?.height ?? 0) / 2 },
+        { x: attachmentX, y: attachmentY },
+        { x: attachmentX + 108, y: attachmentY },
     );
     await expect(shell).toHaveAttribute("data-rooms-state", "closed");
 });
@@ -95,6 +98,7 @@ test("header Back, room selection, and browser Back preserve mobile history", as
     await expect(shell).toHaveAttribute("data-rooms-state", "closed");
     await expect(roomHeading).toBeFocused();
     await expect(indexButton).not.toBeFocused();
+    await expect(page.locator("#message-composer")).not.toBeFocused();
     expect(await indexButton.evaluate((element) => element.matches(":focus-visible"))).toBe(false);
 
     await page.goBack();

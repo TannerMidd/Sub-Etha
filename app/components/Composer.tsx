@@ -1,6 +1,16 @@
 "use client";
 
-import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import {
+    forwardRef,
+    lazy,
+    Suspense,
+    useCallback,
+    useEffect,
+    useImperativeHandle,
+    useLayoutEffect,
+    useRef,
+    useState,
+} from "react";
 import {
     CornerUpLeft,
     FileText,
@@ -33,21 +43,23 @@ function formatSize(size: number): string {
     return `${(size / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-export function Composer({
-    roomId,
-    roomName,
-    service,
-    replyingTo,
-    editing,
-    onClearContext,
-}: {
+export interface ComposerHandle {
+    focus: () => void;
+}
+
+interface ComposerProps {
     roomId: string;
     roomName: string;
     service: MatrixService;
     replyingTo: TimelineItem | null;
     editing: TimelineItem | null;
     onClearContext: () => void;
-}) {
+}
+
+export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Composer(
+    { roomId, roomName, service, replyingTo, editing, onClearContext },
+    ref,
+) {
     const draftKey = `sub-etha-draft:${roomId}`;
     const [body, setBody] = useState(() => editing?.body ?? localStorage.getItem(draftKey) ?? "");
     const [attachment, setAttachment] = useState<File | null>(null);
@@ -65,6 +77,23 @@ export function Composer({
     const trimmedBody = body.trim();
     const unchangedEdit = Boolean(editing && trimmedBody === editing.body.trim());
     const canSend = Boolean(attachment || trimmedBody) && !unchangedEdit && !sending;
+
+    useImperativeHandle(
+        ref,
+        () => ({
+            focus: () => {
+                const input = textarea.current;
+
+                if (!input) {
+                    return;
+                }
+
+                input.focus({ preventScroll: true });
+                input.setSelectionRange(input.value.length, input.value.length);
+            },
+        }),
+        [],
+    );
 
     const syncTextareaHeight = useCallback(() => {
         const input = textarea.current;
@@ -509,4 +538,4 @@ export function Composer({
             )}
         </div>
     );
-}
+});

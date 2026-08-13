@@ -1270,6 +1270,7 @@ function MessageRow({
         next && new Date(next.timestamp).toDateString() !== new Date(item.timestamp).toDateString();
     const actionable = item.decryptionState === "ready" && !item.redacted && !item.sendingStatus;
     const editable = actionable && item.own && item.type === "message" && !item.media;
+    const hasSecondaryActions = editable || item.own;
 
     useEffect(() => {
         if (!actionsOpen) {
@@ -1331,7 +1332,7 @@ function MessageRow({
                     {formatTime(item.timestamp)}
                 </time>
                 <span className={classes("message-row__marker")} aria-hidden="true" />
-                <div className={classes("message-row__main")}>
+                <div className={classes("message-row__main")} data-ui="message-content">
                     <header>
                         <strong>{item.own ? "You" : item.senderName}</strong>
                         {item.edited ? (
@@ -1418,18 +1419,6 @@ function MessageRow({
                     ) : null}
                 </div>
                 {actionable ? (
-                    <button
-                        type="button"
-                        className={classes("message-actions-toggle")}
-                        data-ui="message-actions-toggle"
-                        aria-label={`Show actions for message from ${item.senderName}`}
-                        aria-expanded={actionsOpen}
-                        onClick={() => setActionsOpen((open) => !open)}
-                    >
-                        <MoreHorizontal />
-                    </button>
-                ) : null}
-                {actionable ? (
                     <div
                         className={classes("message-actions")}
                         data-ui="message-actions"
@@ -1441,6 +1430,7 @@ function MessageRow({
                             aria-label="Reply"
                             onClick={() => {
                                 setActionsOpen(false);
+                                setReactionOpen(false);
                                 onReply(item);
                             }}
                         >
@@ -1451,35 +1441,63 @@ function MessageRow({
                             title="Add reaction"
                             aria-label="Add reaction"
                             aria-expanded={reactionOpen}
-                            onClick={() => setReactionOpen((open) => !open)}
+                            onPointerDown={(event) => event.stopPropagation()}
+                            onClick={() => {
+                                setActionsOpen(false);
+                                setReactionOpen((open) => !open);
+                            }}
                         >
                             <SmilePlus />
                         </button>
-                        {editable ? (
-                            <button
-                                type="button"
-                                title="Edit"
-                                aria-label="Edit"
-                                onClick={() => {
-                                    setActionsOpen(false);
-                                    onEdit(item);
-                                }}
-                            >
-                                <Pencil />
-                            </button>
-                        ) : null}
-                        {item.own ? (
-                            <button
-                                type="button"
-                                title="Remove"
-                                aria-label="Remove"
-                                onClick={() => {
-                                    setActionsOpen(false);
-                                    void service.redact(item.id);
-                                }}
-                            >
-                                <Trash2 />
-                            </button>
+                        {hasSecondaryActions ? (
+                            <>
+                                <button
+                                    type="button"
+                                    className={classes("message-actions-toggle")}
+                                    data-ui="message-actions-toggle"
+                                    title="More actions"
+                                    aria-label={`More actions for message from ${item.senderName}`}
+                                    aria-expanded={actionsOpen}
+                                    onClick={() => {
+                                        setReactionOpen(false);
+                                        setActionsOpen((open) => !open);
+                                    }}
+                                >
+                                    <MoreHorizontal />
+                                </button>
+                                <div
+                                    className={classes("message-actions-overflow")}
+                                    data-ui="message-actions-overflow"
+                                    aria-label={`More actions for message from ${item.senderName}`}
+                                >
+                                    {editable ? (
+                                        <button
+                                            type="button"
+                                            title="Edit"
+                                            aria-label="Edit"
+                                            onClick={() => {
+                                                setActionsOpen(false);
+                                                onEdit(item);
+                                            }}
+                                        >
+                                            <Pencil />
+                                        </button>
+                                    ) : null}
+                                    {item.own ? (
+                                        <button
+                                            type="button"
+                                            title="Remove"
+                                            aria-label="Remove"
+                                            onClick={() => {
+                                                setActionsOpen(false);
+                                                void service.redact(item.id);
+                                            }}
+                                        >
+                                            <Trash2 />
+                                        </button>
+                                    ) : null}
+                                </div>
+                            </>
                         ) : null}
                         {reactionOpen ? (
                             <ReactionPicker

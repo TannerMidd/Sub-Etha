@@ -156,6 +156,10 @@
     display: none;
 }
 
+.message-actions-overflow {
+    display: contents;
+}
+
 .message-row:hover .message-actions,
 .message-row:focus-within .message-actions {
     opacity: 1;
@@ -952,12 +956,7 @@
 }
 
 .timeline::before {
-    content: "";
-    position: absolute;
-    inset: 0 auto 0 calc(var(--timeline-inline) + var(--timeline-time));
-    width: 1px;
-    background: var(--line);
-    pointer-events: none;
+    content: none;
 }
 
 .history-loader {
@@ -1017,11 +1016,16 @@
 }
 
 .message-row {
+    --message-surface-accent: var(--author-accent);
     min-height: 0;
     padding: 0 var(--timeline-inline) 40px;
     grid-template-columns: var(--timeline-time) minmax(0, 1fr);
     column-gap: var(--timeline-gap);
     background: transparent;
+}
+
+.message-row--own {
+    --message-surface-accent: var(--signal);
 }
 
 .message-row:hover {
@@ -1039,20 +1043,24 @@
 .message-row__marker {
     position: absolute;
     z-index: 1;
-    top: 0;
-    bottom: 40px;
-    left: calc(var(--timeline-inline) + var(--timeline-time));
+    top: 23px;
+    bottom: auto;
+    left: calc(var(--timeline-inline) + var(--timeline-time) - 2px);
     display: block;
-    width: 2px;
-    background: var(--author-accent);
+    width: 5px;
+    height: 5px;
+    border-radius: 50%;
+    background: color-mix(in srgb, var(--author-accent) 58%, var(--paper));
     pointer-events: none;
 }
 
 .message-row__main {
+    box-sizing: border-box;
     width: min(680px, 100%);
     max-width: 680px;
     padding: 18px 0 0;
-    border-top: 1px solid var(--line);
+    border-top: 0;
+    background: transparent;
 }
 
 .message-row__main::before,
@@ -1066,7 +1074,7 @@
 }
 
 .message-row__main > header strong {
-    color: var(--author-accent);
+    color: color-mix(in srgb, var(--author-accent) 72%, var(--ink));
     font: 600 13px/1 var(--font-ui);
     letter-spacing: 0.01em;
     text-transform: none;
@@ -1120,7 +1128,7 @@
 }
 
 .message-row--last .message-row__marker {
-    bottom: 12px;
+    bottom: auto;
 }
 
 .reply-context {
@@ -1202,10 +1210,6 @@
         --timeline-gap: 28px;
     }
 
-    .timeline::before {
-        left: calc(var(--timeline-inline) + var(--timeline-time));
-    }
-
     .history-loader {
         padding-inline: var(--timeline-inline) max(22px, env(safe-area-inset-right));
     }
@@ -1233,8 +1237,9 @@
     .message-row {
         min-height: 0;
         grid-template-columns: var(--timeline-time) minmax(0, 1fr);
+        grid-template-rows: auto auto;
         column-gap: var(--timeline-gap);
-        padding: 0 max(22px, env(safe-area-inset-right)) 30px var(--timeline-inline);
+        padding: 0 max(22px, env(safe-area-inset-right)) 18px var(--timeline-inline);
     }
 
     .message-row__time {
@@ -1245,15 +1250,17 @@
     }
 
     .message-row__marker {
-        bottom: 30px;
-        left: calc(var(--timeline-inline) + var(--timeline-time));
+        top: 20px;
+        bottom: auto;
+        left: calc(var(--timeline-inline) + var(--timeline-time) - 2px);
     }
 
     .message-row__main {
+        grid-column: 2;
+        grid-row: 1;
         width: 100%;
         max-width: none;
-        padding: 15px 0 0;
-        border-top: 1px solid var(--line);
+        padding: 15px 0 4px;
     }
 
     .message-row__main > header {
@@ -1283,7 +1290,7 @@
     }
 
     .message-row--last .message-row__marker {
-        bottom: 7px;
+        bottom: auto;
     }
 
     .reply-context {
@@ -1303,28 +1310,84 @@
         font-size: 12px;
     }
 
-    .message-actions-toggle {
-        top: 2px;
-        right: max(10px, env(safe-area-inset-right));
-        opacity: 0;
+    .message-actions {
+        position: relative;
+        z-index: 2;
+        top: auto;
+        right: auto;
+        left: auto;
+        grid-column: 2;
+        grid-row: 2;
+        justify-self: stretch;
+        min-height: 44px;
+        margin: 0;
+        padding: 0;
+        display: flex;
+        align-items: center;
+        justify-content: flex-end;
+        border: 0;
+        background: transparent;
+        box-shadow: none;
+        opacity: 1;
+        pointer-events: auto;
     }
 
-    .message-row:hover .message-actions-toggle,
-    .message-row:focus-within .message-actions-toggle,
-    .message-actions-toggle[aria-expanded="true"] {
+    .message-row:hover .message-actions,
+    .message-row:focus-within .message-actions,
+    .message-row.is-actions-open .message-actions,
+    .message-row.is-actions-open:focus-within .message-actions {
+        position: relative;
+        z-index: 2;
+        top: auto;
+        right: auto;
+        left: auto;
+        margin: 0;
+        display: flex;
+        border: 0;
+        box-shadow: none;
+        opacity: 1;
+        pointer-events: auto;
+    }
+
+    .message-actions > button,
+    .message-actions-overflow button {
+        width: 44px;
+        height: 44px;
+    }
+
+    .message-actions-toggle {
+        position: relative;
+        z-index: 1;
+        top: auto;
+        right: auto;
+        width: 44px;
+        height: 44px;
+        display: grid;
+        place-items: center;
+        border: 0;
+        background: transparent;
+        color: var(--ink-soft);
         opacity: 1;
     }
 
-    @media (hover: none), (pointer: coarse) {
-        .message-actions-toggle {
-            opacity: 0.5;
-        }
+    .message-actions-toggle:focus-visible,
+    .message-actions-toggle[aria-expanded="true"] {
+        background: color-mix(in srgb, var(--message-surface-accent) 6%, var(--paper-deep));
+        color: var(--ink);
     }
 
-    .message-row.is-actions-open .message-actions,
-    .message-row.is-actions-open:focus-within .message-actions {
-        top: 2px;
-        right: calc(max(10px, env(safe-area-inset-right)) + 44px);
+    .message-actions-overflow {
+        display: none;
+    }
+
+    .message-row.is-actions-open .message-actions-overflow {
+        position: absolute;
+        z-index: 50;
+        right: 0;
+        bottom: calc(100% + 6px);
+        display: flex;
+        border: 1px solid var(--line-strong);
+        background: var(--paper-raised);
     }
 
     .system-event {
