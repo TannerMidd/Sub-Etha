@@ -1243,7 +1243,7 @@
 }
 
 .room-list-item.is-active::before {
-    background: var(--signal);
+    background: var(--signal-line);
 }
 
 .room-list-item__copy {
@@ -1544,7 +1544,7 @@
 }
 
 .app-shell .invite-card .primary-button {
-    border-color: var(--signal);
+    border-color: var(--signal-line);
     color: var(--signal);
 }
 

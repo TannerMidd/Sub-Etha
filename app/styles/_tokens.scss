@@ -41,7 +41,16 @@
     --line: #cdb994;
     --line-strong: #b9a077;
     --control-line: #b9a077;
+    /*
+     * The accent carries three weights in the reference. `--signal` is the text
+     * weight, `--signal-line` the border on an outlined signal control and the
+     * rail beside the open room, and `--signal-rule` the hairline under the
+     * unread label — a full-width rule needs far less presence than a word. The
+     * dark palette collapses signal and line into one value; paper does not.
+     */
     --signal: #6b4708;
+    --signal-line: #8a6520;
+    --signal-rule: #b8944d;
     --signal-dark: #533607;
     --signal-hover: #533607;
     --shell-accent: #2f5878;
@@ -75,6 +84,8 @@
     --line-strong: #38322e;
     --control-line: #38322e;
     --signal: #c9a86a;
+    --signal-line: #c9a86a;
+    --signal-rule: #5a4a30;
     --signal-dark: #d4b777;
     --signal-hover: #e0c48c;
     --shell-accent: #8fa8c4;
@@ -84,11 +95,19 @@
     --teal-strong: #9fc9b3;
     --teal-soft: color-mix(in srgb, #8fbaa4 12%, transparent);
     --yellow: #c9a86a;
-    --participant-steel: #91b7d3;
-    --participant-sage: #86c3a6;
-    --participant-orchid: #c09bc8;
-    --participant-clay: #d2947f;
-    --participant-sand: #d0af65;
+    /*
+     * The four speaker hues are the reference values. They sit together at
+     * roughly L 0.73 / C 0.055 in OKLCH, which is what makes them read as one
+     * family rather than five separate decisions; the fifth slot has no
+     * reference value, so it is placed on that same ring at the warm hue. It
+     * deliberately stays clear of `--signal` (L 0.75 / C 0.089) so a speaker is
+     * never mistaken for the accent. All five clear 7:1 on the plane.
+     */
+    --participant-steel: #8fa8c4;
+    --participant-sage: #8fbaa4;
+    --participant-orchid: #bb9dbb;
+    --participant-clay: #c99b8a;
+    --participant-sand: #b9a781;
     --focus: #c9a86a;
     --shadow: none;
     --shadow-tight: none;

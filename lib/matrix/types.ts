@@ -89,6 +89,7 @@ export interface TimelineItem {
     media?: MatrixMediaRef;
     replyTo?: string;
     replySummary?: {
+        senderId?: string;
         senderName: string;
         body: string;
     };

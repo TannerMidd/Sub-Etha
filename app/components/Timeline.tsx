@@ -84,11 +84,14 @@ const AUTHOR_ACCENTS = [
     "var(--participant-sand)",
 ] as const;
 
-type AuthorAccentStyle = CSSProperties & { "--author-accent": string };
+type AuthorAccentStyle = CSSProperties & {
+    "--author-accent": string;
+    "--reply-accent"?: string;
+};
 
-function getAuthorAccentStyle(senderId: string, own: boolean): AuthorAccentStyle {
+function authorAccent(senderId: string, own: boolean): string {
     if (own) {
-        return { "--author-accent": "var(--ink)" };
+        return "var(--ink)";
     }
 
     const localpart = senderId.startsWith("@")
@@ -100,7 +103,29 @@ function getAuthorAccentStyle(senderId: string, own: boolean): AuthorAccentStyle
         hash = (hash * 31 + localpart.charCodeAt(index)) >>> 0;
     }
 
-    return { "--author-accent": AUTHOR_ACCENTS[hash % AUTHOR_ACCENTS.length] };
+    return AUTHOR_ACCENTS[hash % AUTHOR_ACCENTS.length];
+}
+
+/*
+ * A quoted excerpt is ruled in the hue of the person being quoted, so the reply
+ * names its source before the text is read. The summary fallback carries its own
+ * sender id for the same reason; without one the rule falls back to the author.
+ */
+function getAuthorAccentStyle(item: TimelineItem, replyItem?: TimelineItem): AuthorAccentStyle {
+    const style: AuthorAccentStyle = {
+        "--author-accent": authorAccent(item.senderId, item.own),
+    };
+    const quoted = replyItem
+        ? { senderId: replyItem.senderId, own: replyItem.own }
+        : item.replySummary?.senderId
+          ? { senderId: item.replySummary.senderId, own: false }
+          : null;
+
+    if (quoted) {
+        style["--reply-accent"] = authorAccent(quoted.senderId, quoted.own);
+    }
+
+    return style;
 }
 
 function estimateTimelineItemHeight(item: TimelineItem, viewportWidth: number): number {
@@ -123,7 +148,9 @@ function estimateTimelineItemHeight(item: TimelineItem, viewportWidth: number): 
                 0,
             ),
     );
-    const textHeight = (compact ? 66 : 82) + estimatedTextLines * (compact ? 25.2 : 27.52);
+    /* The constant covers the row's fixed chrome: the rule above the block, its
+       padding, the sender line, and the gap below. */
+    const textHeight = (compact ? 67 : 83) + estimatedTextLines * (compact ? 25.2 : 27.52);
     let estimate = textHeight;
 
     if (!item.redacted && (item.type === "image" || item.type === "video")) {
@@ -244,18 +271,39 @@ function formatTime(timestamp: number): string {
     }).format(timestamp);
 }
 
+function startOfDay(date: Date): number {
+    return new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime();
+}
+
+/*
+ * The day label shares the narrow lane the timestamps sit in, so it has to read
+ * at a timestamp's width — the long weekday form is nearly twice the lane and
+ * wraps into a stack. Named days carry the recent past, and everything older
+ * falls back to a short date that keeps the year only when it is not the
+ * current one. `formatFullDate` still supplies the complete date for the title
+ * and the machine-readable value.
+ */
 function formatDate(timestamp: number): string {
     const date = new Date(timestamp);
     const today = new Date();
+    const elapsedDays = Math.round((startOfDay(today) - startOfDay(date)) / 86_400_000);
 
-    if (
-        date.getFullYear() === today.getFullYear() &&
-        date.getMonth() === today.getMonth() &&
-        date.getDate() === today.getDate()
-    ) {
+    if (elapsedDays === 0) {
         return "Today";
     }
 
+    if (elapsedDays === 1) {
+        return "Yesterday";
+    }
+
+    return new Intl.DateTimeFormat(undefined, {
+        month: "short",
+        day: "numeric",
+        ...(date.getFullYear() === today.getFullYear() ? {} : { year: "numeric" }),
+    }).format(timestamp);
+}
+
+function formatFullDate(timestamp: number): string {
     return new Intl.DateTimeFormat(undefined, {
         weekday: "long",
         month: "long",
@@ -1114,7 +1162,9 @@ function Lightbox({
 function DayDivider({ timestamp }: { timestamp: number }) {
     return (
         <div className={classes("day-divider")} role="separator">
-            <span>{formatDate(timestamp)}</span>
+            <time dateTime={new Date(timestamp).toISOString()} title={formatFullDate(timestamp)}>
+                {formatDate(timestamp)}
+            </time>
         </div>
     );
 }
@@ -1319,7 +1369,7 @@ function MessageRow({
                 className={classes(
                     `message-row${item.own ? " message-row--own" : ""}${item.type === "notice" ? " message-row--notice" : ""}${next ? "" : " message-row--last"}${actionsOpen ? " is-actions-open" : ""}`,
                 )}
-                style={getAuthorAccentStyle(item.senderId, item.own)}
+                style={getAuthorAccentStyle(item, replyItem)}
                 data-ui="message-row"
                 data-actions-state={actionsOpen ? "open" : "closed"}
                 data-event-id={item.id}

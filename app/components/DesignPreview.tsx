@@ -7,7 +7,19 @@ import { INITIAL_TIMELINE_ITEM_INDEX } from "@/lib/timeline-window";
 import { ChatShell } from "./ChatShell";
 import { LoginScreen } from "./LoginScreen";
 
-const at = (hour: number, minute: number) => new Date(2026, 7, 11, hour, minute).getTime();
+/*
+ * The reference frames are all one day's conversation under a "Today" divider,
+ * so the fixture hangs its clock times off the current date rather than a fixed
+ * one. A pinned date would age out of "Today" the next morning and quietly move
+ * the divider — and every visual baseline captured against it — as the label
+ * changed width.
+ */
+const at = (hour: number, minute: number) => {
+    const today = new Date();
+
+    return new Date(today.getFullYear(), today.getMonth(), today.getDate(), hour, minute).getTime();
+};
+
 const STRESS_INITIAL_START = 80;
 const STRESS_INITIAL_COUNT = 120;
 const STRESS_PAGE_SIZE = 40;
@@ -147,6 +159,7 @@ function createPreviewService(): MatrixService {
         {
             replyTo: "m3",
             replySummary: {
+                senderId: "@tamsin:sub-etha.test",
                 senderName: "Tamsin",
                 body: mobilePreview
                     ? "Power fluctuation on Relay 7B."
