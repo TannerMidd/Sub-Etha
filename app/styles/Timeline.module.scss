@@ -955,8 +955,19 @@
     --timeline-gap: 56px;
 }
 
+/*
+ * The single vertical rule the whole conversation hangs from. It belongs to the
+ * timeline frame rather than the scrolled content, so it stays put while
+ * messages move past it, and every row's marker lands on it because both are
+ * placed from the same two custom properties.
+ */
 .timeline::before {
-    content: none;
+    content: "";
+    position: absolute;
+    inset: 0 auto 0 calc(var(--timeline-inline) + var(--timeline-time));
+    width: 1px;
+    background: var(--line);
+    pointer-events: none;
 }
 
 .history-loader {
@@ -994,6 +1005,15 @@
     color: var(--ink-muted, var(--ink-soft));
 }
 
+/*
+ * The label lane is fixed so the rule beside it starts on the reading measure.
+ * A locale whose short date still outruns the lane spills sideways into the
+ * gutter, which is empty, rather than wrapping and pushing the row taller.
+ */
+.day-divider > time {
+    white-space: nowrap;
+}
+
 .unread-divider {
     padding: 0 var(--timeline-inline) 40px;
     color: var(--yellow);
@@ -1012,7 +1032,7 @@
 }
 
 .unread-divider::after {
-    background: color-mix(in srgb, var(--yellow) 48%, var(--line));
+    background: var(--signal-rule);
 }
 
 .message-row {
@@ -1050,7 +1070,7 @@
     width: 5px;
     height: 5px;
     border-radius: 50%;
-    background: color-mix(in srgb, var(--author-accent) 58%, var(--paper));
+    background: var(--author-accent);
     pointer-events: none;
 }
 
@@ -1059,7 +1079,7 @@
     width: min(680px, 100%);
     max-width: 680px;
     padding: 18px 0 0;
-    border-top: 0;
+    border-top: 1px solid var(--line);
     background: transparent;
 }
 
@@ -1074,7 +1094,7 @@
 }
 
 .message-row__main > header strong {
-    color: color-mix(in srgb, var(--author-accent) 72%, var(--ink));
+    color: var(--author-accent);
     font: 600 13px/1 var(--font-ui);
     letter-spacing: 0.01em;
     text-transform: none;
@@ -1131,12 +1151,14 @@
     bottom: auto;
 }
 
+/* The quote carries the hue of whoever is being quoted, not of whoever is
+   quoting them, so the rule identifies the source at a glance. */
 .reply-context {
     width: min(680px, 100%);
     margin-top: 11px;
     padding: 0 0 0 16px;
-    border-left: 1px solid var(--author-accent);
-    color: var(--ink-soft);
+    border-left: 1px solid var(--reply-accent, var(--author-accent));
+    color: var(--ink-muted);
     font: italic 300 14px/1.6 var(--font-display);
     overflow: hidden;
     text-overflow: ellipsis;
