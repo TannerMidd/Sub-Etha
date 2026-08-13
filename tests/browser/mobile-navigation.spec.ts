@@ -1,4 +1,4 @@
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Locator, type Page } from "@playwright/test";
 
 const PREVIEW_URL = "/?design-preview#/room/signal-watch";
 
@@ -36,6 +36,66 @@ async function dispatchTouchSwipe(
     });
     await page.waitForTimeout(24);
     await session.detach();
+}
+
+async function dispatchLongPress(page: Page, point: { x: number; y: number }): Promise<void> {
+    const session = await page.context().newCDPSession(page);
+
+    await session.send("Input.dispatchTouchEvent", {
+        type: "touchStart",
+        touchPoints: [point],
+    });
+    await page.waitForTimeout(700);
+    await session.send("Input.dispatchTouchEvent", {
+        type: "touchEnd",
+        touchPoints: [],
+    });
+    await session.detach();
+}
+
+async function browserHighlightStyle(locator: Locator): Promise<{
+    tapHighlightColor: string;
+    userSelect: string;
+    webkitUserSelect: string;
+}> {
+    return locator.evaluate((element) => {
+        const style = getComputedStyle(element);
+
+        return {
+            tapHighlightColor: style.getPropertyValue("-webkit-tap-highlight-color"),
+            userSelect: style.userSelect,
+            webkitUserSelect: style.getPropertyValue("-webkit-user-select"),
+        };
+    });
+}
+
+async function replaceSelectedText(
+    page: Page,
+    field: Locator,
+    initialValue: string,
+    start: number,
+    end: number,
+    replacement: string,
+    expectedValue: string,
+): Promise<void> {
+    await expect(field).toBeVisible();
+    await expect(browserHighlightStyle(field)).resolves.toMatchObject({
+        userSelect: "text",
+        webkitUserSelect: "text",
+    });
+    await field.fill(initialValue);
+    await field.focus();
+    await field.evaluate(
+        (element, selection) => {
+            (element as HTMLInputElement | HTMLTextAreaElement).setSelectionRange(
+                selection.start,
+                selection.end,
+            );
+        },
+        { start, end },
+    );
+    await page.keyboard.insertText(replacement);
+    await expect(field).toHaveValue(expectedValue);
 }
 
 test.beforeEach(async ({ page }, testInfo) => {
@@ -83,6 +143,106 @@ test("dialogs and text controls exclude the global edge swipe", async ({ page })
         { x: attachmentX + 108, y: attachmentY },
     );
     await expect(shell).toHaveAttribute("data-rooms-state", "closed");
+});
+
+test("app chrome cannot retain browser tap or selection highlights", async ({ page }) => {
+    const heading = page.getByRole("heading", { name: "Signal Watch" });
+    const chrome = [
+        page.locator('[data-ui="app-shell"]'),
+        page.locator('[data-ui="conversation-header"]'),
+        heading,
+        page.locator('[data-ui="message-row"]').first(),
+        page.getByRole("button", { name: "Room details" }),
+    ];
+
+    for (const element of chrome) {
+        await expect(element).toBeVisible();
+        await expect(browserHighlightStyle(element)).resolves.toEqual({
+            tapHighlightColor: "rgba(0, 0, 0, 0)",
+            userSelect: "none",
+            webkitUserSelect: "none",
+        });
+    }
+
+    const headingBounds = await heading.boundingBox();
+
+    expect(headingBounds).not.toBeNull();
+
+    if (!headingBounds) {
+        return;
+    }
+
+    await page.evaluate(() => window.getSelection()?.removeAllRanges());
+    await page.mouse.move(headingBounds.x + 2, headingBounds.y + headingBounds.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(
+        headingBounds.x + headingBounds.width - 2,
+        headingBounds.y + headingBounds.height / 2,
+        { steps: 5 },
+    );
+    await page.mouse.up();
+    expect(await page.evaluate(() => window.getSelection()?.toString() ?? "")).toBe("");
+
+    await dispatchLongPress(page, {
+        x: headingBounds.x + headingBounds.width / 2,
+        y: headingBounds.y + headingBounds.height / 2,
+    });
+    expect(await page.evaluate(() => window.getSelection()?.toString() ?? "")).toBe("");
+
+    await page.getByRole("button", { name: "Open transmission index" }).click();
+    const roomName = page.getByRole("button", { name: /Hab Drift Crew/ });
+
+    await expect(roomName).toBeVisible();
+    await expect(browserHighlightStyle(roomName)).resolves.toMatchObject({
+        tapHighlightColor: "rgba(0, 0, 0, 0)",
+        userSelect: "none",
+        webkitUserSelect: "none",
+    });
+});
+
+test("editable fields retain native text selection and replacement", async ({ page }) => {
+    await replaceSelectedText(
+        page,
+        page.locator("#message-composer"),
+        "alpha beta",
+        6,
+        10,
+        "gamma",
+        "alpha gamma",
+    );
+
+    await page.getByRole("button", { name: "Open transmission index" }).click();
+    await replaceSelectedText(
+        page,
+        page.locator("#transmission-search"),
+        "signal watch",
+        0,
+        6,
+        "hab",
+        "hab watch",
+    );
+
+    await page.goto("/?design-preview&surface-preview=settings#/room/signal-watch");
+    await replaceSelectedText(
+        page,
+        page.locator("#display-name"),
+        "Field Rayne",
+        6,
+        11,
+        "Agent",
+        "Field Agent",
+    );
+
+    await page.goto("/?design-preview&surface-preview=login");
+    await replaceSelectedText(
+        page,
+        page.locator("#homeserver"),
+        "@rayne:example.org",
+        1,
+        6,
+        "nova",
+        "@nova:example.org",
+    );
 });
 
 test("header Back, room selection, and browser Back preserve mobile history", async ({ page }) => {

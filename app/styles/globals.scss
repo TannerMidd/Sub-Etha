@@ -4,6 +4,10 @@
 *::before,
 *::after {
     box-sizing: border-box;
+    -webkit-tap-highlight-color: transparent;
+    -webkit-touch-callout: none;
+    -webkit-user-select: none;
+    user-select: none;
 }
 
 html,
@@ -40,15 +44,58 @@ select {
 }
 
 button,
-a {
-    -webkit-tap-highlight-color: transparent;
-}
-
-button,
 input,
 textarea,
 select {
     color: inherit;
+}
+
+/*
+ * Treat the document as native app chrome: taps and gestures must not leave
+ * browser selection behind. Real editing surfaces opt back into selection so
+ * caret movement and replacing typed text continue to work normally.
+ */
+:where(
+    input:not(
+            [type="button"],
+            [type="checkbox"],
+            [type="color"],
+            [type="file"],
+            [type="hidden"],
+            [type="image"],
+            [type="radio"],
+            [type="range"],
+            [type="reset"],
+            [type="submit"]
+        ):not([disabled], [readonly]),
+    textarea:not([disabled], [readonly]),
+    [contenteditable]:not([contenteditable="false"]),
+    [contenteditable]:not([contenteditable="false"]) *
+) {
+    -webkit-touch-callout: default;
+    -webkit-user-select: text;
+    user-select: text;
+}
+
+:where(
+    input:not(
+            [type="button"],
+            [type="checkbox"],
+            [type="color"],
+            [type="file"],
+            [type="hidden"],
+            [type="image"],
+            [type="radio"],
+            [type="range"],
+            [type="reset"],
+            [type="submit"]
+        ):not([disabled], [readonly]),
+    textarea:not([disabled], [readonly]),
+    [contenteditable]:not([contenteditable="false"]),
+    [contenteditable]:not([contenteditable="false"]) *
+)::selection {
+    background: color-mix(in srgb, var(--signal) 30%, transparent);
+    color: var(--ink);
 }
 
 /*
@@ -89,11 +136,6 @@ input[type="file"]::file-selector-button {
 input[type="file"]::file-selector-button:hover {
     border-color: var(--teal);
     color: var(--teal);
-}
-
-::selection {
-    background: color-mix(in srgb, var(--signal) 30%, transparent);
-    color: var(--ink);
 }
 
 .sr-only {
