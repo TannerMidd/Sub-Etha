@@ -1,13 +1,6 @@
-const CACHE_NAME = "sub-etha-shell-v7";
-const SHELL = [
-    "/",
-    "/manifest.webmanifest",
-    "/icon-192.png",
-    "/icon-512.png",
-    "/fonts/commissioner-variable.ttf",
-    "/fonts/literata-variable.ttf",
-    "/fonts/literata-variable-italic.ttf",
-];
+const CACHE_PREFIX = "sub-etha-";
+const OFFLINE_CSP =
+    "default-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'; object-src 'none'";
 const PUSH_DB = "sub-etha-push";
 const PUSH_STORE = "settings";
 const ROOM_NOTIFICATION_PREFIX = "sub-etha-room:";
@@ -108,8 +101,24 @@ function decodeApplicationServerKey(value) {
     return Uint8Array.from(atob(padded), (character) => character.charCodeAt(0));
 }
 
+function offlineNavigationResponse() {
+    return new Response(
+        '<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Offline</title></head><body><p>Sub-Etha is unavailable while offline.</p></body></html>',
+        {
+            status: 503,
+            headers: {
+                "Cache-Control": "no-store",
+                "Content-Security-Policy": OFFLINE_CSP,
+                "Content-Type": "text/html; charset=utf-8",
+                "X-Content-Type-Options": "nosniff",
+            },
+        },
+    );
+}
+
 self.addEventListener("install", (event) => {
-    event.waitUntil(caches.open(CACHE_NAME).then((cache) => cache.addAll(SHELL)));
+    // Installation is deliberately cache-free so an update cannot be blocked by optional assets.
+    event.waitUntil(self.skipWaiting());
 });
 
 self.addEventListener("message", (event) => {
@@ -141,8 +150,10 @@ self.addEventListener("activate", (event) => {
         caches
             .keys()
             .then((keys) =>
-                Promise.all(
-                    keys.filter((key) => key !== CACHE_NAME).map((key) => caches.delete(key)),
+                Promise.allSettled(
+                    keys
+                        .filter((key) => key.startsWith(CACHE_PREFIX))
+                        .map((key) => caches.delete(key)),
                 ),
             )
             .then(() => self.clients.claim()),
@@ -152,44 +163,17 @@ self.addEventListener("activate", (event) => {
 self.addEventListener("fetch", (event) => {
     const url = new URL(event.request.url);
 
-    if (
-        event.request.method !== "GET" ||
-        url.origin !== self.location.origin ||
-        url.pathname.startsWith("/api/") ||
-        url.pathname.startsWith("/_matrix/") ||
-        url.pathname.startsWith("/_vinext/")
-    ) {
+    if (url.origin !== self.location.origin) {
         return;
     }
 
-    if (event.request.mode === "navigate") {
-        event.respondWith(
-            fetch(event.request).catch(async () => (await caches.match("/")) || Response.error()),
-        );
+    if (event.request.mode === "navigate" || event.request.destination === "document") {
+        event.respondWith(fetch(event.request).catch(() => offlineNavigationResponse()));
 
         return;
     }
 
-    event.respondWith(
-        caches.match(event.request).then((cached) => {
-            if (cached) {
-                return cached;
-            }
-
-            return fetch(event.request).then((response) => {
-                if (
-                    response.ok &&
-                    url.pathname.match(/\.(?:js|css|png|ico|webmanifest|woff2?|ttf)$/)
-                ) {
-                    const copy = response.clone();
-
-                    caches.open(CACHE_NAME).then((cache) => cache.put(event.request, copy));
-                }
-
-                return response;
-            });
-        }),
-    );
+    // Static assets use the browser's HTTP cache; the worker never stores or replays them.
 });
 
 self.addEventListener("push", (event) => {

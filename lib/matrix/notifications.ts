@@ -1,6 +1,7 @@
 import type { MatrixService } from "./client";
 import { randomBase64Url } from "./session-store";
 import type { PushState } from "./types";
+import { trustedServiceWorkerScriptUrl } from "../security/trusted-script-url";
 
 const LEGACY_PUSH_KEY_STORAGE = "sub-etha-push-key";
 const PUSH_DELIVERY_KEY_STORAGE = "sub-etha-push-delivery-key";
@@ -79,7 +80,17 @@ export async function registerServiceWorker(): Promise<ServiceWorkerRegistration
         return null;
     }
 
-    await navigator.serviceWorker.register("/sw.js", { scope: "/" });
+    const scriptUrl = trustedServiceWorkerScriptUrl();
+
+    if (!scriptUrl) {
+        return null;
+    }
+
+    // TypeScript's DOM signature has not yet adopted TrustedScriptURL, but browsers do.
+    await navigator.serviceWorker.register(scriptUrl as unknown as string, {
+        scope: "/",
+        updateViaCache: "none",
+    });
 
     return navigator.serviceWorker.ready;
 }

@@ -1199,7 +1199,7 @@ function PlainMessageBody({ body }: { body: string }) {
     );
 }
 
-function FormattedMessageBody({ html }: { html: string }) {
+function FormattedMessageBody({ html }: { html: NonNullable<TimelineItem["formattedBody"]> }) {
     const bodyRef = useRef<HTMLDivElement>(null);
 
     useEffect(() => {

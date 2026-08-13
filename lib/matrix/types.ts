@@ -1,5 +1,6 @@
 import type { MatrixEvent, Room } from "matrix-js-sdk";
 import type { ValidatedAuthMetadata } from "matrix-js-sdk/lib/oauth";
+import type { TrustedHTML } from "trusted-types/lib/index.js";
 
 export type AuthKind = "password" | "sso" | "token" | "oauth";
 
@@ -79,7 +80,7 @@ export interface TimelineItem {
     senderName: string;
     senderAvatarMxcUrl: string | null;
     body: string;
-    formattedBody?: string;
+    formattedBody?: string | TrustedHTML;
     timestamp: number;
     own: boolean;
     edited: boolean;

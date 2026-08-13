@@ -1,4 +1,3 @@
-import DOMPurify from "dompurify";
 import {
     EventTimeline,
     EventType,
@@ -8,64 +7,10 @@ import {
     type Room,
 } from "matrix-js-sdk";
 import { stripPlainReplyFallback } from "./message-text";
+import { sanitizeMatrixHtml } from "./trusted-html";
 import type { ReactionSummary, RoomSummary, TimelineItem } from "./types";
 
-const ALLOWED_TAGS = [
-    "a",
-    "b",
-    "blockquote",
-    "br",
-    "caption",
-    "code",
-    "del",
-    "details",
-    "div",
-    "em",
-    "h1",
-    "h2",
-    "h3",
-    "h4",
-    "h5",
-    "h6",
-    "hr",
-    "i",
-    "li",
-    "ol",
-    "p",
-    "pre",
-    "s",
-    "span",
-    "strong",
-    "sub",
-    "summary",
-    "sup",
-    "table",
-    "tbody",
-    "td",
-    "th",
-    "thead",
-    "tr",
-    "u",
-    "ul",
-];
-const RICH_REPLY_FALLBACK = /^\s*<mx-reply(?:\s[^>]*)?>[\s\S]*?<\/mx-reply>\s*/i;
-
-export function sanitizeMatrixHtml(value: string): string {
-    return DOMPurify.sanitize(value.replace(RICH_REPLY_FALLBACK, ""), {
-        ALLOWED_TAGS,
-        ALLOWED_ATTR: [
-            "href",
-            "title",
-            "start",
-            "data-mx-color",
-            "data-mx-bg-color",
-            "data-mx-spoiler",
-            "data-mx-maths",
-        ],
-        ALLOW_UNKNOWN_PROTOCOLS: false,
-        ALLOWED_URI_REGEXP: /^(?:(?:https?|ftp|mailto|magnet):)/i,
-    });
-}
+export { sanitizeMatrixHtml } from "./trusted-html";
 
 export function eventDecryptionState(
     event: Pick<

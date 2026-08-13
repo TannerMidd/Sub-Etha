@@ -7,8 +7,9 @@
     },
     "scripts": {
         "dev": "vinext dev",
+        "prebuild": "node scripts/apply-security-patches.mjs",
         "build": "vite build",
-        "start": "vinext start",
+        "start": "node .output/server/index.mjs",
         "format": "prettier --write . --ignore-unknown",
         "format:check": "prettier --check . --ignore-unknown",
         "check": "npm run format:check && npm run lint && npm test && npm run test:browser",
@@ -18,7 +19,8 @@
         "test": "npm run typecheck && npm run test:unit && npm run build",
         "lint": "eslint . --ignore-pattern dist --ignore-pattern .next --ignore-pattern .output --ignore-pattern .vercel",
         "db:generate": "node --env-file-if-exists=.env.local ./node_modules/drizzle-kit/bin.cjs generate",
-        "db:migrate": "node --env-file-if-exists=.env.local ./node_modules/drizzle-kit/bin.cjs migrate"
+        "db:migrate": "node --env-file-if-exists=.env.local ./node_modules/drizzle-kit/bin.cjs migrate",
+        "postinstall": "node scripts/apply-security-patches.mjs"
     },
     "dependencies": {
         "@neondatabase/serverless": "^1.1.0",
