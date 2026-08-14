@@ -18,9 +18,10 @@ export type PushRegistrationStartOutcome =
     | "challenge_required"
     | "capacity_exceeded"
     | "pending_capacity_exceeded"
-    | "management_conflict";
+    | "management_conflict"
+    | "revoked";
 export type PushConfirmationOutcome =
-    PushRegistrationOutcome | "invalid_challenge" | "expired_challenge";
+    PushRegistrationOutcome | "invalid_challenge" | "expired_challenge" | "revoked";
 
 export interface PushRepository {
     beginSubscriptionRegistration(
@@ -39,7 +40,7 @@ export interface PushRepository {
         maximumSubscriptions: number,
     ): Promise<PushConfirmationOutcome>;
     cancelPendingRegistration(challengeHash: string): Promise<void>;
-    deleteSubscription(managementKeyHash: string): Promise<boolean>;
+    deleteSubscription(managementKeyHash: string, now: number): Promise<boolean>;
     deleteSubscriptionByDeliveryKey(deliveryKeyHash: string): Promise<void>;
     getSubscription(deliveryKeyHash: string): Promise<StoredPushSubscription | null>;
     getManagedSubscription(managementKeyHash: string): Promise<ManagedPushSubscription | null>;
@@ -115,30 +116,15 @@ export const neonPushRepository: PushRepository = {
     `);
     },
 
-    async deleteSubscription(managementKeyHash) {
-        const db = getDb();
-        const [subscription] = await db
-            .select({
-                deliveryKeyHash: pushSubscriptions.pushKeyHash,
-            })
-            .from(pushSubscriptions)
-            .where(eq(pushSubscriptions.managementKeyHash, managementKeyHash))
-            .limit(1);
+    async deleteSubscription(managementKeyHash, now) {
+        const result = await getDb().execute<{ removed: boolean }>(sql`
+      SELECT subetha_delete_push_subscription(
+        ${managementKeyHash},
+        ${now}
+      ) AS removed
+    `);
 
-        if (!subscription) {
-            return false;
-        }
-
-        await db.batch([
-            db
-                .delete(pushDeliveries)
-                .where(eq(pushDeliveries.pushKeyHash, subscription.deliveryKeyHash)),
-            db
-                .delete(pushSubscriptions)
-                .where(eq(pushSubscriptions.managementKeyHash, managementKeyHash)),
-        ]);
-
-        return true;
+        return result.rows[0]?.removed === true;
     },
 
     async deleteSubscriptionByDeliveryKey(deliveryKeyHash) {

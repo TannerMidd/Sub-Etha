@@ -6,6 +6,7 @@ import { createPushServer } from "../lib/push-server";
 const ORIGIN = "https://sub-etha-matrix.vercel.app";
 const PUSH_KEY = "a".repeat(40);
 const MANAGEMENT_KEY = "m".repeat(40);
+const GENERATION = "g".repeat(40);
 const SUBSCRIPTION: StoredPushSubscription = {
     endpoint: "https://updates.push.services.mozilla.com/wpush/v2/example",
     p256dh: "p256dh",
@@ -19,6 +20,7 @@ class MemoryPushRepository implements PushRepository {
         string,
         { deliveryKeyHash: string; managementKeyHash: string; subscription: StoredPushSubscription }
     >();
+    revokedManagementKeys = new Set<string>();
     deliveries = new Set<string>();
     deleted = 0;
     released = 0;
@@ -41,9 +43,14 @@ class MemoryPushRepository implements PushRepository {
         | "capacity_exceeded"
         | "pending_capacity_exceeded"
         | "management_conflict"
+        | "revoked"
     > {
         if (this.registrationOutcome === "capacity_exceeded") {
             return "capacity_exceeded";
+        }
+
+        if (this.revokedManagementKeys.has(managementKeyHash)) {
+            return "revoked";
         }
 
         if (this.subscriptions.has(deliveryKeyHash)) {
@@ -67,11 +74,18 @@ class MemoryPushRepository implements PushRepository {
         | "capacity_exceeded"
         | "invalid_challenge"
         | "expired_challenge"
+        | "revoked"
     > {
         const pending = this.pending.get(challengeHash);
 
         if (!pending) {
             return "invalid_challenge";
+        }
+
+        if (this.revokedManagementKeys.has(pending.managementKeyHash)) {
+            this.pending.delete(challengeHash);
+
+            return "revoked";
         }
 
         this.pending.delete(challengeHash);
@@ -86,16 +100,25 @@ class MemoryPushRepository implements PushRepository {
     }
 
     async deleteSubscription(pushKeyHash: string): Promise<boolean> {
-        const deliveryKeyHash = this.managementKeys.get(pushKeyHash) ?? pushKeyHash;
-        const removed = this.subscriptions.delete(deliveryKeyHash);
+        const deliveryKeyHash = this.managementKeys.get(pushKeyHash);
+        let removed = deliveryKeyHash ? this.subscriptions.delete(deliveryKeyHash) : false;
+
+        for (const [challengeHash, pending] of this.pending) {
+            if (pending.managementKeyHash === pushKeyHash) {
+                this.pending.delete(challengeHash);
+                removed = true;
+            }
+        }
 
         for (const [managementKeyHash, deliveryHash] of this.managementKeys) {
-            if (deliveryHash === deliveryKeyHash) {
+            if (deliveryKeyHash && deliveryHash === deliveryKeyHash) {
                 this.managementKeys.delete(managementKeyHash);
             }
         }
 
         this.deleted += 1;
+
+        this.revokedManagementKeys.add(pushKeyHash);
 
         return removed;
     }
@@ -171,12 +194,13 @@ function configuredServer(
     sender: (subscription: StoredPushSubscription, payload: string) => Promise<void> = async () =>
         undefined,
     logs: Array<Record<string, unknown>> = [],
+    now: () => number = () => 1_800_000_000,
 ) {
     return createPushServer({
         repository,
         sendNotification: sender,
         configuration: () => ({ publicKey: "public", privateKey: "private", subject: ORIGIN }),
-        now: () => 1_800_000_000,
+        now,
         log: (entry) => logs.push(entry),
         limits: {
             maxSubscriptions: 10_000,
@@ -208,6 +232,7 @@ function subscriptionBody(
     return {
         deliveryKey,
         managementKey,
+        generation: GENERATION,
         subscription: {
             endpoint: subscription.endpoint,
             keys: { p256dh: subscription.p256dh, auth: subscription.auth },
@@ -245,10 +270,15 @@ test("push subscriptions require an endpoint challenge and a separate management
     assert.deepEqual(await pending.json(), { pending: true });
     assert.equal(repository.subscriptions.size, 0);
     assert.equal(payloads.length, 1);
-    const challengePayload = JSON.parse(payloads[0]) as { kind?: unknown; challenge?: unknown };
+    const challengePayload = JSON.parse(payloads[0]) as {
+        kind?: unknown;
+        challenge?: unknown;
+        generation?: unknown;
+    };
 
     assert.equal(challengePayload.kind, "subscription-challenge");
     assert.equal(typeof challengePayload.challenge, "string");
+    assert.equal(challengePayload.generation, GENERATION);
 
     const confirmed = await server.changeSubscription(
         subscriptionRequest("PATCH", {
@@ -272,6 +302,119 @@ test("push subscriptions require an endpoint challenge and a separate management
     );
 
     assert.equal(removed.status, 200);
+    assert.equal(repository.subscriptions.size, 0);
+});
+
+test("deletion cancels pending registration and rejects its late challenge", async () => {
+    const repository = new MemoryPushRepository();
+    const payloads: string[] = [];
+    const server = configuredServer(repository, async (_subscription, payload) => {
+        payloads.push(payload);
+    });
+    const pending = await server.changeSubscription(
+        subscriptionRequest("POST", subscriptionBody()),
+    );
+    const challenge = (JSON.parse(payloads[0] ?? "{}") as { challenge?: string }).challenge;
+
+    assert.equal(pending.status, 202);
+    assert.ok(challenge);
+    assert.equal(repository.pending.size, 1);
+
+    const removed = await server.changeSubscription(
+        subscriptionRequest("DELETE", { managementKey: MANAGEMENT_KEY }),
+    );
+    const lateConfirmation = await server.changeSubscription(
+        subscriptionRequest("PATCH", { challenge }),
+    );
+
+    assert.equal(removed.status, 200);
+    assert.equal(lateConfirmation.status, 410);
+    assert.equal(repository.pending.size, 0);
+    assert.equal(repository.subscriptions.size, 0);
+});
+
+test("delete tombstone blocks renewal POST and late challenge resurrection", async () => {
+    const repository = new MemoryPushRepository();
+    const payloads: string[] = [];
+    const server = configuredServer(repository, async (_subscription, payload) => {
+        payloads.push(payload);
+    });
+    const initial = await server.changeSubscription(
+        subscriptionRequest("POST", subscriptionBody()),
+    );
+    const initialChallenge = (JSON.parse(payloads[0] ?? "{}") as { challenge?: string }).challenge;
+
+    assert.equal(initial.status, 202);
+    assert.ok(initialChallenge);
+    assert.equal(
+        (
+            await server.changeSubscription(
+                subscriptionRequest("PATCH", { challenge: initialChallenge }),
+            )
+        ).status,
+        200,
+    );
+
+    assert.equal(
+        (
+            await server.changeSubscription(
+                subscriptionRequest("DELETE", { managementKey: MANAGEMENT_KEY }),
+            )
+        ).status,
+        200,
+    );
+
+    const renewal = await server.changeSubscription(
+        subscriptionRequest("POST", subscriptionBody()),
+    );
+    const lateChallenge = await server.changeSubscription(
+        subscriptionRequest("PATCH", { challenge: initialChallenge }),
+    );
+
+    assert.equal(renewal.status, 410);
+    assert.equal(lateChallenge.status, 410);
+    assert.equal(repository.pending.size, 0);
+    assert.equal(repository.subscriptions.size, 0);
+});
+
+test("delete intent arriving before registration prevents a delayed POST", async () => {
+    const repository = new MemoryPushRepository();
+    const server = configuredServer(repository, async () => undefined);
+    const removed = await server.changeSubscription(
+        subscriptionRequest("DELETE", { managementKey: MANAGEMENT_KEY }),
+    );
+    const delayedRegistration = await server.changeSubscription(
+        subscriptionRequest("POST", subscriptionBody()),
+    );
+
+    assert.equal(removed.status, 404);
+    assert.equal(delayedRegistration.status, 410);
+    assert.equal(repository.pending.size, 0);
+    assert.equal(repository.subscriptions.size, 0);
+});
+
+test("delete intent still prevents stale registration beyond the former retention window", async () => {
+    const repository = new MemoryPushRepository();
+    let timestamp = 1_800_000_000;
+    const server = configuredServer(
+        repository,
+        async () => undefined,
+        [],
+        () => timestamp,
+    );
+    const removed = await server.changeSubscription(
+        subscriptionRequest("DELETE", { managementKey: MANAGEMENT_KEY }),
+    );
+
+    timestamp += 10 * 365 * 24 * 60 * 60;
+
+    const staleRegistration = await server.changeSubscription(
+        subscriptionRequest("POST", subscriptionBody()),
+    );
+
+    assert.equal(removed.status, 404);
+    assert.equal(staleRegistration.status, 410);
+    assert.equal(repository.pending.size, 0);
     assert.equal(repository.subscriptions.size, 0);
 });
 
@@ -399,6 +542,43 @@ test("Matrix notify rejects unknown devices without exposing notification conten
     assert.equal(serialized.includes(PUSH_KEY), false);
     assert.equal(serialized.includes("!room:example"), false);
     assert.equal(serialized.includes("$event"), false);
+});
+
+test("Matrix relay payload excludes sender and message text", async () => {
+    const repository = new MemoryPushRepository();
+
+    repository.returnAnySubscription = true;
+    const payloads: string[] = [];
+    const server = configuredServer(repository, async (_subscription, payload) => {
+        payloads.push(payload);
+    });
+    const response = await server.notify(
+        new Request(`${ORIGIN}/_matrix/push/v1/notify`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                notification: {
+                    event_id: "$routing-only",
+                    room_id: "!room:example",
+                    sender: "@private:example",
+                    sender_display_name: "Private sender",
+                    content: { body: "secret message text", msgtype: "m.text" },
+                    counts: { unread: 7 },
+                    devices: [{ app_id: "chat.subetha.pwa", pushkey: PUSH_KEY }],
+                },
+            }),
+        }),
+    );
+
+    assert.equal(response.status, 200);
+    assert.deepEqual(JSON.parse(payloads[0] ?? "{}"), {
+        kind: "matrix",
+        roomId: "!room:example",
+        eventId: "$routing-only",
+        unread: 7,
+    });
+    assert.equal(payloads[0]?.includes("secret message text"), false);
+    assert.equal(payloads[0]?.includes("Private sender"), false);
 });
 
 test("concurrent duplicate Matrix deliveries emit one Web Push notification", async () => {

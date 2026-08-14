@@ -3,12 +3,14 @@ import test from "node:test";
 
 import {
     buildContentSecurityPolicy,
+    CONTENT_SECURITY_POLICY,
     CONTENT_SECURITY_POLICY_REPORT_ONLY,
     createDocumentSecurityContext,
     DOCUMENT_SECURITY_HEADERS,
     generateCspNonce,
     isDocumentRequest,
     isLocalDevelopmentPreview,
+    isLocalDevelopmentRequest,
     PERMISSIONS_POLICY,
 } from "../lib/security/csp";
 
@@ -64,6 +66,45 @@ test("only the loopback development design preview bypasses document security", 
     assert.equal(isLocalDevelopmentPreview(request("/"), "development"), false);
 });
 
+test("only loopback development documents receive a report-only policy", () => {
+    const loopbackDocument = new Request("http://localhost:4173/");
+    const remoteDevelopmentDocument = new Request("https://sub-etha.example/");
+    const production = createDocumentSecurityContext(request("/"), () => FIXED_NONCE, true);
+    const loopbackDevelopment = createDocumentSecurityContext(
+        loopbackDocument,
+        () => FIXED_NONCE,
+        !isLocalDevelopmentRequest(loopbackDocument, "development"),
+    );
+    const remoteDevelopment = createDocumentSecurityContext(
+        remoteDevelopmentDocument,
+        () => FIXED_NONCE,
+        !isLocalDevelopmentRequest(remoteDevelopmentDocument, "development"),
+    );
+    const excluded = createDocumentSecurityContext(
+        new Request("http://localhost:4173/sw.js"),
+        () => FIXED_NONCE,
+        false,
+    );
+
+    assert.equal(isLocalDevelopmentRequest(loopbackDocument, "development"), true);
+    assert.equal(isLocalDevelopmentRequest(loopbackDocument, "production"), false);
+    assert.equal(isLocalDevelopmentRequest(remoteDevelopmentDocument, "development"), false);
+    assert.ok(production);
+    assert.ok(loopbackDevelopment);
+    assert.ok(remoteDevelopment);
+    assert.equal(production.responseHeaders.get(CONTENT_SECURITY_POLICY), production.policy);
+    assert.equal(loopbackDevelopment.responseHeaders.get(CONTENT_SECURITY_POLICY), null);
+    assert.equal(
+        loopbackDevelopment.responseHeaders.get(CONTENT_SECURITY_POLICY_REPORT_ONLY),
+        loopbackDevelopment.policy,
+    );
+    assert.equal(
+        remoteDevelopment.responseHeaders.get(CONTENT_SECURITY_POLICY),
+        remoteDevelopment.policy,
+    );
+    assert.equal(excluded, null);
+});
+
 test("document classification bypasses methods, APIs, assets, RSC, and prefetches", () => {
     const excluded = [
         request("/", { accept: "text/html" }, "HEAD"),
@@ -103,7 +144,7 @@ test("document classification bypasses methods, APIs, assets, RSC, and prefetche
     }
 });
 
-test("the report-only policy contains each settled directive exactly once", () => {
+test("the enforced policy contains each settled directive exactly once", () => {
     const policy = buildContentSecurityPolicy(FIXED_NONCE);
     const directives = policy.split("; ");
 
@@ -185,21 +226,25 @@ test("each document context requests a fresh nonce and excluded requests request
     assert.notEqual(first.policy, second.policy);
 });
 
-test("forwarded and response policies are identical without mutating the request", () => {
+test("forwarded and response policies enforce the same nonce policy without mutating the request", () => {
     const original = request("/oauth/callback", {
         accept: "text/html",
+        [CONTENT_SECURITY_POLICY]: "default-src https:",
         [CONTENT_SECURITY_POLICY_REPORT_ONLY]: "default-src https:",
         "x-request-id": "request-1",
     });
     const security = createDocumentSecurityContext(original, () => FIXED_NONCE);
 
     assert.ok(security);
+    assert.equal(original.headers.get(CONTENT_SECURITY_POLICY), "default-src https:");
     assert.equal(original.headers.get(CONTENT_SECURITY_POLICY_REPORT_ONLY), "default-src https:");
     assert.notEqual(security.forwardedRequestHeaders, original.headers);
+    assert.equal(security.forwardedRequestHeaders.get(CONTENT_SECURITY_POLICY), security.policy);
     assert.equal(
         security.forwardedRequestHeaders.get(CONTENT_SECURITY_POLICY_REPORT_ONLY),
         security.policy,
     );
+    assert.equal(security.responseHeaders.get(CONTENT_SECURITY_POLICY), security.policy);
     assert.equal(
         security.responseHeaders.get(CONTENT_SECURITY_POLICY_REPORT_ONLY),
         security.policy,
@@ -208,6 +253,10 @@ test("forwarded and response policies are identical without mutating the request
     assert.equal(security.forwardedRequestHeaders.get("referrer-policy"), null);
 
     for (const headers of [security.forwardedRequestHeaders, security.responseHeaders]) {
+        assert.equal(
+            [...headers].filter(([name]) => name === CONTENT_SECURITY_POLICY.toLowerCase()).length,
+            1,
+        );
         assert.equal(
             [...headers].filter(
                 ([name]) => name === CONTENT_SECURITY_POLICY_REPORT_ONLY.toLowerCase(),
@@ -223,6 +272,7 @@ test("document responses receive only the exact fixed defensive header values", 
     assert.ok(security);
     assert.equal(PERMISSIONS_POLICY.includes("fullscreen"), false);
     assert.deepEqual(Object.fromEntries(security.responseHeaders), {
+        "content-security-policy": buildContentSecurityPolicy(FIXED_NONCE),
         "content-security-policy-report-only": buildContentSecurityPolicy(FIXED_NONCE),
         "cross-origin-opener-policy": "same-origin",
         "permissions-policy":

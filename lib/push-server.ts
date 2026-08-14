@@ -78,6 +78,10 @@ interface PushServerDependencies {
 
 type DeviceDeliveryResult = "sent" | "suppressed" | "rejected" | "transient";
 
+function validPushGeneration(value: unknown): value is string {
+    return typeof value === "string" && /^[A-Za-z0-9_-]{16,128}$/.test(value);
+}
+
 function json(body: unknown, status = 200, additionalHeaders: HeadersInit = {}): Response {
     return Response.json(body, {
         status,
@@ -463,7 +467,11 @@ export function createPushServer(dependencies: PushServerDependencies = {}) {
                         limits.maxSubscriptions,
                     );
 
-                    if (outcome === "invalid_challenge" || outcome === "expired_challenge") {
+                    if (
+                        outcome === "invalid_challenge" ||
+                        outcome === "expired_challenge" ||
+                        outcome === "revoked"
+                    ) {
                         return json(
                             { error: "Push confirmation expired or was not recognized." },
                             410,
@@ -490,10 +498,6 @@ export function createPushServer(dependencies: PushServerDependencies = {}) {
 
                     const managementKeyHash = await hashCapability(body.managementKey);
 
-                    if (!(await repository.getManagedSubscription(managementKeyHash))) {
-                        return json({ error: "Push subscription was not found." }, 404);
-                    }
-
                     if (
                         !(await consumeBudget(
                             BUDGET_SUBSCRIPTION_MUTATIONS,
@@ -504,7 +508,11 @@ export function createPushServer(dependencies: PushServerDependencies = {}) {
                         return json({ error: "Push subscription rate limit exceeded." }, 429);
                     }
 
-                    await repository.deleteSubscription(managementKeyHash);
+                    const removed = await repository.deleteSubscription(managementKeyHash, now());
+
+                    if (!removed) {
+                        return json({ error: "Push subscription was not found." }, 404);
+                    }
 
                     return json({ removed: true });
                 }
@@ -512,6 +520,7 @@ export function createPushServer(dependencies: PushServerDependencies = {}) {
                 const body = await readJson<{
                     deliveryKey?: unknown;
                     managementKey?: unknown;
+                    generation?: unknown;
                     subscription?: {
                         endpoint?: unknown;
                         keys?: { p256dh?: unknown; auth?: unknown };
@@ -524,6 +533,7 @@ export function createPushServer(dependencies: PushServerDependencies = {}) {
                 if (
                     !validPushKey(body.deliveryKey) ||
                     !validPushKey(body.managementKey) ||
+                    !validPushGeneration(body.generation) ||
                     body.deliveryKey === body.managementKey ||
                     !validPushEndpoint(endpoint) ||
                     typeof p256dh !== "string" ||
@@ -573,6 +583,10 @@ export function createPushServer(dependencies: PushServerDependencies = {}) {
                     );
                 }
 
+                if (outcome === "revoked") {
+                    return json({ error: "This push registration was revoked." }, 410);
+                }
+
                 if (outcome === "capacity_exceeded" || outcome === "pending_capacity_exceeded") {
                     return json({ error: "Push subscription capacity is temporarily full." }, 503, {
                         "Retry-After": String(RETRY_AFTER_SECONDS),
@@ -594,7 +608,11 @@ export function createPushServer(dependencies: PushServerDependencies = {}) {
                 try {
                     await sendNotification(
                         { endpoint, p256dh, auth },
-                        JSON.stringify({ kind: "subscription-challenge", challenge }),
+                        JSON.stringify({
+                            kind: "subscription-challenge",
+                            challenge,
+                            generation: body.generation,
+                        }),
                         pushConfiguration,
                     );
 
@@ -633,7 +651,7 @@ export function createPushServer(dependencies: PushServerDependencies = {}) {
                 }
 
                 if (!validPushEndpoint(subscription.endpoint)) {
-                    await repository.deleteSubscription(managementKeyHash);
+                    await repository.deleteSubscription(managementKeyHash, now());
 
                     return json({ error: "Push subscription is no longer valid." }, 410);
                 }
@@ -685,7 +703,7 @@ export function createPushServer(dependencies: PushServerDependencies = {}) {
                     const pushStatus = statusCode(error);
 
                     if (pushStatus === 404 || pushStatus === 410) {
-                        await repository.deleteSubscription(managementKeyHash);
+                        await repository.deleteSubscription(managementKeyHash, now());
 
                         return json({ error: "Push subscription expired." }, 410);
                     }

@@ -6,6 +6,7 @@ import type { MatrixMediaRef, MatrixSnapshot, RoomSummary, TimelineItem } from "
 import { INITIAL_TIMELINE_ITEM_INDEX } from "@/lib/timeline-window";
 import { ChatShell } from "./ChatShell";
 import { LoginScreen } from "./LoginScreen";
+import { SessionVaultScreen } from "./SessionVaultScreen";
 
 /*
  * The reference frames are all one day's conversation under a "Today" divider,
@@ -711,6 +712,35 @@ export function DesignPreview() {
 
     if (surfacePreview === "login") {
         return <LoginScreen onAuthenticated={async () => undefined} />;
+    }
+
+    if (surfacePreview === "vault-enrollment") {
+        return (
+            <SessionVaultScreen
+                mode="enrollment"
+                recoveryKey="subetha_preview_recovery_key_4R7W2N9K6Q8X3M5P"
+                deviceEnrollment="available"
+                busy={false}
+                error={null}
+                onBeginDeviceEnrollment={() => undefined}
+                onCompleteDeviceEnrollment={() => undefined}
+                onContinue={() => undefined}
+            />
+        );
+    }
+
+    if (surfacePreview === "vault-locked") {
+        return (
+            <SessionVaultScreen
+                mode="locked"
+                hasDeviceUnlock
+                busy={false}
+                error={null}
+                onDeviceUnlock={() => undefined}
+                onRecoveryUnlock={() => undefined}
+                onForget={() => undefined}
+            />
+        );
     }
 
     if (surfacePreview === "settings") {

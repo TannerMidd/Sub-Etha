@@ -917,7 +917,10 @@ export function SettingsDialog({
                     </div>
                     <div className={classes("settings-row settings-row--notifications")}>
                         <span>Notifications</span>
-                        <p>Generic alerts only. No message text leaves your device.</p>
+                        <p>
+                            Generic alerts only. Sub-Etha does not send message text to its
+                            notification relay.
+                        </p>
                         <div className={classes("settings-row__actions")}>
                             {pushState.enabled ? (
                                 <button

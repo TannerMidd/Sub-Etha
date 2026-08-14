@@ -1,3 +1,4 @@
+export const CONTENT_SECURITY_POLICY = "Content-Security-Policy";
 export const CONTENT_SECURITY_POLICY_REPORT_ONLY = "Content-Security-Policy-Report-Only";
 
 export const PERMISSIONS_POLICY = [
@@ -56,20 +57,28 @@ export interface DocumentSecurityContext {
 export type NonceFactory = () => string;
 export type RandomValuesFiller = (bytes: Uint8Array) => void;
 
+function isLoopbackHostname(hostname: string): boolean {
+    return ["localhost", "127.0.0.1", "[::1]"].includes(hostname);
+}
+
+export function isLocalDevelopmentRequest(
+    request: Pick<DocumentRequestLike, "url">,
+    environment: string | undefined,
+): boolean {
+    return environment === "development" && isLoopbackHostname(new URL(request.url).hostname);
+}
+
 export function isLocalDevelopmentPreview(
     request: Pick<DocumentRequestLike, "url">,
     environment: string | undefined,
 ): boolean {
-    if (environment !== "development") {
+    if (!isLocalDevelopmentRequest(request, environment)) {
         return false;
     }
 
     const url = new URL(request.url);
 
-    return (
-        ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname) &&
-        url.searchParams.has("design-preview")
-    );
+    return url.searchParams.has("design-preview");
 }
 
 function hasPathPrefix(pathname: string, prefix: string): boolean {
@@ -205,6 +214,7 @@ export function buildContentSecurityPolicy(nonce: string): string {
 export function createDocumentSecurityContext(
     request: DocumentRequestLike,
     createNonce: NonceFactory = generateCspNonce,
+    enforcePolicy = true,
 ): DocumentSecurityContext | null {
     if (!isDocumentRequest(request)) {
         return null;
@@ -214,6 +224,15 @@ export function createDocumentSecurityContext(
     const policy = buildContentSecurityPolicy(nonce);
     const forwardedRequestHeaders = new Headers(request.headers);
     const responseHeaders = new Headers(DOCUMENT_SECURITY_HEADERS);
+
+    // Forward the policy with the nonce so the document renderer can attach it
+    // to every framework-owned script and style. Development's loopback Vite
+    // runtime remains report-only because its HMR internals are not nonce/TT
+    // compatible; every other document navigation enforces the same policy.
+    if (enforcePolicy) {
+        forwardedRequestHeaders.set(CONTENT_SECURITY_POLICY, policy);
+        responseHeaders.set(CONTENT_SECURITY_POLICY, policy);
+    }
 
     forwardedRequestHeaders.set(CONTENT_SECURITY_POLICY_REPORT_ONLY, policy);
     responseHeaders.set(CONTENT_SECURITY_POLICY_REPORT_ONLY, policy);

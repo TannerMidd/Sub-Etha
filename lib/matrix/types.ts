@@ -13,6 +13,7 @@ export interface PersistedMatrixSession {
     expiresAt?: number;
     authKind: AuthKind;
     cryptoStorageKey: string;
+    cryptoDatabasePrefix: string;
     oauth?: {
         clientId: string;
         deviceId: string;

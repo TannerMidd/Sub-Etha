@@ -4,6 +4,7 @@ import { request as httpRequest } from "node:http";
 
 import {
     buildContentSecurityPolicy,
+    CONTENT_SECURITY_POLICY,
     CONTENT_SECURITY_POLICY_REPORT_ONLY,
     DOCUMENT_SECURITY_HEADERS,
 } from "../../lib/security/csp";
@@ -97,10 +98,16 @@ function assertSecuredDocument(response: RuntimeResponse): {
 } {
     expect(response.status).toBe(200);
     const headers = response.headers;
-    const policy = headers[CONTENT_SECURITY_POLICY_REPORT_ONLY.toLowerCase()];
+    const policy = headers[CONTENT_SECURITY_POLICY.toLowerCase()];
+    const reportOnlyPolicy = headers[CONTENT_SECURITY_POLICY_REPORT_ONLY.toLowerCase()];
 
     expect(policy).toBeDefined();
-    expect(headers["content-security-policy"]).toBeUndefined();
+    expect(reportOnlyPolicy).toBe(policy);
+    expect(
+        response.headerEntries.filter(
+            ({ name }) => name.toLowerCase() === CONTENT_SECURITY_POLICY.toLowerCase(),
+        ),
+    ).toHaveLength(1);
     expect(
         response.headerEntries.filter(
             ({ name }) => name.toLowerCase() === CONTENT_SECURITY_POLICY_REPORT_ONLY.toLowerCase(),
@@ -180,10 +187,121 @@ test("API, RSC, manifest, and service-worker responses bypass document CSP", asy
     ];
 
     for (const response of excluded) {
+        expect(response.headers()[CONTENT_SECURITY_POLICY.toLowerCase()]).toBeUndefined();
         expect(
             response.headers()[CONTENT_SECURITY_POLICY_REPORT_ONLY.toLowerCase()],
         ).toBeUndefined();
     }
+});
+
+test("production CSP enforces inline-script, event-handler, and Trusted Types boundaries", async ({
+    page,
+}) => {
+    test.skip(
+        !process.env.PLAYWRIGHT_BASE_URL,
+        "requires a built Nitro server supplied through PLAYWRIGHT_BASE_URL",
+    );
+
+    await page.addInitScript(() => {
+        const securityProbe = globalThis as typeof globalThis & {
+            __securityPolicyViolations?: Array<{ effectiveDirective: string }>;
+        };
+
+        securityProbe.__securityPolicyViolations = [];
+        addEventListener("securitypolicyviolation", (event) => {
+            securityProbe.__securityPolicyViolations?.push({
+                effectiveDirective: event.effectiveDirective,
+            });
+        });
+    });
+    await page.goto("/");
+    await expect(page.locator("main")).toBeVisible();
+
+    const baselineViolations = await page.evaluate(() => {
+        const securityProbe = globalThis as typeof globalThis & {
+            __securityPolicyViolations?: Array<{ effectiveDirective: string }>;
+        };
+
+        return securityProbe.__securityPolicyViolations ?? [];
+    });
+
+    expect(baselineViolations).toEqual([]);
+
+    const result = await page.evaluate(async () => {
+        const securityProbe = globalThis as typeof globalThis & {
+            __cspInlineScriptExecuted?: boolean;
+            __cspEventHandlerExecuted?: boolean;
+            __securityPolicyViolations?: Array<{ effectiveDirective: string }>;
+            trustedTypes?: {
+                createPolicy(
+                    name: string,
+                    rules: { createScript(input: string): string },
+                ): { createScript(input: string): unknown };
+            };
+        };
+        const policy = securityProbe.trustedTypes?.createPolicy("subetha-matrix-html", {
+            createScript(input) {
+                return input;
+            },
+        });
+
+        if (!policy) {
+            throw new Error("Trusted Types policy factory was unavailable");
+        }
+
+        const inlineScript = document.createElement("script");
+        let inlineScriptError = "";
+
+        try {
+            inlineScript.text = "globalThis.__cspInlineScriptExecuted = true;";
+        } catch (error) {
+            inlineScriptError = error instanceof TypeError ? error.message : String(error);
+        }
+
+        document.head.append(inlineScript);
+
+        const eventHandler = document.createElement("button");
+
+        eventHandler.setAttribute(
+            "onclick",
+            policy.createScript("globalThis.__cspEventHandlerExecuted = true;") as string,
+        );
+        document.body.append(eventHandler);
+        eventHandler.click();
+
+        let innerHtmlError = "";
+
+        try {
+            document.createElement("div").innerHTML = "<p>untrusted markup</p>";
+        } catch (error) {
+            innerHtmlError = error instanceof TypeError ? error.message : String(error);
+        }
+
+        await new Promise<void>((resolve) => setTimeout(resolve, 0));
+
+        return {
+            eventHandlerExecuted: securityProbe.__cspEventHandlerExecuted === true,
+            inlineScriptExecuted: securityProbe.__cspInlineScriptExecuted === true,
+            inlineScriptError,
+            innerHtmlError,
+            violations: securityProbe.__securityPolicyViolations ?? [],
+        };
+    });
+
+    expect(result.inlineScriptExecuted).toBe(false);
+    expect(result.inlineScriptError).not.toBe("");
+    expect(result.eventHandlerExecuted).toBe(false);
+    expect(result.innerHtmlError).not.toBe("");
+    expect(result.violations.length).toBeGreaterThanOrEqual(3);
+    expect(result.violations.map(({ effectiveDirective }) => effectiveDirective)).toEqual(
+        expect.arrayContaining(["script-src-attr", "require-trusted-types-for"]),
+    );
+    expect(
+        result.violations.every(({ effectiveDirective }) =>
+            ["script-src-attr", "require-trusted-types-for"].includes(effectiveDirective),
+        ),
+    ).toBe(true);
+    await expect(page.locator("main")).toBeVisible();
 });
 
 test("production emoji picker uses a nonce-bearing, Trusted-Types-safe stylesheet", async ({

@@ -16,8 +16,10 @@ import { classes } from "../styles/appStyles";
 
 export function LoginScreen({
     onAuthenticated,
+    onAuthenticationPendingChange,
 }: {
     onAuthenticated: (session: PersistedMatrixSession) => Promise<void> | void;
+    onAuthenticationPendingChange?: (pending: boolean) => void;
 }) {
     const [serverInput, setServerInput] = useState("");
     const [capabilities, setCapabilities] = useState<LoginCapabilities | null>(null);
@@ -51,12 +53,15 @@ export function LoginScreen({
 
         setBusy(true);
         setError(null);
+        onAuthenticationPendingChange?.(true);
 
         try {
             await onAuthenticated(await loginWithPassword(capabilities.baseUrl, userId, password));
         } catch (cause) {
             setError(humanizeMatrixError(cause));
             setBusy(false);
+        } finally {
+            onAuthenticationPendingChange?.(false);
         }
     };
 
@@ -105,14 +110,17 @@ export function LoginScreen({
                 <div className={classes("login-intro__copy")}>
                     <h1 id="welcome-title">A quiet place to talk.</h1>
                     <p className={classes("lede")}>
-                        Your rooms, messages and keys stay between this device and your Matrix
-                        homeserver. Nothing here asks for your attention twice.
+                        This browser seals its session credentials and local encryption-store key at
+                        rest. End-to-end encrypted rooms protect content for participating devices;
+                        optional encrypted key backups can live on your homeserver. Sub-Etha
+                        requests event-ID-only notifications using opaque room and event identifiers
+                        plus unread counts.
                     </p>
                 </div>
                 <div className={classes("field-notes")} aria-label="Product principles">
                     <div>
-                        <strong>Private by design</strong>
-                        <span>Keys remain on this device.</span>
+                        <strong>Local vault</strong>
+                        <span>Session credentials are sealed at rest.</span>
                     </div>
                     <div>
                         <strong>Works with Matrix</strong>
@@ -280,15 +288,18 @@ export function LoginScreen({
                         {advanced ? (
                             <div className={classes("token-fields")}>
                                 <label htmlFor="access-token">Existing access token</label>
-                                <textarea
+                                <input
+                                    type="password"
                                     id="access-token"
                                     value={accessToken}
                                     onChange={(event) => setAccessToken(event.target.value)}
-                                    rows={3}
+                                    autoComplete="new-password"
+                                    autoCapitalize="none"
                                     spellCheck={false}
                                 />
                                 <p className={classes("field-help")}>
-                                    Stored only in this browser. Treat it like a password.
+                                    Sealed in this browser after you save the recovery key. Treat it
+                                    like a password.
                                 </p>
                                 <button
                                     className={classes("secondary-button")}
@@ -317,7 +328,9 @@ export function LoginScreen({
                     </div>
                 ) : null}
                 <p className={classes("privacy-footnote")}>
-                    No account data reaches Sub-Etha&apos;s notification service.
+                    Sub-Etha requests event-ID-only pushes; its relay uses only opaque room/event
+                    IDs and unread counts, and does not forward message content or sender identity
+                    to the browser.
                 </p>
             </section>
         </main>

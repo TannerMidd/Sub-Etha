@@ -1,9 +1,43 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import test from "node:test";
 import { eq } from "drizzle-orm";
 import { getDb } from "../db";
 import { pushGatewayState, pushGlobalRateBudgets } from "../db/schema";
 import { neonPushRepository } from "../lib/push-repository";
+
+const PUSH_MIGRATION = new URL("../drizzle/0002_overrated_bill_hollister.sql", import.meta.url);
+
+function migrationFunction(source: string, name: string): string {
+    const start = source.indexOf(`CREATE OR REPLACE FUNCTION "${name}"`);
+
+    assert.notEqual(start, -1, `${name} must exist in the push migration`);
+
+    const end = source.indexOf("--> statement-breakpoint", start);
+
+    return source.slice(start, end === -1 ? source.length : end);
+}
+
+test("push SQL keeps deletion intent as a permanent pre-registration fence", async () => {
+    const source = await readFile(PUSH_MIGRATION, "utf8");
+    const remove = migrationFunction(source, "subetha_delete_push_subscription");
+    const begin = migrationFunction(source, "subetha_begin_push_subscription_registration");
+    const confirm = migrationFunction(source, "subetha_confirm_push_subscription");
+    const tombstoneWrite = remove.indexOf('INSERT INTO "push_revoked_management_keys"');
+
+    assert.notEqual(tombstoneWrite, -1);
+    assert.ok(tombstoneWrite < remove.indexOf("RETURN false"));
+    assert.doesNotMatch(source, /DELETE FROM "push_revoked_management_keys"/);
+    assert.doesNotMatch(source, /push_revoked_management_keys[\s\S]{0,200}expires_at/);
+    assert.ok(
+        begin.indexOf('FROM "push_revoked_management_keys"') <
+            begin.indexOf('INSERT INTO "push_pending_subscriptions"'),
+    );
+    assert.ok(
+        confirm.indexOf('FROM "push_revoked_management_keys"') <
+            confirm.indexOf('INSERT INTO "push_subscriptions"'),
+    );
+});
 
 async function registerConfirmedSubscription(
     deliveryKeyHash: string,
@@ -77,10 +111,43 @@ test(
 
             assert.equal(claims.filter(Boolean).length, 1);
         } finally {
-            await neonPushRepository.deleteSubscription(managementKeyHash);
+            await neonPushRepository.deleteSubscription(managementKeyHash, now);
         }
 
         assert.equal(await neonPushRepository.getSubscription(pushKeyHash), null);
+    },
+);
+
+test(
+    "Neon deletion intent tombstones a management key before delayed registration",
+    {
+        skip: !process.env.DATABASE_URL,
+    },
+    async () => {
+        const suffix = crypto.randomUUID().replaceAll("-", "");
+        const deliveryKeyHash = `integration-delete-first-${suffix}`;
+        const managementKeyHash = `integration-delete-first-management-${suffix}`;
+        const now = Math.floor(Date.now() / 1_000);
+
+        assert.equal(await neonPushRepository.deleteSubscription(managementKeyHash, now), false);
+        assert.equal(
+            await neonPushRepository.beginSubscriptionRegistration(
+                deliveryKeyHash,
+                managementKeyHash,
+                {
+                    endpoint: `https://push.example.invalid/delete-first-${suffix}`,
+                    p256dh: "delete-first-p256dh",
+                    auth: "delete-first-auth",
+                },
+                `integration-delete-first-challenge-${suffix}`,
+                now + 86_401,
+                now + 87_001,
+                10_000,
+                300,
+            ),
+            "revoked",
+        );
+        assert.equal(await neonPushRepository.getSubscription(deliveryKeyHash), null);
     },
 );
 
@@ -186,10 +253,10 @@ test(
             assert.equal(outcomes.filter((outcome) => outcome === "capacity_exceeded").length, 1);
         } finally {
             await Promise.all([
-                neonPushRepository.deleteSubscription(firstManagementKey),
-                neonPushRepository.deleteSubscription(secondManagementKey),
-                neonPushRepository.deleteSubscription(capacityManagementA),
-                neonPushRepository.deleteSubscription(capacityManagementB),
+                neonPushRepository.deleteSubscription(firstManagementKey, now),
+                neonPushRepository.deleteSubscription(secondManagementKey, now),
+                neonPushRepository.deleteSubscription(capacityManagementA, now),
+                neonPushRepository.deleteSubscription(capacityManagementB, now),
             ]);
         }
     },
@@ -268,7 +335,7 @@ test(
 
             assert.equal(after?.count, before?.count);
         } finally {
-            await neonPushRepository.deleteSubscription(managementKeyHash);
+            await neonPushRepository.deleteSubscription(managementKeyHash, budgetNow);
 
             if (budgetBefore) {
                 await getDb()

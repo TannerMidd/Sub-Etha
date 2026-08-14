@@ -23,6 +23,7 @@ import {
 } from "lucide-react";
 import type { MatrixService } from "@/lib/matrix/client";
 import { resolveComposerTextareaSize } from "@/lib/composer-size";
+import { readMemoryDraft, removeMemoryDraft, writeMemoryDraft } from "@/lib/matrix/drafts";
 import { firstImageFile, insertAtSelection, normalizeMediaFile } from "@/lib/matrix/media";
 import type { TimelineItem } from "@/lib/matrix/types";
 import { classes } from "../styles/appStyles";
@@ -60,8 +61,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
     { roomId, roomName, service, replyingTo, editing, onClearContext },
     ref,
 ) {
-    const draftKey = `sub-etha-draft:${roomId}`;
-    const [body, setBody] = useState(() => editing?.body ?? localStorage.getItem(draftKey) ?? "");
+    const [body, setBody] = useState(() => editing?.body ?? readMemoryDraft(roomId));
     const [attachment, setAttachment] = useState<File | null>(null);
     const [attachmentPreview, setAttachmentPreview] = useState<string | null>(null);
     const [emojiOpen, setEmojiOpen] = useState(false);
@@ -165,12 +165,8 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
             return;
         }
 
-        if (body) {
-            localStorage.setItem(draftKey, body);
-        } else {
-            localStorage.removeItem(draftKey);
-        }
-    }, [body, draftKey, editing]);
+        writeMemoryDraft(roomId, body);
+    }, [body, editing, roomId]);
 
     useEffect(
         () => () => {
@@ -280,7 +276,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
             }
 
             setBody("");
-            localStorage.removeItem(draftKey);
+            removeMemoryDraft(roomId);
             onClearContext();
             await service.setTyping(false);
         } catch (cause) {
@@ -434,6 +430,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
                     ref={textarea}
                     id="message-composer"
                     value={body}
+                    autoComplete="off"
                     onChange={(event) => updateBody(event.target.value)}
                     onPaste={(event) => {
                         if (acceptClipboardImage(event.clipboardData)) {

@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { MatrixClient } from "matrix-js-sdk";
+import { OAuth2 } from "matrix-js-sdk/lib/oauth";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { Avatar } from "../app/components/BrandMark";
@@ -15,9 +17,11 @@ import {
 } from "../lib/matrix/media";
 import {
     LEGACY_SSO_STATE_PARAM,
+    OAuthPostGrantRevocationUnconfirmedError,
     completeRedirectLogin,
     legacySsoRedirectUrl,
     normalizeHomeserverInput,
+    revokeIssuedOAuthTokensWithinDeadline,
     validateLegacySsoCallback,
 } from "../lib/matrix/auth";
 import { MatrixService } from "../lib/matrix/client";
@@ -281,6 +285,215 @@ test("invalid and crossed auth callbacks clear state and URL data before token e
             Reflect.deleteProperty(globalThis, "sessionStorage");
         }
     }
+});
+
+test("an OAuth callback revokes issued tokens when post-grant identity lookup fails", async (t) => {
+    const originalWindow = globalThis.window;
+    const originalSessionStorage = globalThis.sessionStorage;
+    const hadWindow = "window" in globalThis;
+    const hadSessionStorage = "sessionStorage" in globalThis;
+    const values = new Map<string, string>();
+    const storage: Storage = {
+        get length() {
+            return values.size;
+        },
+        clear: () => values.clear(),
+        getItem: (key) => values.get(key) ?? null,
+        key: (index) => [...values.keys()][index] ?? null,
+        removeItem: (key) => void values.delete(key),
+        setItem: (key, value) => void values.set(key, value),
+    };
+    const revoked: string[] = [];
+
+    values.set(
+        "sub-etha-pending-auth",
+        JSON.stringify({
+            kind: "oauth",
+            baseUrl: "https://matrix.example",
+            state: "expected-state",
+            metadata: {
+                authorization_endpoint: "https://issuer.example/authorize",
+                code_challenge_methods_supported: ["S256"],
+                grant_types_supported: ["authorization_code", "refresh_token"],
+                issuer: "https://issuer.example/",
+                registration_endpoint: "https://issuer.example/register",
+                response_modes_supported: ["query", "fragment"],
+                response_types_supported: ["code"],
+                revocation_endpoint: "https://issuer.example/revoke",
+                token_endpoint: "https://issuer.example/token",
+            },
+            context: {
+                clientId: "client-id",
+                deviceId: "DEVICE",
+                codeVerifier: "code-verifier",
+                redirectUri: "https://sub-etha.example/",
+            },
+        }),
+    );
+    Object.defineProperty(globalThis, "window", {
+        configurable: true,
+        value: {
+            location: {
+                search: "?code=authorization-code&state=expected-state",
+                hash: "",
+                pathname: "/",
+            },
+            history: { replaceState: () => undefined },
+        },
+    });
+    Object.defineProperty(globalThis, "sessionStorage", {
+        configurable: true,
+        value: storage,
+    });
+    t.mock.method(OAuth2.prototype, "completeAuthorizationCodeGrant", async () => ({
+        access_token: "issued-access",
+        refresh_token: "issued-refresh",
+        expires_in: 60,
+        token_type: "Bearer",
+    }));
+    t.mock.method(MatrixClient.prototype, "whoami", async () => {
+        throw new Error("identity lookup failed");
+    });
+    t.mock.method(
+        OAuth2.prototype,
+        "revokeToken",
+        async (token: string, type?: "access_token" | "refresh_token") => {
+            revoked.push(`${type}:${token}`);
+        },
+    );
+
+    try {
+        await assert.rejects(completeRedirectLogin(), /identity lookup failed/);
+        assert.deepEqual(revoked, ["refresh_token:issued-refresh", "access_token:issued-access"]);
+    } finally {
+        if (hadWindow) {
+            Object.defineProperty(globalThis, "window", {
+                configurable: true,
+                value: originalWindow,
+            });
+        } else {
+            Reflect.deleteProperty(globalThis, "window");
+        }
+
+        if (hadSessionStorage) {
+            Object.defineProperty(globalThis, "sessionStorage", {
+                configurable: true,
+                value: originalSessionStorage,
+            });
+        } else {
+            Reflect.deleteProperty(globalThis, "sessionStorage");
+        }
+    }
+});
+
+test("an OAuth callback surfaces typed uncertainty when post-grant revocation fails", async (t) => {
+    const originalWindow = globalThis.window;
+    const originalSessionStorage = globalThis.sessionStorage;
+    const hadWindow = "window" in globalThis;
+    const hadSessionStorage = "sessionStorage" in globalThis;
+    const values = new Map<string, string>();
+    const storage: Storage = {
+        get length() {
+            return values.size;
+        },
+        clear: () => values.clear(),
+        getItem: (key) => values.get(key) ?? null,
+        key: (index) => [...values.keys()][index] ?? null,
+        removeItem: (key) => void values.delete(key),
+        setItem: (key, value) => void values.set(key, value),
+    };
+
+    values.set(
+        "sub-etha-pending-auth",
+        JSON.stringify({
+            kind: "oauth",
+            baseUrl: "https://matrix.example",
+            state: "expected-state",
+            metadata: {
+                authorization_endpoint: "https://issuer.example/authorize",
+                code_challenge_methods_supported: ["S256"],
+                grant_types_supported: ["authorization_code", "refresh_token"],
+                issuer: "https://issuer.example/",
+                registration_endpoint: "https://issuer.example/register",
+                response_modes_supported: ["query", "fragment"],
+                response_types_supported: ["code"],
+                revocation_endpoint: "https://issuer.example/revoke",
+                token_endpoint: "https://issuer.example/token",
+            },
+            context: {
+                clientId: "client-id",
+                deviceId: "DEVICE",
+                codeVerifier: "code-verifier",
+                redirectUri: "https://sub-etha.example/",
+            },
+        }),
+    );
+    Object.defineProperty(globalThis, "window", {
+        configurable: true,
+        value: {
+            location: {
+                search: "?code=authorization-code&state=expected-state",
+                hash: "",
+                pathname: "/",
+            },
+            history: { replaceState: () => undefined },
+        },
+    });
+    Object.defineProperty(globalThis, "sessionStorage", {
+        configurable: true,
+        value: storage,
+    });
+    t.mock.method(OAuth2.prototype, "completeAuthorizationCodeGrant", async () => ({
+        access_token: "issued-access-unconfirmed",
+        refresh_token: "issued-refresh-unconfirmed",
+        expires_in: 60,
+        token_type: "Bearer",
+    }));
+    t.mock.method(MatrixClient.prototype, "whoami", async () => {
+        throw new Error("post-grant identity failed");
+    });
+    t.mock.method(OAuth2.prototype, "revokeToken", async () => {
+        throw new Error("revocation endpoint unavailable");
+    });
+
+    try {
+        await assert.rejects(
+            completeRedirectLogin(),
+            (error: unknown) =>
+                error instanceof OAuthPostGrantRevocationUnconfirmedError &&
+                error.remoteSessionEnded === false &&
+                error.cause instanceof Error &&
+                error.cause.message === "post-grant identity failed",
+        );
+    } finally {
+        if (hadWindow) {
+            Object.defineProperty(globalThis, "window", {
+                configurable: true,
+                value: originalWindow,
+            });
+        } else {
+            Reflect.deleteProperty(globalThis, "window");
+        }
+
+        if (hadSessionStorage) {
+            Object.defineProperty(globalThis, "sessionStorage", {
+                configurable: true,
+                value: originalSessionStorage,
+            });
+        } else {
+            Reflect.deleteProperty(globalThis, "sessionStorage");
+        }
+    }
+});
+
+test("issued OAuth token revocation treats a deadline as unconfirmed", async () => {
+    const result = await revokeIssuedOAuthTokensWithinDeadline(
+        { revokeToken: () => new Promise<void>(() => undefined) },
+        { access_token: "stalled-access", refresh_token: "stalled-refresh" },
+        1,
+    );
+
+    assert.equal(result, false);
 });
 
 test("OAuth metadata and authorization navigation reject unsafe URL schemes", async () => {
@@ -554,13 +767,21 @@ const SESSION: PersistedMatrixSession = {
     accessToken: "token",
     authKind: "token",
     baseUrl: "https://matrix.example",
+    cryptoDatabasePrefix: "sub-etha-crypto-record-1",
     cryptoStorageKey: "AQID",
     deviceId: "DEVICE",
     userId: "@arthur:matrix.example",
 };
 
 function mediaService(): MatrixService {
-    const service = new MatrixService(SESSION);
+    const service = new MatrixService({
+        session: SESSION,
+        recordId: "record-1",
+        revision: 1,
+        cryptoDatabasePrefix: "sub-etha-crypto-record-1",
+        reseal: async () => undefined,
+        dispose: () => undefined,
+    } as never);
     const client = {
         getAccessToken: () => "token",
         getHomeserverUrl: () => "https://matrix.example",

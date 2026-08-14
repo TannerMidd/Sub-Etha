@@ -51,6 +51,11 @@ export const pushPendingSubscriptions = pgTable(
     ],
 );
 
+export const pushRevokedManagementKeys = pgTable("push_revoked_management_keys", {
+    managementKeyHash: text("management_key_hash").primaryKey(),
+    revokedAt: epochSeconds("revoked_at").notNull(),
+});
+
 export const pushGatewayState = pgTable("push_gateway_state", {
     id: integer("id").primaryKey(),
     subscriptionCount: bigint("subscription_count", { mode: "number" }).notNull().default(0),

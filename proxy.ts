@@ -1,13 +1,21 @@
 import { NextResponse, type NextRequest } from "next/server";
 
-import { createDocumentSecurityContext, isLocalDevelopmentPreview } from "./lib/security/csp";
+import {
+    createDocumentSecurityContext,
+    isLocalDevelopmentPreview,
+    isLocalDevelopmentRequest,
+} from "./lib/security/csp";
 
 export function proxy(request: NextRequest): NextResponse {
     if (isLocalDevelopmentPreview(request, process.env.NODE_ENV)) {
         return NextResponse.next();
     }
 
-    const security = createDocumentSecurityContext(request);
+    const security = createDocumentSecurityContext(
+        request,
+        undefined,
+        !isLocalDevelopmentRequest(request, process.env.NODE_ENV),
+    );
 
     if (!security) {
         return NextResponse.next();
