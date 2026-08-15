@@ -156,15 +156,17 @@ async function wheelTimeline(scroller: Locator, deltaY: number): Promise<void> {
 
 async function scrollTimelineTo(scroller: Locator, position: "top" | "bottom"): Promise<void> {
     const direction = position === "top" ? -1 : 1;
+    const threshold = position === "top" ? 2 : SUBPIXEL_TOLERANCE_PX;
 
     for (let attempt = 0; attempt < 60; attempt += 1) {
-        const reached = await scroller.evaluate((element, nextPosition) => {
-            const threshold = 2;
-
-            return nextPosition === "top"
-                ? element.scrollTop <= threshold
-                : element.scrollHeight - element.clientHeight - element.scrollTop <= threshold;
-        }, position);
+        const reached = await scroller.evaluate(
+            (element, options) =>
+                options.position === "top"
+                    ? element.scrollTop <= options.threshold
+                    : element.scrollHeight - element.clientHeight - element.scrollTop <=
+                      options.threshold,
+            { position, threshold },
+        );
 
         if (reached) {
             return;
@@ -176,13 +178,14 @@ async function scrollTimelineTo(scroller: Locator, position: "top" | "bottom"): 
 
     await expect
         .poll(() =>
-            scroller.evaluate((element, nextPosition) => {
-                const threshold = 2;
-
-                return nextPosition === "top"
-                    ? element.scrollTop <= threshold
-                    : element.scrollHeight - element.clientHeight - element.scrollTop <= threshold;
-            }, position),
+            scroller.evaluate(
+                (element, options) =>
+                    options.position === "top"
+                        ? element.scrollTop <= options.threshold
+                        : element.scrollHeight - element.clientHeight - element.scrollTop <=
+                          options.threshold,
+                { position, threshold },
+            ),
         )
         .toBe(true);
 }
