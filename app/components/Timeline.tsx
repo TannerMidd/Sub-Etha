@@ -55,12 +55,34 @@ import {
     type TimelineScrollEvent,
     type TimelineScrollMode,
 } from "@/lib/timeline-scroll";
+import { SkeletonBar, SkeletonGroup } from "./Skeleton";
 import { classes } from "../styles/appStyles";
 
 const EmojiPickerPanel = lazy(() =>
     import("./EmojiPickerPanel").then((module) => ({ default: module.EmojiPickerPanel })),
 );
 const QUICK_REACTIONS = ["👍", "❤️", "😂", "😮", "😢", "🎉"];
+/*
+ * How long a row carries its entrance marker. Slightly longer than the
+ * animation itself so the last frame is never cut off on a busy commit.
+ */
+const ENTER_ANIMATION_MS = 520;
+const REACTION_POP_MS = 700;
+/*
+ * Entrance tracking remembers which events it has already shown. The timeline
+ * is windowed, so the ids outlive the rows; past this many the set is rebuilt
+ * from what is actually in the window.
+ */
+const KNOWN_ITEM_ID_LIMIT = 2_000;
+const NO_ENTERING_ITEMS: ReadonlySet<string> = new Set<string>();
+
+function timelineEntranceIdentity(item: TimelineItem): string {
+    const transactionId =
+        item.event && typeof item.event.getTxnId === "function" ? item.event.getTxnId() : null;
+
+    return transactionId ? `txn:${transactionId}` : `event:${item.id}`;
+}
+
 const TIMELINE_VIEWPORT_PADDING = { top: 0, bottom: 300 };
 const TIMELINE_COMPACT_BREAKPOINT_PX = 720;
 const TIMELINE_ESTIMATED_MEDIA_GUTTER_PX = 70;
@@ -218,6 +240,68 @@ interface TimelineHistoryAnchor {
     top: number;
 }
 
+/*
+ * The rhythm of the placeholder rows. Uneven line lengths, and rows that vary
+ * between one body line and two, read as a conversation rather than as a table;
+ * an even stack of identical bars reads as a loading widget, which is the thing
+ * a skeleton exists to avoid.
+ */
+const TIMELINE_SKELETON_ROWS: Array<{ body: string; second: string | null }> = [
+    { body: "88%", second: "54%" },
+    { body: "62%", second: null },
+    { body: "94%", second: "71%" },
+    { body: "48%", second: null },
+    { body: "80%", second: "44%" },
+];
+
+function TimelineSkeletonRow({
+    author,
+    body,
+    second = null,
+}: {
+    author: string;
+    body: string;
+    second?: string | null;
+}) {
+    return (
+        <div className={classes("timeline-skeleton__row")}>
+            <SkeletonBar width="32px" height={10} style={{ marginTop: 20 }} />
+            <div className={classes("timeline-skeleton__main")}>
+                <span className={classes("timeline-skeleton__marker")} />
+                <SkeletonBar width={author} height={11} />
+                <SkeletonBar width={body} height={12} style={{ marginTop: 15 }} />
+                {second ? (
+                    <SkeletonBar width={second} height={12} style={{ marginTop: 10 }} />
+                ) : null}
+            </div>
+        </div>
+    );
+}
+
+/*
+ * Rendered inside `.timeline` so the placeholder inherits the frame's lane
+ * widths and its vertical axis. The rows then occupy the geometry the real
+ * messages will, which is what lets the conversation resolve without the page
+ * relaying out around it. Exported because the shell shows the same shape
+ * before a room has been chosen at all.
+ */
+export function TimelineSkeleton() {
+    return (
+        <div className={classes("timeline")} aria-label="Room messages" aria-busy="true">
+            <SkeletonGroup label="Loading messages…" className="timeline-skeleton">
+                {TIMELINE_SKELETON_ROWS.map((row) => (
+                    <TimelineSkeletonRow
+                        key={row.body}
+                        author="78px"
+                        body={row.body}
+                        second={row.second}
+                    />
+                ))}
+            </SkeletonGroup>
+        </div>
+    );
+}
+
 function TimelineHistoryHeader({ context }: { context: TimelineVirtuosoContext }) {
     const historyControl = context.hasMoreHistory ? (
         <div className={classes("history-loader")} role="status" aria-live="polite">
@@ -244,6 +328,15 @@ function TimelineHistoryHeader({ context }: { context: TimelineVirtuosoContext }
         </div>
     );
 
+    /*
+     * The reference draws placeholder rows here while earlier history loads.
+     * This timeline cannot: prepending must not move the reader (see the
+     * windowing rule in docs/architecture.md), and rows added to the header
+     * grow it by their own height at exactly the moment the anchor is holding
+     * the viewport still — which pushes the reader down instead. The control
+     * below already reports the request without changing any geometry, so the
+     * placeholder is deliberately omitted rather than fought into place.
+     */
     return (
         <>
             {historyControl}
@@ -560,15 +653,26 @@ function MediaAttachment({
     }
 
     if (!asset) {
+        /*
+         * The frame already reserves the picture's real dimensions, so the
+         * placeholder fills it rather than centring a spinner inside it: the
+         * image lands in exactly the space its skeleton held, and the timeline
+         * never reflows around it.
+         */
         if (visual) {
             return (
                 <div
                     className={classes(`${visualFrameClass} media-frame--reserved`)}
                     style={visualFrameStyle}
                 >
-                    <div className={classes("media-loading media-loading--visual")}>
-                        <LoaderCircle className={classes("spin")} aria-hidden="true" /> Decrypting
-                        attachment…
+                    <div
+                        className={classes(
+                            "media-loading media-loading--visual media-loading--skeleton",
+                        )}
+                        role="status"
+                    >
+                        <i className={classes("skeleton")} aria-hidden="true" />
+                        <span className={classes("sr-only")}>Decrypting attachment…</span>
                     </div>
                 </div>
             );
@@ -1308,6 +1412,7 @@ function MessageRow({
     item,
     next,
     replyItem,
+    entering,
     service,
     onReply,
     onEdit,
@@ -1316,6 +1421,7 @@ function MessageRow({
     item: TimelineItem;
     next?: TimelineItem;
     replyItem?: TimelineItem;
+    entering: boolean;
     service: MatrixService;
     onReply: (item: TimelineItem) => void;
     onEdit: (item: TimelineItem) => void;
@@ -1323,7 +1429,23 @@ function MessageRow({
 }) {
     const [reactionOpen, setReactionOpen] = useState(false);
     const [actionsOpen, setActionsOpen] = useState(false);
+    /*
+     * Which reaction is mid-pop. Set on the click rather than on the round
+     * trip, because the pop acknowledges the tap; whether the homeserver
+     * accepts it is what the count itself reports a moment later.
+     */
+    const [poppedReaction, setPoppedReaction] = useState<string | null>(null);
+    const popTimer = useRef<number | null>(null);
     const rowRef = useRef<HTMLElement>(null);
+
+    useEffect(
+        () => () => {
+            if (popTimer.current !== null) {
+                window.clearTimeout(popTimer.current);
+            }
+        },
+        [],
+    );
     const nextDay =
         next && new Date(next.timestamp).toDateString() !== new Date(item.timestamp).toDateString();
     const actionable = item.decryptionState === "ready" && !item.redacted && !item.sendingStatus;
@@ -1380,6 +1502,8 @@ function MessageRow({
                 style={getAuthorAccentStyle(item, replyItem)}
                 data-ui="message-row"
                 data-actions-state={actionsOpen ? "open" : "closed"}
+                data-enter={entering ? "in" : undefined}
+                data-send-state={item.sendingStatus ?? undefined}
                 data-event-id={item.id}
                 aria-label={`Message from ${item.senderName}`}
             >
@@ -1445,10 +1569,22 @@ function MessageRow({
                                     key={reaction.key}
                                     type="button"
                                     className={classes(reaction.mine ? "is-mine" : "")}
+                                    data-pop={reaction.key === poppedReaction ? "true" : undefined}
                                     aria-pressed={reaction.mine}
-                                    onClick={() =>
-                                        void service.toggleReaction(item.id, reaction.key)
-                                    }
+                                    onClick={() => {
+                                        setPoppedReaction(reaction.key);
+
+                                        if (popTimer.current !== null) {
+                                            window.clearTimeout(popTimer.current);
+                                        }
+
+                                        popTimer.current = window.setTimeout(() => {
+                                            popTimer.current = null;
+                                            setPoppedReaction(null);
+                                        }, REACTION_POP_MS);
+
+                                        void service.toggleReaction(item.id, reaction.key);
+                                    }}
                                 >
                                     <span>{reaction.key}</span>
                                     <span>{reaction.count}</span>
@@ -1598,6 +1734,10 @@ export function Timeline({
     const [unreadBoundaryId, setUnreadBoundaryId] = useState<string | null>(() =>
         initialUnreadBoundaryId(items, unreadCount),
     );
+    const [enteringIds, setEnteringIds] = useState<ReadonlySet<string>>(NO_ENTERING_ITEMS);
+    const knownItemIds = useRef<Set<string>>(new Set());
+    const enterTrackingReady = useRef(false);
+    const enterTimers = useRef<Map<string, number>>(new Map());
     const lightboxOpener = useRef<HTMLElement | null>(null);
     const scroller = useRef<HTMLElement | null>(null);
     const removeScrollerListeners = useRef<(() => void) | null>(null);
@@ -2614,6 +2754,128 @@ export function Timeline({
         setUnreadBoundaryId(initialUnreadBoundaryId(items, unreadCount));
     }, [initializing, items, unreadCount]);
 
+    /*
+     * Only genuinely new events animate. Virtuoso mounts and unmounts rows as
+     * the reader scrolls, so a plain mount animation would replay all the way
+     * up a conversation; an event is instead marked as entering once, on the
+     * commit that first carries it, and the marker is dropped again when the
+     * animation is over. Backfilled history is included deliberately — it is
+     * new to the reader too — and the animation moves only opacity and
+     * transform, so it cannot disturb the geometry the history anchor restores.
+     */
+    useEffect(() => {
+        const known = knownItemIds.current;
+        const currentIds = new Set(items.map((item) => item.id));
+
+        if (initializing) {
+            return;
+        }
+
+        // The first commit after initialization is the room as it was found, not
+        // an arrival. This also arms an empty room so its first later message
+        // can animate normally.
+        if (!enterTrackingReady.current) {
+            for (const item of items) {
+                known.add(timelineEntranceIdentity(item));
+            }
+
+            enterTrackingReady.current = true;
+
+            return;
+        }
+
+        const arrivedItems = items.filter((item) => !known.has(timelineEntranceIdentity(item)));
+        const arrived = arrivedItems.map((item) => item.id);
+
+        const pruneEnteringIds = (previous: ReadonlySet<string>): ReadonlySet<string> => {
+            const next = new Set([...previous].filter((id) => currentIds.has(id)));
+
+            return next.size === previous.size && [...previous].every((id) => currentIds.has(id))
+                ? previous
+                : next.size
+                  ? next
+                  : NO_ENTERING_ITEMS;
+        };
+
+        if (arrived.length === 0) {
+            setEnteringIds(pruneEnteringIds);
+
+            return;
+        }
+
+        for (const item of arrivedItems) {
+            known.add(timelineEntranceIdentity(item));
+        }
+
+        if (known.size > KNOWN_ITEM_ID_LIMIT) {
+            knownItemIds.current = new Set(items.map(timelineEntranceIdentity));
+        }
+
+        /*
+         * Only the live edge animates. Backfilled history is new to the reader
+         * too, but `getBoundingClientRect` reports a transformed element where
+         * the transform has put it, and the history anchor restores the reader
+         * by comparing exactly those tops — so a row sliding into place while
+         * the anchor measures it moves the reader instead of the row. History
+         * is meant to appear without motion here anyway; that is the promise
+         * the anchor exists to keep.
+         */
+        const suffixStart = items.length - arrived.length;
+        const appended = arrived.every((id, offset) => items[suffixStart + offset]?.id === id);
+
+        if (!appended) {
+            setEnteringIds(pruneEnteringIds);
+
+            return;
+        }
+
+        setEnteringIds((previous) => {
+            const next = new Set(pruneEnteringIds(previous));
+
+            for (const id of arrived) {
+                next.add(id);
+            }
+
+            return next;
+        });
+
+        for (const id of arrived) {
+            const previousTimer = enterTimers.current.get(id);
+
+            if (previousTimer !== undefined) {
+                window.clearTimeout(previousTimer);
+            }
+
+            const timer = window.setTimeout(() => {
+                enterTimers.current.delete(id);
+                setEnteringIds((previous) => {
+                    if (!previous.has(id)) {
+                        return previous;
+                    }
+
+                    const next = new Set(previous);
+
+                    next.delete(id);
+
+                    return next.size ? next : NO_ENTERING_ITEMS;
+                });
+            }, ENTER_ANIMATION_MS);
+
+            enterTimers.current.set(id, timer);
+        }
+    }, [initializing, items]);
+
+    useEffect(
+        () => () => {
+            for (const timer of enterTimers.current.values()) {
+                window.clearTimeout(timer);
+            }
+
+            enterTimers.current.clear();
+        },
+        [],
+    );
+
     useLayoutEffect(() => {
         const nextItems = items.map((item) => ({
             id: item.id,
@@ -2750,19 +3012,7 @@ export function Timeline({
     const paginationState = loadingHistory ? "loading" : hasMoreHistory ? "idle" : "exhausted";
 
     if (initializing) {
-        return (
-            <div
-                className={classes("timeline-empty timeline-loading")}
-                role="status"
-                aria-live="polite"
-                aria-busy="true"
-            >
-                <LoaderCircle className={classes("spin")} aria-hidden="true" />
-                <p className={classes("eyebrow")}>TUNING ROOM HISTORY</p>
-                <h3>Resolving local signals.</h3>
-                <p>Loading messages and the encryption keys needed to read them…</p>
-            </div>
-        );
+        return <TimelineSkeleton />;
     }
 
     if (!items.length) {
@@ -2813,7 +3063,17 @@ export function Timeline({
                     return (
                         <>
                             {item.id === unreadBoundaryId ? (
-                                <div className={classes("unread-divider")} role="separator">
+                                /*
+                                 * The divider marks where the reader left off,
+                                 * so it stays put once the room is read — but
+                                 * it stops claiming the accent, which is
+                                 * reserved for what still wants attention.
+                                 */
+                                <div
+                                    className={classes("unread-divider")}
+                                    data-unread-state={unreadCount > 0 ? "new" : "read"}
+                                    role="separator"
+                                >
                                     <span>New</span>
                                 </div>
                             ) : null}
@@ -2821,6 +3081,7 @@ export function Timeline({
                                 item={item}
                                 next={items[itemIndex + 1]}
                                 replyItem={item.replyTo ? itemsById.get(item.replyTo) : undefined}
+                                entering={enteringIds.has(item.id)}
                                 service={service}
                                 onReply={onReply}
                                 onEdit={onEdit}

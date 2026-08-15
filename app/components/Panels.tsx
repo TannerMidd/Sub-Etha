@@ -33,7 +33,27 @@ import type {
     TimelineItem,
 } from "@/lib/matrix/types";
 import { Avatar } from "./BrandMark";
+import { SkeletonBar, SkeletonGroup } from "./Skeleton";
 import { classes } from "../styles/appStyles";
+
+/* Label and value lane widths for the settings placeholder, one pair per row. */
+const SETTINGS_SKELETON_ROWS: Array<[label: string, value: string]> = [
+    ["42%", "28%"],
+    ["34%", "46%"],
+];
+
+function SettingsSkeleton({ label }: { label: string }) {
+    return (
+        <SkeletonGroup label={label}>
+            {SETTINGS_SKELETON_ROWS.map(([labelWidth, valueWidth]) => (
+                <div key={`${labelWidth}:${valueWidth}`} className={classes("settings-row")}>
+                    <SkeletonBar width={labelWidth} height={10} />
+                    <SkeletonBar width={valueWidth} height={12} style={{ gridColumn: 3 }} />
+                </div>
+            ))}
+        </SkeletonGroup>
+    );
+}
 
 export function Dialog({
     title,
@@ -764,13 +784,23 @@ export function SettingsDialog({
     const [notice, setNotice] = useState<string | null>(null);
     const [error, setError] = useState<string | null>(null);
 
+    /*
+     * Until this resolves the dialog knows nothing about recovery or this
+     * device, and the rows below it previously filled that gap by asserting the
+     * pessimistic case — telling a reader with working recovery to go and set
+     * it up. A placeholder states nothing, which is the only honest thing to
+     * show before the answer arrives.
+     */
+    const [encryptionLoading, setEncryptionLoading] = useState(!settingsPreview);
+
     useEffect(() => {
         void Promise.all([service.getDevices(), service.getCryptoStatus()])
             .then(([nextDevices, nextCrypto]) => {
                 setDevices(nextDevices);
                 setCryptoStatus(nextCrypto);
             })
-            .catch(() => undefined);
+            .catch(() => undefined)
+            .finally(() => setEncryptionLoading(false));
     }, [service]);
 
     useEffect(() => {
@@ -971,199 +1001,232 @@ export function SettingsDialog({
 
                 <section aria-labelledby="settings-encryption-heading">
                     <h3 id="settings-encryption-heading">Encryption</h3>
-                    <div className={classes("settings-row settings-row--recovery")}>
-                        <span>Recovery</span>
-                        <p>
-                            {cryptoStatus?.secretStorageReady && cryptoStatus.crossSigningReady
-                                ? "Secret storage, cross-signing and key backup are active."
-                                : "Finish recovery setup to protect your encrypted history."}
-                        </p>
-                        <button
-                            type="button"
-                            aria-expanded={recoveryExpanded}
-                            onClick={() => setRecoveryExpanded((value) => !value)}
-                        >
-                            {recoveryExpanded ? "Done" : "Manage"}
-                        </button>
-                    </div>
-
-                    {recoveryExpanded ? (
-                        <div className={classes("settings-recovery-panel")}>
-                            <div className={classes("crypto-status")}>
-                                <span
-                                    className={classes(
-                                        cryptoStatus?.secretStorageReady ? "is-ready" : "",
-                                    )}
+                    {encryptionLoading ? (
+                        <SettingsSkeleton label="Loading encryption status…" />
+                    ) : (
+                        <>
+                            <div className={classes("settings-row settings-row--recovery")}>
+                                <span>Recovery</span>
+                                <p>
+                                    {cryptoStatus?.secretStorageReady &&
+                                    cryptoStatus.crossSigningReady
+                                        ? "Secret storage, cross-signing and key backup are active."
+                                        : "Finish recovery setup to protect your encrypted history."}
+                                </p>
+                                <button
+                                    type="button"
+                                    aria-expanded={recoveryExpanded}
+                                    onClick={() => setRecoveryExpanded((value) => !value)}
                                 >
-                                    {cryptoStatus?.secretStorageReady ? <Check /> : <KeyRound />}
-                                    Secret storage
-                                </span>
-                                <span
-                                    className={classes(
-                                        cryptoStatus?.crossSigningReady ? "is-ready" : "",
-                                    )}
-                                >
-                                    {cryptoStatus?.crossSigningReady ? <Check /> : <KeyRound />}
-                                    Cross-signing
-                                </span>
-                                <span
-                                    className={classes(
-                                        cryptoStatus?.backupVersion ? "is-ready" : "",
-                                    )}
-                                >
-                                    {cryptoStatus?.backupVersion ? <Check /> : <KeyRound />}
-                                    Key backup
-                                </span>
+                                    {recoveryExpanded ? "Done" : "Manage"}
+                                </button>
                             </div>
-                            {!cryptoStatus?.secretStorageReady ? (
-                                <div className={classes("settings-block")}>
-                                    <label htmlFor="recovery-passphrase">
-                                        Optional recovery passphrase
-                                    </label>
-                                    <input
-                                        id="recovery-passphrase"
-                                        type="password"
-                                        value={passphrase}
-                                        onChange={(event) => setPassphrase(event.target.value)}
-                                        placeholder="Leave blank for a recovery key"
-                                    />
+
+                            {recoveryExpanded ? (
+                                <div className={classes("settings-recovery-panel")}>
+                                    <div className={classes("crypto-status")}>
+                                        <span
+                                            className={classes(
+                                                cryptoStatus?.secretStorageReady ? "is-ready" : "",
+                                            )}
+                                        >
+                                            {cryptoStatus?.secretStorageReady ? (
+                                                <Check />
+                                            ) : (
+                                                <KeyRound />
+                                            )}
+                                            Secret storage
+                                        </span>
+                                        <span
+                                            className={classes(
+                                                cryptoStatus?.crossSigningReady ? "is-ready" : "",
+                                            )}
+                                        >
+                                            {cryptoStatus?.crossSigningReady ? (
+                                                <Check />
+                                            ) : (
+                                                <KeyRound />
+                                            )}
+                                            Cross-signing
+                                        </span>
+                                        <span
+                                            className={classes(
+                                                cryptoStatus?.backupVersion ? "is-ready" : "",
+                                            )}
+                                        >
+                                            {cryptoStatus?.backupVersion ? <Check /> : <KeyRound />}
+                                            Key backup
+                                        </span>
+                                    </div>
+                                    {!cryptoStatus?.secretStorageReady ? (
+                                        <div className={classes("settings-block")}>
+                                            <label htmlFor="recovery-passphrase">
+                                                Optional recovery passphrase
+                                            </label>
+                                            <input
+                                                id="recovery-passphrase"
+                                                type="password"
+                                                value={passphrase}
+                                                onChange={(event) =>
+                                                    setPassphrase(event.target.value)
+                                                }
+                                                placeholder="Leave blank for a recovery key"
+                                            />
+                                            <button
+                                                className={classes("secondary-button")}
+                                                type="button"
+                                                disabled={busyAction === "recovery"}
+                                                onClick={() =>
+                                                    void act("recovery", async () => {
+                                                        const key =
+                                                            await service.setupRecovery(passphrase);
+
+                                                        setGeneratedRecovery(key);
+                                                        setCryptoStatus(
+                                                            await service.getCryptoStatus(),
+                                                        );
+                                                    })
+                                                }
+                                            >
+                                                Set up recovery
+                                            </button>
+                                        </div>
+                                    ) : (
+                                        <div className={classes("settings-block")}>
+                                            <label htmlFor="recovery-key">
+                                                Recovery key or passphrase
+                                            </label>
+                                            <textarea
+                                                id="recovery-key"
+                                                rows={3}
+                                                value={recoveryInput}
+                                                onChange={(event) =>
+                                                    setRecoveryInput(event.target.value)
+                                                }
+                                            />
+                                            <button
+                                                className={classes("secondary-button")}
+                                                type="button"
+                                                disabled={
+                                                    !recoveryInput.trim() || busyAction === "unlock"
+                                                }
+                                                onClick={() =>
+                                                    void act("unlock", async () => {
+                                                        await service.unlockRecovery(
+                                                            recoveryInput.trim(),
+                                                        );
+                                                        setNotice(
+                                                            "Recovery storage unlocked on this device.",
+                                                        );
+                                                    })
+                                                }
+                                            >
+                                                Unlock recovery
+                                            </button>
+                                        </div>
+                                    )}
+                                    {generatedRecovery ? (
+                                        <div className={classes("recovery-result")} role="status">
+                                            <strong>
+                                                Save this somewhere safe. It will not be shown
+                                                again.
+                                            </strong>
+                                            <code>{generatedRecovery}</code>
+                                            <button
+                                                type="button"
+                                                onClick={() =>
+                                                    void navigator.clipboard.writeText(
+                                                        generatedRecovery,
+                                                    )
+                                                }
+                                            >
+                                                <Copy /> Copy recovery key
+                                            </button>
+                                        </div>
+                                    ) : null}
                                     <button
                                         className={classes("secondary-button")}
                                         type="button"
-                                        disabled={busyAction === "recovery"}
+                                        disabled={busyAction === "verify"}
                                         onClick={() =>
-                                            void act("recovery", async () => {
-                                                const key = await service.setupRecovery(passphrase);
-
-                                                setGeneratedRecovery(key);
-                                                setCryptoStatus(await service.getCryptoStatus());
+                                            void act("verify", async () => {
+                                                await service.startDeviceVerification();
+                                                onVerificationStarted();
                                             })
                                         }
                                     >
-                                        Set up recovery
+                                        Verify with another device
                                     </button>
-                                </div>
-                            ) : (
-                                <div className={classes("settings-block")}>
-                                    <label htmlFor="recovery-key">Recovery key or passphrase</label>
-                                    <textarea
-                                        id="recovery-key"
-                                        rows={3}
-                                        value={recoveryInput}
-                                        onChange={(event) => setRecoveryInput(event.target.value)}
-                                    />
-                                    <button
-                                        className={classes("secondary-button")}
-                                        type="button"
-                                        disabled={!recoveryInput.trim() || busyAction === "unlock"}
-                                        onClick={() =>
-                                            void act("unlock", async () => {
-                                                await service.unlockRecovery(recoveryInput.trim());
-                                                setNotice(
-                                                    "Recovery storage unlocked on this device.",
-                                                );
-                                            })
-                                        }
-                                    >
-                                        Unlock recovery
-                                    </button>
-                                </div>
-                            )}
-                            {generatedRecovery ? (
-                                <div className={classes("recovery-result")} role="status">
-                                    <strong>
-                                        Save this somewhere safe. It will not be shown again.
-                                    </strong>
-                                    <code>{generatedRecovery}</code>
-                                    <button
-                                        type="button"
-                                        onClick={() =>
-                                            void navigator.clipboard.writeText(generatedRecovery)
-                                        }
-                                    >
-                                        <Copy /> Copy recovery key
-                                    </button>
+                                    {devices.some((device) => !device.current) ? (
+                                        <div className={classes("device-list")}>
+                                            {devices
+                                                .filter((device) => !device.current)
+                                                .map((device) => (
+                                                    <div key={device.deviceId}>
+                                                        <span className={classes("status-dot")} />
+                                                        <span>
+                                                            <strong>{device.displayName}</strong>
+                                                            <small>{device.deviceId}</small>
+                                                            <small>
+                                                                {device.verified
+                                                                    ? "Verified"
+                                                                    : "Not verified"}
+                                                            </small>
+                                                        </span>
+                                                        {!device.verified ? (
+                                                            <button
+                                                                type="button"
+                                                                disabled={
+                                                                    busyAction ===
+                                                                    `verify-${device.deviceId}`
+                                                                }
+                                                                onClick={() =>
+                                                                    void act(
+                                                                        `verify-${device.deviceId}`,
+                                                                        async () => {
+                                                                            await service.startDeviceVerification(
+                                                                                device.deviceId,
+                                                                            );
+                                                                            onVerificationStarted();
+                                                                        },
+                                                                    )
+                                                                }
+                                                            >
+                                                                Verify
+                                                            </button>
+                                                        ) : null}
+                                                    </div>
+                                                ))}
+                                        </div>
+                                    ) : null}
                                 </div>
                             ) : null}
-                            <button
-                                className={classes("secondary-button")}
-                                type="button"
-                                disabled={busyAction === "verify"}
-                                onClick={() =>
-                                    void act("verify", async () => {
-                                        await service.startDeviceVerification();
-                                        onVerificationStarted();
-                                    })
-                                }
-                            >
-                                Verify with another device
-                            </button>
-                            {devices.some((device) => !device.current) ? (
-                                <div className={classes("device-list")}>
-                                    {devices
-                                        .filter((device) => !device.current)
-                                        .map((device) => (
-                                            <div key={device.deviceId}>
-                                                <span className={classes("status-dot")} />
-                                                <span>
-                                                    <strong>{device.displayName}</strong>
-                                                    <small>{device.deviceId}</small>
-                                                    <small>
-                                                        {device.verified
-                                                            ? "Verified"
-                                                            : "Not verified"}
-                                                    </small>
-                                                </span>
-                                                {!device.verified ? (
-                                                    <button
-                                                        type="button"
-                                                        disabled={
-                                                            busyAction ===
-                                                            `verify-${device.deviceId}`
-                                                        }
-                                                        onClick={() =>
-                                                            void act(
-                                                                `verify-${device.deviceId}`,
-                                                                async () => {
-                                                                    await service.startDeviceVerification(
-                                                                        device.deviceId,
-                                                                    );
-                                                                    onVerificationStarted();
-                                                                },
-                                                            )
-                                                        }
-                                                    >
-                                                        Verify
-                                                    </button>
-                                                ) : null}
-                                            </div>
-                                        ))}
-                                </div>
-                            ) : null}
-                        </div>
-                    ) : null}
 
-                    <div className={classes("settings-row settings-row--device")}>
-                        <span>This device</span>
-                        <p>
-                            {currentDevice?.deviceId ?? snapshot.deviceId} ·{" "}
-                            {currentDevice?.verified === false ? "not verified" : "verified"}
-                        </p>
-                        <button
-                            type="button"
-                            onClick={() => {
-                                if (
-                                    window.confirm(
-                                        "Sign out of Sub-Etha on this device? Local message and encryption stores will be cleared.",
-                                    )
-                                ) {
-                                    void onLogout();
-                                }
-                            }}
-                        >
-                            Sign out
-                        </button>
-                    </div>
+                            <div className={classes("settings-row settings-row--device")}>
+                                <span>This device</span>
+                                <p>
+                                    {currentDevice?.deviceId ?? snapshot.deviceId} ·{" "}
+                                    {currentDevice?.verified === false
+                                        ? "not verified"
+                                        : "verified"}
+                                </p>
+                                <button
+                                    type="button"
+                                    onClick={() => {
+                                        if (
+                                            window.confirm(
+                                                "Sign out of Sub-Etha on this device? Local message and encryption stores will be cleared.",
+                                            )
+                                        ) {
+                                            void onLogout();
+                                        }
+                                    }}
+                                >
+                                    Sign out
+                                </button>
+                            </div>
+                        </>
+                    )}
                 </section>
             </div>
             {notice ? (

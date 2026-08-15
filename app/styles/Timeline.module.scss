@@ -288,6 +288,18 @@
     text-align: center;
 }
 
+/* The placeholder is the frame's whole area, so the padding that centres a
+   spinner is dropped and the well shadow moves onto the recess itself. */
+.media-loading--skeleton {
+    padding: 0;
+    box-shadow: var(--well-shadow);
+}
+
+.media-loading--skeleton > .skeleton {
+    width: 100%;
+    height: 100%;
+}
+
 .media-loading--audio,
 .media-error--audio {
     width: min(520px, 100%);
@@ -1103,7 +1115,7 @@
 
 .message-row__main > header strong {
     color: var(--author-accent);
-    font: 650 14px/1 var(--font-ui);
+    font: var(--name-weight) 14px/1 var(--font-ui);
     letter-spacing: 0.02em;
     text-transform: none;
 }
@@ -1124,7 +1136,7 @@
     color: var(--ink);
     font-family: var(--font-display);
     font-size: 16px;
-    font-weight: 300;
+    font-weight: var(--body-weight);
     line-height: 1.72;
     letter-spacing: 0;
     text-wrap: pretty;
@@ -1227,6 +1239,137 @@
 .image-attachment,
 .media-frame--reserved {
     max-width: min(680px, 100%);
+}
+
+/* Motion ------------------------------------------------------------------- */
+
+/*
+ * A message takes its place rather than appearing in it: it rises the height of
+ * one line while fading up, and its speaker's rule grows down from the hairline
+ * above at the same time, so the eye follows the rule into the new block. Both
+ * move only opacity and transform, so an arrival never changes the geometry the
+ * history anchor is holding.
+ */
+@keyframes message-in {
+    from {
+        opacity: 0;
+        transform: translateY(14px);
+    }
+
+    to {
+        opacity: 1;
+        transform: none;
+    }
+}
+
+@keyframes marker-grow {
+    from {
+        transform: scaleY(0);
+    }
+
+    to {
+        transform: scaleY(1);
+    }
+}
+
+.message-row[data-enter="in"] {
+    animation: message-in var(--motion-slow) var(--motion-ease) both;
+}
+
+.message-row[data-enter="in"] .message-row__marker {
+    transform-origin: top;
+    animation: marker-grow var(--motion-slow) var(--motion-ease) both;
+}
+
+/*
+ * A message in flight is held back rather than badged. The dimming carries the
+ * same information as the "Sending…" label beside it, and it resolves on the
+ * block rather than on the row so it cannot fight the entrance animation the
+ * row is running at the same moment.
+ */
+.message-row__main {
+    transition: opacity var(--motion-slow) var(--motion-ease);
+}
+
+.message-row[data-send-state="sending"] .message-row__main {
+    opacity: 0.42;
+}
+
+/* Acknowledge the tap on the chip that was tapped. */
+@keyframes reaction-pop {
+    0% {
+        transform: scale(1);
+    }
+
+    30% {
+        transform: scale(1.28);
+    }
+
+    62% {
+        transform: scale(0.96);
+    }
+
+    100% {
+        transform: scale(1);
+    }
+}
+
+.reaction-list button[data-pop="true"] {
+    animation: reaction-pop calc(var(--motion-slow) + 60ms) var(--motion-ease);
+}
+
+/* Read, but still the place the reader left off. */
+.unread-divider[data-unread-state="read"] {
+    color: var(--ink-muted);
+}
+
+.unread-divider[data-unread-state="read"]::after {
+    background: var(--line);
+}
+
+.unread-divider,
+.unread-divider::after {
+    transition:
+        color var(--motion-slow) var(--motion-ease),
+        background-color var(--motion-slow) var(--motion-ease);
+}
+
+/*
+ * The timeline placeholder is built from the same three custom properties as a
+ * real row — inline padding, time lane, gutter — so its author rule lands on
+ * the timeline's axis and nothing shifts sideways when messages replace it. It
+ * is rendered inside `.timeline` for exactly that reason: the axis and the
+ * lane widths belong to the frame, not to the rows passing through it.
+ */
+.timeline-skeleton {
+    height: 100%;
+    padding-top: 20px;
+    overflow: hidden;
+}
+
+.timeline-skeleton__row {
+    display: grid;
+    grid-template-columns: var(--timeline-time) minmax(0, 1fr);
+    column-gap: var(--timeline-gap);
+    padding: 0 var(--timeline-inline) 36px;
+}
+
+.timeline-skeleton__main {
+    position: relative;
+    width: min(680px, 100%);
+    padding: 18px 0 0;
+    border-top: 1px solid var(--line);
+}
+
+/* The speaker's rule before there is a speaker: same 3px, same overhang onto
+   the axis, drawn in the skeleton tone because the hue is not known yet. */
+.timeline-skeleton__marker {
+    position: absolute;
+    top: 17px;
+    bottom: 0;
+    left: calc(-1 * var(--timeline-gap) - 1px);
+    width: 3px;
+    background: var(--skel);
 }
 
 @media (max-width: 720px) {

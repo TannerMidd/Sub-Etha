@@ -1,7 +1,7 @@
 "use client";
 
 import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
-import { LoaderCircle, RadioTower, RefreshCw, ShieldAlert } from "lucide-react";
+import { RadioTower, RefreshCw, ShieldAlert } from "lucide-react";
 import {
     completeRedirectLogin,
     hasRedirectLoginParameters,
@@ -1697,8 +1697,8 @@ export function SubEthaApp() {
         <main className={classes("boot-screen")} aria-busy="true">
             <BrandMark />
             <div className={classes("tuning-indicator")} aria-live="polite">
-                <span>
-                    <LoaderCircle className={classes("spin")} />
+                <span aria-hidden="true">
+                    <i />
                 </span>
                 <p>Preparing the local session vault and Matrix encryption…</p>
             </div>

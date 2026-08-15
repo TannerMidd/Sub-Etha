@@ -386,24 +386,68 @@ textarea::placeholder {
     margin-top: 20px;
 }
 
+/*
+ * Boot is a hairline, not a spinner. A boxed spinner asks to be watched; a rule
+ * filling under the wordmark says the same thing in the shell's own vocabulary
+ * and stops competing with the mark above it.
+ */
 .tuning-indicator {
-    max-width: 440px;
-    text-align: center;
+    width: min(320px, 60vw);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 38px;
     color: var(--ink-soft);
+    text-align: center;
 }
 
 .tuning-indicator > span {
-    width: 58px;
-    height: 58px;
-    margin: auto;
-    display: grid;
-    place-items: center;
-    border: 1px solid var(--line-strong);
+    width: 100%;
+    height: 1px;
+    display: block;
+    overflow: hidden;
+    background: var(--line);
 }
 
-.tuning-indicator svg {
-    width: 23px;
-    color: var(--signal);
+/*
+ * The fill runs on a loop rather than the reference's single pass. The
+ * reference could resolve in a known 1100ms because it was staged; a real boot
+ * restores a vault and starts a Matrix client on an unknown clock, and a bar
+ * that reaches full and stays there claims a completion that has not happened.
+ * Filling from the left and emptying to the right keeps the reference's motion
+ * while staying honestly indeterminate.
+ */
+.tuning-indicator > span > i {
+    display: block;
+    width: 100%;
+    height: 1px;
+    background: var(--signal);
+    animation: boot-bar 1600ms var(--motion-ease) infinite;
+}
+
+@keyframes boot-bar {
+    0% {
+        transform: scaleX(0);
+        transform-origin: left;
+    }
+    50% {
+        transform: scaleX(1);
+        transform-origin: left;
+    }
+    50.01% {
+        transform: scaleX(1);
+        transform-origin: right;
+    }
+    100% {
+        transform: scaleX(0);
+        transform-origin: right;
+    }
+}
+
+.tuning-indicator p {
+    margin: 0;
+    color: var(--ink-muted);
+    font: 300 12px/1 var(--font-ui);
 }
 
 .highlight-badge {
@@ -557,6 +601,42 @@ textarea::placeholder {
 
 .empty-orbit {
     display: none;
+}
+
+/*
+ * A skeleton is a shape, not a spinner. It claims the space the real content
+ * will occupy so nothing jumps when the content lands, and sweeps a highlight
+ * across itself so the wait reads as work rather than as a stall. The sweep is
+ * an animated background position rather than a moving child element, so a
+ * screenful of bars composites as cheaply as one.
+ *
+ * The sweep runs dark-on-light or light-on-dark according to `--skel-hi`, which
+ * each theme sets in the direction its ground allows.
+ */
+@keyframes shimmer {
+    from {
+        background-position: 130% 0;
+    }
+    to {
+        background-position: -130% 0;
+    }
+}
+
+.skeleton {
+    display: block;
+    border-radius: 1px;
+    background: linear-gradient(90deg, var(--skel) 0%, var(--skel-hi) 48%, var(--skel) 92%);
+    background-size: 260% 100%;
+    animation: shimmer 2.6s var(--motion-ease) infinite;
+}
+
+/*
+ * A skeleton group stands in for content that is not there yet, so it is
+ * announced once as busy and its individual bars are left out of the tree
+ * entirely — a reader gains nothing from six unlabelled rectangles.
+ */
+.skeleton-group {
+    display: block;
 }
 
 @keyframes typing-dot {

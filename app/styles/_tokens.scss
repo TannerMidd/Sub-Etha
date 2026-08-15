@@ -23,24 +23,39 @@
 }
 
 /*
- * Lamplight — the light palette from `Sub-Etha Zen.dc.html` (2a). Paper as it
- * looks under a lamp rather than as a screen imitates it: the ground sits ten
- * points below white, ink stops short of black, and the speaker hues read as
- * dyes soaked into the sheet. Held in a mixin because the same palette has to
- * serve both the explicit `light` theme and `system` under a light OS.
+ * Paper — the light palette rebuilt as a sheet rather than as a dark room run
+ * in reverse. Lamplight, the palette this replaces, was one flat plane the same
+ * way the dark theme is one flat plane. A sheet is not flat: it has a ground, a
+ * slightly shaded raised edge and a deeper well, it carries fibre, and its
+ * edges are pressed rather than ruled. Those four ideas are what the tonal
+ * planes, `--grain`, and the three shadow tokens below encode.
+ *
+ * Held in a mixin because the same palette has to serve both the explicit
+ * `light` theme and `system` under a light OS.
  */
-@mixin lamplight {
+@mixin paper {
     color-scheme: light;
-    --paper: #e6d8bd;
-    --paper-raised: #e6d8bd;
-    --paper-deep: #ddcfb2;
-    --ink: #2b2218;
-    --ink-soft: #4c4032;
-    --ink-muted: #5e5140;
-    --ink-quiet: #5c503f;
-    --line: #cdb994;
-    --line-strong: #b9a077;
-    --control-line: #b9a077;
+    /*
+     * Three tonal planes, not one. `--paper` is the reading ground, the sheet
+     * itself; `--paper-raised` is the index beside it, a half-step back; and
+     * `--paper-deep` is a well pressed into the sheet — a media placeholder, an
+     * inset field. The dark theme has no equivalent because an unlit plane
+     * cannot be shaded, only outlined.
+     */
+    --paper: #f4efe3;
+    --paper-raised: #eae2d1;
+    --paper-deep: #ded4be;
+    --plane-raised: #eae2d1;
+    --plane-deep: #ded4be;
+    --ink: #2a231a;
+    --ink-soft: #5c5142;
+    /* Muted copy still needs AA contrast on the deepest paper well. */
+    --ink-muted: #63594b;
+    --ink-quiet: #3f382d;
+    --line: #dbd0b9;
+    --line-strong: #c6b79a;
+    --rule-strong: #c6b79a;
+    --control-line: #c6b79a;
     /*
      * The accent carries three weights in the reference. `--signal` is the text
      * weight, `--signal-line` the border on an outlined signal control and the
@@ -48,26 +63,57 @@
      * unread label — a full-width rule needs far less presence than a word. The
      * dark palette collapses signal and line into one value; paper does not.
      */
-    --signal: #6b4708;
-    --signal-line: #8a6520;
-    --signal-rule: #b8944d;
-    --signal-dark: #533607;
-    --signal-hover: #533607;
+    --signal: #8a5a12;
+    --signal-line: #a5762c;
+    --signal-rule: #cdb282;
+    --signal-dark: #6d4710;
+    --signal-hover: #6d4710;
     --shell-accent: #2f5878;
-    --on-signal: #e6d8bd;
+    --on-signal: #f4efe3;
     --teal: #2c6047;
     --teal-strong: #1f4a35;
     --teal-soft: color-mix(in srgb, #2c6047 12%, transparent);
-    --yellow: #6b4708;
-    --participant-steel: #1a5580;
-    --participant-sage: #1c6244;
-    --participant-orchid: #6b3a67;
-    --participant-clay: #8d4318;
-    --participant-rose: #803a45;
-    --focus: #6b4708;
+    --yellow: #8a5a12;
+    --participant-steel: #1d5c86;
+    --participant-sage: #23664a;
+    --participant-orchid: #71406d;
+    --participant-clay: #94491d;
+    --participant-rose: #86404a;
+    --focus: #8a5a12;
     /* Paper needs less veil than a dark room, and a warm one so the sheet
        underneath still reads as paper rather than turning grey. */
-    --scrim: rgb(43 34 24 / 55%);
+    --scrim: rgb(42 35 26 / 55%);
+    /*
+     * A skeleton on paper is a highlight, not a shadow: the sweep runs brighter
+     * than the ground it crosses, the way light moves over a blank sheet. The
+     * dark theme inverts that relationship and lifts the ground instead.
+     */
+    --skel: rgb(42 35 26 / 5.5%);
+    --skel-hi: rgb(255 253 246 / 75%);
+    /*
+     * Pressed edges. `--edge-shadow` is the index lifting off the sheet beside
+     * it, `--sheet-shadow` a header creased into the page, and `--well-shadow`
+     * the inside of a recess. All three are stated as `none` on the dark plane,
+     * where there is no light to cast them.
+     */
+    --edge-shadow: 14px 0 30px -22px rgb(74 58 32 / 55%), 1px 0 0 0 rgb(150 132 98 / 28%);
+    --sheet-shadow: 0 1px 0 0 rgb(255 253 246 / 70%), 0 -1px 0 0 rgb(120 104 74 / 7%);
+    --well-shadow: inset 0 1px 2px rgb(110 94 64 / 16%), inset 0 -1px 0 rgb(255 253 246 / 60%);
+    /*
+     * Fibre. Fractal noise at low amplitude, tiled and multiplied over the
+     * sheet, so that flat fills pick up the tooth of paper instead of reading
+     * as printed colour. Inline rather than a file so the sheet never renders
+     * smooth first and grainy a moment later.
+     */
+    --grain: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='4' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='180' height='180' filter='url(%23n)' opacity='0.42'/%3E%3C/svg%3E");
+    --grain-op: 0.5;
+    /*
+     * Ink on a light ground needs more weight than light on a dark one to hold
+     * the same apparent colour, and a name set against it needs less. The two
+     * weights move in opposite directions for that reason.
+     */
+    --body-weight: 350;
+    --name-weight: 600;
 }
 
 :root,
@@ -76,6 +122,15 @@
     --paper: #191614;
     --paper-raised: #191614;
     --paper-deep: #151210;
+    /*
+     * An unlit plane cannot be shaded, so the shell reads every surface back to
+     * the one ground and separates them with rules instead. Paper overrides all
+     * three because a sheet genuinely has depth. Stated here rather than in the
+     * shell so the theme, not the layout, decides how many planes it has.
+     */
+    --plane-raised: var(--paper);
+    --plane-deep: var(--paper);
+    --rule-strong: var(--line);
     --ink: #eae5dd;
     --ink-soft: #8f8880;
     --ink-muted: #7a736c;
@@ -114,9 +169,26 @@
     --shadow: none;
     --shadow-tight: none;
     --surface-inset: none;
-    --motion-fast: 120ms;
-    --motion-standard: 180ms;
-    --motion-ease: cubic-bezier(0.2, 0.7, 0.2, 1);
+    --edge-shadow: none;
+    --sheet-shadow: none;
+    --well-shadow: none;
+    --grain: none;
+    --grain-op: 0;
+    --body-weight: 300;
+    --name-weight: 650;
+    --skel: rgb(234 229 221 / 5.5%);
+    --skel-hi: rgb(234 229 221 / 13%);
+    /*
+     * Three steps rather than two. The old pair had no room between a control
+     * tinting under the cursor and a message taking its place in the timeline,
+     * so arrivals were quick enough to register as a jump. `--motion-slow`
+     * gives entrances somewhere to live, and the shared ease decelerates harder
+     * than the old curve so a row settles rather than stopping dead.
+     */
+    --motion-fast: 160ms;
+    --motion-standard: 280ms;
+    --motion-slow: 460ms;
+    --motion-ease: cubic-bezier(0.22, 0.61, 0.36, 1);
     --font-ui: "Commissioner Variable", Commissioner, system-ui, sans-serif;
     --font-display: "Literata Variable", Literata, Georgia, serif;
     --font-label: "Commissioner Variable", Commissioner, system-ui, sans-serif;
@@ -128,12 +200,12 @@
 }
 
 :root[data-theme="light"] {
-    @include lamplight;
+    @include paper;
 }
 
 @media (prefers-color-scheme: light) {
     :root[data-theme="system"] {
-        @include lamplight;
+        @include paper;
     }
 }
 
