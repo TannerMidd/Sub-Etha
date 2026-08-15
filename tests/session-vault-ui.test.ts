@@ -242,6 +242,16 @@ test("app cleanup ordering preserves local finality and partial migration recove
         source.indexOf("const handleInvalidated ="),
         source.indexOf("try {", source.indexOf("const handleInvalidated =")),
     );
+    const initialRouteScrub = source.slice(
+        source.indexOf("authenticationCallbackPendingRef.current = hasRedirectLoginParameters"),
+        source.indexOf(
+            "    }, []);",
+            source.indexOf("authenticationCallbackPendingRef.current = hasRedirectLoginParameters"),
+        ),
+    );
+    const callbackBoot = source.slice(
+        source.indexOf("const callbackPending = hasRedirectLoginParameters"),
+    );
 
     assert.ok(cleanup.indexOf("beginRouteScrub();") < cleanup.indexOf("cleanupSessionDatabases"));
     assert.ok(
@@ -311,7 +321,16 @@ test("app cleanup ordering preserves local finality and partial migration recove
     assert.match(source, /persistRemoteRefreshWarning\(\)/);
     assert.match(source, /currentState\.deviceEnrollment\.prfOutput\.fill\(0\)/);
     assert.match(source, /const pendingUnsealedSessionRef = useRef<PersistedMatrixSession/);
+    assert.match(source, /const authenticationCallbackPendingRef = useRef\(false\)/);
     assert.match(source, /const authenticationInFlightRef = useRef\(false\)/);
+    assert.ok(
+        initialRouteScrub.indexOf("authenticationCallbackPendingRef.current =") <
+            initialRouteScrub.indexOf("scrubSensitiveHistoryEntry();"),
+    );
+    assert.match(
+        initialRouteScrub,
+        /routeScrubActive\.current &&[\s\S]*!authenticationCallbackPendingRef\.current/,
+    );
     assert.match(source, /const vaultOperationAbortRef = useRef<AbortController/);
     assert.match(
         source,
@@ -323,7 +342,15 @@ test("app cleanup ordering preserves local finality and partial migration recove
     );
     assert.match(
         source,
-        /callbackParameters\.has\("code"\)[\s\S]*callbackParameters\.has\("loginToken"\)[\s\S]*completeRedirectLogin\(\)/,
+        /hasRedirectLoginParameters\([\s\S]*const redirectLogin = completeRedirectLogin\(\)/,
+    );
+    assert.match(
+        callbackBoot,
+        /const redirectLogin = completeRedirectLogin\(\);[\s\S]*authenticationCallbackPendingRef\.current = false[\s\S]*await redirectLogin/,
+    );
+    assert.match(
+        callbackBoot,
+        /hasRedirectLoginParameters\([\s\S]*\)\) \{\s*try \{\s*scrubRoute\(\);/,
     );
     assert.match(
         source,

@@ -458,11 +458,9 @@ export async function beginOAuth(baseUrl: string): Promise<void> {
     window.location.assign(authorizationUrl);
 }
 
-function readCallbackParameters(): URLSearchParams {
-    const query = new URLSearchParams(window.location.search);
-    const fragment = new URLSearchParams(
-        window.location.hash.startsWith("#") ? window.location.hash.slice(1) : "",
-    );
+export function parseRedirectLoginParameters(search: string, hash: string): URLSearchParams {
+    const query = new URLSearchParams(search);
+    const fragment = new URLSearchParams(hash.startsWith("#") ? hash.slice(1) : "");
 
     for (const [key, value] of fragment) {
         if (!query.has(key)) {
@@ -473,12 +471,19 @@ function readCallbackParameters(): URLSearchParams {
     return query;
 }
 
+export function hasRedirectLoginParameters(search: string, hash: string): boolean {
+    const params = parseRedirectLoginParameters(search, hash);
+    const loginToken = params.get("loginToken") ?? params.get("login_token");
+
+    return Boolean(loginToken || params.get("code") || params.get("error"));
+}
+
 export function sanitizedCallbackPath(pathname: string, hash: string): string {
     return `${pathname}${hash.startsWith("#/room/") ? hash : ""}`;
 }
 
 export async function completeRedirectLogin(): Promise<PersistedMatrixSession | null> {
-    const params = readCallbackParameters();
+    const params = parseRedirectLoginParameters(window.location.search, window.location.hash);
     const loginToken = params.get("loginToken") ?? params.get("login_token");
     const code = params.get("code");
 

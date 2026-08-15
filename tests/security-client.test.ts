@@ -19,8 +19,10 @@ import {
     LEGACY_SSO_STATE_PARAM,
     OAuthPostGrantRevocationUnconfirmedError,
     completeRedirectLogin,
+    hasRedirectLoginParameters,
     legacySsoRedirectUrl,
     normalizeHomeserverInput,
+    parseRedirectLoginParameters,
     revokeIssuedOAuthTokensWithinDeadline,
     validateLegacySsoCallback,
 } from "../lib/matrix/auth";
@@ -195,6 +197,29 @@ test("legacy SSO callbacks are bound to a fresh initiating transaction", () => {
 
     assert.equal(redirect.origin, "https://sub-etha-matrix.vercel.app");
     assert.equal(redirect.searchParams.get(LEGACY_SSO_STATE_PARAM), pending.state);
+});
+
+test("redirect callback parsing preserves query precedence and ignores ordinary room hashes", () => {
+    const parsed = parseRedirectLoginParameters(
+        "?code=query-code&state=query-state",
+        "#code=fragment-code&state=fragment-state&loginToken=fragment-token",
+    );
+
+    assert.equal(parsed.get("code"), "query-code");
+    assert.equal(parsed.get("state"), "query-state");
+    assert.equal(parsed.get("loginToken"), "fragment-token");
+
+    assert.equal(hasRedirectLoginParameters("", "#code=fragment-code"), true);
+    assert.equal(hasRedirectLoginParameters("", "#loginToken=fragment-token"), true);
+    assert.equal(hasRedirectLoginParameters("", "#error=access_denied"), true);
+    assert.equal(hasRedirectLoginParameters("?code=query-code", "#code=fragment-code"), true);
+    assert.equal(hasRedirectLoginParameters("?code=", "#code=fragment-code"), false);
+    assert.equal(hasRedirectLoginParameters("?loginToken=", "#loginToken=fragment-token"), false);
+    assert.equal(hasRedirectLoginParameters("?loginToken=&login_token=snake-token", ""), false);
+    assert.equal(hasRedirectLoginParameters("?code=", ""), false);
+    assert.equal(hasRedirectLoginParameters("?state=state-only", ""), false);
+    assert.equal(hasRedirectLoginParameters("", "#/room/%21safe%3Aexample"), false);
+    assert.equal(hasRedirectLoginParameters("", "#/room/%21safe%3Aexample?code=room-code"), false);
 });
 
 test("invalid and crossed auth callbacks clear state and URL data before token exchange", async () => {

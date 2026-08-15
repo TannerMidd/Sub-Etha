@@ -4,6 +4,7 @@ import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react"
 import { LoaderCircle, RadioTower, RefreshCw, ShieldAlert } from "lucide-react";
 import {
     completeRedirectLogin,
+    hasRedirectLoginParameters,
     humanizeMatrixError,
     OAuthPostGrantRevocationUnconfirmedError,
 } from "@/lib/matrix/auth";
@@ -135,6 +136,7 @@ export function SubEthaApp() {
     const pendingServiceRef = useRef<MatrixService | null>(null);
     const pendingLeaseRef = useRef<SessionLease | null>(null);
     const pendingUnsealedSessionRef = useRef<PersistedMatrixSession | null>(null);
+    const authenticationCallbackPendingRef = useRef(false);
     const authenticationInFlightRef = useRef(false);
     const vaultOperationAbortRef = useRef<AbortController | null>(null);
     const appStateRef = useRef<AppState>(appState);
@@ -190,6 +192,11 @@ export function SubEthaApp() {
     }, []);
 
     useEffect(() => {
+        authenticationCallbackPendingRef.current = hasRedirectLoginParameters(
+            window.location.search,
+            window.location.hash,
+        );
+
         try {
             routeScrubActive.current = sessionStorage.getItem(ROUTE_SCRUB_GUARD) === "1";
         } catch {
@@ -201,6 +208,7 @@ export function SubEthaApp() {
 
             if (
                 routeScrubActive.current &&
+                !authenticationCallbackPendingRef.current &&
                 (window.location.hash.length > 0 || state.subEthaView !== undefined)
             ) {
                 scrubRoute();
@@ -751,20 +759,28 @@ export function SubEthaApp() {
 
         void (async () => {
             const operation = advanceOperation();
-            const callbackParameters = new URLSearchParams([
-                ...new URLSearchParams(window.location.search),
-                ...new URLSearchParams(
-                    window.location.hash.startsWith("#") ? window.location.hash.slice(1) : "",
-                ),
-            ]);
+            const callbackPending = hasRedirectLoginParameters(
+                window.location.search,
+                window.location.hash,
+            );
 
-            authenticationInFlightRef.current =
-                callbackParameters.has("code") ||
-                callbackParameters.has("loginToken") ||
-                callbackParameters.has("login_token");
+            authenticationCallbackPendingRef.current = callbackPending;
+            authenticationInFlightRef.current = callbackPending;
+            const redirectLogin = completeRedirectLogin();
+
+            authenticationCallbackPendingRef.current = false;
+
+            if (hasRedirectLoginParameters(window.location.search, window.location.hash)) {
+                try {
+                    scrubRoute();
+                } catch {
+                    // completeRedirectLogin will preserve its original sanitization failure for
+                    // the boot error path if the fallback history write is unavailable too.
+                }
+            }
 
             try {
-                const redirectSession = await completeRedirectLogin();
+                const redirectSession = await redirectLogin;
 
                 if (cancelled || operation !== operationGeneration.current) {
                     if (redirectSession) {
