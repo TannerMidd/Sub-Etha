@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import { afterEach, beforeEach, test } from "node:test";
 import {
     IDBFactory,
@@ -283,6 +284,22 @@ function delayNextRecoveryDerivation(): {
         },
     };
 }
+
+test("AES helpers retain caller AAD ownership while clearing their copies", async () => {
+    const source = await readFile(
+        new URL("../lib/security/session-vault-crypto.ts", import.meta.url),
+        "utf8",
+    );
+
+    assert.equal(
+        (source.match(/const ownedAdditionalData = new Uint8Array\(additionalData\);/g) ?? [])
+            .length,
+        2,
+    );
+    assert.equal((source.match(/additionalData: ownedAdditionalData/g) ?? []).length, 2);
+    assert.equal((source.match(/ownedAdditionalData\.fill\(0\)/g) ?? []).length, 2);
+    assert.doesNotMatch(source, /additionalData\.fill\(0\)/);
+});
 
 function session(suffix = "original"): PersistedMatrixSession {
     return createSession({

@@ -1,8 +1,9 @@
 # ADR-0019: Keep push privacy-minimal and PWA caching conservative
 
-- Status: Accepted
+- Status: Accepted for push/privacy scope; PWA caching scope superseded by ADR-0021
 - Date: 2026-08-11
 - Supersedes: ADR-0008, the push portion of ADR-0009, and ADR-0010
+- Superseded by: ADR-0021 (PWA caching portion only)
 
 ## Context
 
@@ -36,3 +37,7 @@ Provider lists, route paths, cache names, precached assets, timeouts, rates, and
 - Matrix and Web Push provide an end-to-end encrypted rich-notification design with equivalent metadata privacy.
 - Offline room history becomes a product requirement.
 - Push scale requires a durable queue or a separate service tier.
+
+## Relationship update
+
+ADR-0021 supersedes the PWA caching portion of this record. The service-worker caching paragraph above is retained as historical rationale; current behavior does not write or replay Cache Storage entries or provide an offline application shell. The privacy-minimal push decision remains accepted and active.

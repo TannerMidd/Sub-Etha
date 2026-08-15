@@ -6,8 +6,10 @@ import {
     clearAbandonedMatrixPusherWarning,
     enablePush,
     forgetLocalPushState,
+    hasBrowserPushArtifacts,
     hasLocalPushStateForCleanup,
     readAbandonedMatrixPusherWarning,
+    refreshPushState,
 } from "../lib/matrix/notifications";
 
 const DELIVERY = "delivery-old";
@@ -42,9 +44,13 @@ interface CleanupFixture {
     removedPushers: string[];
     setGetSubscription: (operation: () => Promise<PushSubscription | null>) => void;
     setGetRegistration: (operation: () => Promise<ServiceWorkerRegistration | undefined>) => void;
+    setActiveWorker: (worker: ServiceWorker | null) => void;
+    setGetNotifications: (operation: () => Promise<Notification[]>) => void;
     setIndexedDB: (factory: IDBFactory) => void;
     setGateway: (operation: (signal?: AbortSignal) => Promise<Response>) => void;
-    setWorkerReply: (operation: (port?: MessagePort) => void) => void;
+    setWorkerReply: (
+        operation: (message: Record<string, unknown>, port?: MessagePort) => void,
+    ) => void;
     unsubscribeCalls: () => number;
     closedNotifications: () => number;
 }
@@ -56,7 +62,26 @@ function installFixture(): CleanupFixture {
     let lockTail: Promise<unknown> = Promise.resolve();
     let getSubscription = async (): Promise<PushSubscription | null> => subscription;
     let getRegistration = async (): Promise<ServiceWorkerRegistration | undefined> => registration;
-    let replyToWorker = (port?: MessagePort) => port?.postMessage({ ok: true, cleared: true });
+
+    let replyToWorker = (message: Record<string, unknown>, port?: MessagePort) => {
+        if (message.type === "READ_PUSH_CONFIG") {
+            port?.postMessage({ ok: true, protocolVersion: 2, config: null });
+
+            return;
+        }
+
+        port?.postMessage({ ok: true, protocolVersion: 2, cleared: true });
+    };
+
+    let activeWorker: ServiceWorker | null;
+    let getNotifications = async () =>
+        [
+            {
+                close: () => {
+                    closedNotifications += 1;
+                },
+            },
+        ] as unknown as Notification[];
     const gatewayDeletes: string[] = [];
     const removedPushers: string[] = [];
     let gateway: (signal?: AbortSignal) => Promise<Response> = async () =>
@@ -73,27 +98,27 @@ function installFixture(): CleanupFixture {
         },
     } as PushSubscription;
     const worker = {
-        postMessage(_message: unknown, transfer?: Transferable[]) {
+        postMessage(message: unknown, transfer?: Transferable[]) {
             const port = transfer?.[0] as MessagePort | undefined;
 
-            replyToWorker(port);
+            replyToWorker(message as Record<string, unknown>, port);
         },
     } as ServiceWorker;
+
+    activeWorker = worker;
     const registration = {
-        active: worker,
+        get active() {
+            return activeWorker;
+        },
         pushManager: {
             getSubscription: () => getSubscription(),
         },
-        getNotifications: async () => [
-            {
-                close: () => {
-                    closedNotifications += 1;
-                },
-            },
-        ],
+        getNotifications: () => getNotifications(),
     } as unknown as ServiceWorkerRegistration;
     const browserWindow = {
-        setTimeout: (callback: TimerHandler) => globalThis.setTimeout(callback, 5),
+        // Keep deliberately hung operations bounded without turning ordinary fake-IndexedDB
+        // callbacks into scheduler-race failures when the complete test suite runs in parallel.
+        setTimeout: (callback: TimerHandler) => globalThis.setTimeout(callback, 100),
         clearTimeout: (handle: number) => globalThis.clearTimeout(handle),
         indexedDB: new IDBFactory(),
     } as unknown as Window & typeof globalThis;
@@ -164,6 +189,12 @@ function installFixture(): CleanupFixture {
         },
         setGetRegistration: (operation) => {
             getRegistration = operation;
+        },
+        setActiveWorker: (nextWorker) => {
+            activeWorker = nextWorker;
+        },
+        setGetNotifications: (operation) => {
+            getNotifications = operation;
         },
         setIndexedDB: (factory) => {
             Object.defineProperty(browserWindow, "indexedDB", {
@@ -305,8 +336,32 @@ test("a rejected gateway and missing service-worker acknowledgement remain retry
     const workerResult = await forgetLocalPushState();
 
     assert.equal(workerResult.complete, false);
+    assert.equal(workerResult.durable, true);
     assert.equal(workerFixture.unsubscribeCalls(), 0);
-    assert.equal(pendingCleanup(workerFixture.storage).subscriptionDone, false);
+    assert.equal(workerFixture.storage.getItem("sub-etha-push-cleanup-v1"), null);
+    assert.ok(workerFixture.storage.getItem("sub-etha-push-cleanup-intent-v1"));
+});
+
+test("a failed cleanup-intent write does not overclaim durability on worker probe failure", async () => {
+    const fixture = installFixture();
+    const write = fixture.storage.setItem.bind(fixture.storage);
+
+    fixture.storage.setItem = (key, value) => {
+        if (key === "sub-etha-push-cleanup-intent-v1") {
+            throw new Error("cleanup intent write rejected");
+        }
+
+        write(key, value);
+    };
+
+    fixture.setWorkerReply(() => undefined);
+
+    const result = await forgetLocalPushState();
+
+    assert.equal(result.complete, false);
+    assert.equal(result.durable, false);
+    assert.equal(fixture.unsubscribeCalls(), 0);
+    assert.equal(fixture.storage.getItem("sub-etha-push-cleanup-v1"), null);
 });
 
 test("an absent service-worker registration removes orphaned push storage", async () => {
@@ -317,6 +372,39 @@ test("an absent service-worker registration removes orphaned push storage", asyn
 
     assert.equal(result.complete, true);
     assert.equal(fixture.storage.getItem("sub-etha-push-cleanup-v1"), null);
+});
+
+test("an inactive registration is inspected without worker messaging", async () => {
+    const fixture = installFixture();
+    let workerMessages = 0;
+
+    fixture.storage.clear();
+    fixture.setActiveWorker(null);
+    fixture.setGetSubscription(async () => null);
+    fixture.setGetNotifications(async () => []);
+    fixture.setWorkerReply(() => {
+        workerMessages += 1;
+    });
+
+    assert.equal(await hasBrowserPushArtifacts(), false);
+    assert.equal(workerMessages, 0);
+});
+
+test("an inactive registration with an orphaned push database remains fail-closed", async () => {
+    const fixture = installFixture();
+
+    fixture.storage.clear();
+    fixture.setActiveWorker(null);
+    fixture.setGetSubscription(async () => null);
+    fixture.setGetNotifications(async () => []);
+    await writeOrphanedPushConfig(fixture.indexedDB, {
+        deliveryKey: ORPHAN_DELIVERY,
+        generation: ORPHAN_GENERATION,
+        managementKey: ORPHAN_MANAGEMENT,
+        publicKey: "AQID",
+    });
+
+    assert.equal(await hasBrowserPushArtifacts(), true);
 });
 
 test("orphaned IndexedDB-only credentials are journaled, revoked, and deleted", async () => {
@@ -706,8 +794,13 @@ function installPushSetupFixture() {
     let pusherOperation: (pushKey: string) => Promise<void> = async () => undefined;
     let permissionOperation: () => Promise<void> = async () => undefined;
     let pausedLookup: { started: () => void; wait: Promise<void> } | undefined;
-    let workerConfig: { deliveryKey: string; managementKey: string; generation: string } | null =
-        null;
+    let workerProtocolVersion: number | undefined = 2;
+    let workerConfig: {
+        deliveryKey: string;
+        managementKey: string;
+        generation: string;
+        legacyGeneration?: boolean;
+    } | null = null;
     const subscription = {
         endpoint: "https://push.example/setup",
         options: { applicationServerKey: Uint8Array.of(1, 2, 3).buffer },
@@ -743,15 +836,58 @@ function installPushSetupFixture() {
                     deliveryKey: String(message.deliveryKey),
                     managementKey: String(message.managementKey),
                     generation: String(message.generation),
+                    legacyGeneration: false,
                 };
                 operationOrder.push("worker-set");
-                reply?.postMessage({ ok: true });
+                reply?.postMessage({
+                    ok: true,
+                    ...(workerProtocolVersion === undefined
+                        ? {}
+                        : { protocolVersion: workerProtocolVersion }),
+                });
 
                 return;
             }
 
             if (message.type === "READ_PUSH_CONFIG") {
-                reply?.postMessage({ ok: true, config: workerConfig });
+                reply?.postMessage({
+                    ok: true,
+                    ...(workerProtocolVersion === undefined
+                        ? {}
+                        : { protocolVersion: workerProtocolVersion }),
+                    config: workerConfig,
+                });
+
+                return;
+            }
+
+            if (message.type === "MIGRATE_PUSH_CONFIG") {
+                if (
+                    workerConfig &&
+                    workerConfig.managementKey === message.managementKey &&
+                    (workerConfig.generation === workerConfig.managementKey ||
+                        workerConfig.legacyGeneration === true)
+                ) {
+                    workerConfig = {
+                        ...workerConfig,
+                        generation: String(message.generation),
+                        legacyGeneration: true,
+                    };
+                    reply?.postMessage({
+                        ok: true,
+                        ...(workerProtocolVersion === undefined
+                            ? {}
+                            : { protocolVersion: workerProtocolVersion }),
+                        config: workerConfig,
+                    });
+                } else {
+                    reply?.postMessage({
+                        ok: false,
+                        ...(workerProtocolVersion === undefined
+                            ? {}
+                            : { protocolVersion: workerProtocolVersion }),
+                    });
+                }
 
                 return;
             }
@@ -766,7 +902,13 @@ function installPushSetupFixture() {
                     workerConfig = null;
                 }
 
-                reply?.postMessage({ ok: true, cleared });
+                reply?.postMessage({
+                    ok: true,
+                    ...(workerProtocolVersion === undefined
+                        ? {}
+                        : { protocolVersion: workerProtocolVersion }),
+                    cleared,
+                });
             }
         },
     } as ServiceWorker;
@@ -950,6 +1092,19 @@ function installPushSetupFixture() {
         setGatewayPostMode: (value: GatewayPostMode) => {
             gatewayPostMode = value;
         },
+        setWorkerProtocolVersion: (value: number | undefined) => {
+            workerProtocolVersion = value;
+        },
+        setWorkerConfig: (
+            config: {
+                deliveryKey: string;
+                managementKey: string;
+                generation: string;
+                legacyGeneration?: boolean;
+            } | null,
+        ) => {
+            workerConfig = config;
+        },
         setPermissionOperation: (operation: () => Promise<void>) => {
             permissionOperation = operation;
         },
@@ -975,6 +1130,106 @@ test("fresh enrollment installs provisional generation before a pending challeng
             fixture.operationOrder.indexOf("gateway-post"),
     );
     assert.equal(fixture.storage.getItem("sub-etha-push-cleanup-v1"), null);
+});
+
+test("a worker without protocol-v2 acknowledgement leaves push lifecycle untouched", async () => {
+    const fixture = installPushSetupFixture();
+
+    fixture.setWorkerProtocolVersion(undefined);
+
+    await assert.rejects(enablePush(fixture.service), /service-worker update/i);
+    assert.equal(fixture.gatewayPosts.length, 0);
+    assert.equal(fixture.matrixPushers.length, 0);
+    assert.equal(fixture.operationOrder.includes("worker-set"), false);
+    assert.equal(fixture.storage.getItem("sub-etha-push-cleanup-v1"), null);
+    assert.equal(fixture.storage.getItem("sub-etha-push-management-key"), null);
+});
+
+test("refresh reports update-required without clearing an existing enrollment", async () => {
+    const fixture = installPushSetupFixture();
+
+    fixture.storage.setItem("sub-etha-push-delivery-key", "delivery-existing");
+    fixture.storage.setItem("sub-etha-push-management-key", "management-existing");
+    fixture.storage.setItem("sub-etha-push-generation", "generation-existing");
+    fixture.setWorkerProtocolVersion(undefined);
+
+    const state = await refreshPushState(fixture.service);
+
+    assert.equal(state.enabled, false);
+    assert.match(state.error ?? "", /service-worker update/i);
+    assert.equal(fixture.storage.getItem("sub-etha-push-delivery-key"), "delivery-existing");
+    assert.equal(fixture.storage.getItem("sub-etha-push-management-key"), "management-existing");
+    assert.equal(fixture.storage.getItem("sub-etha-push-cleanup-v1"), null);
+    assert.equal(fixture.gatewayPosts.length, 0);
+});
+
+test("refresh canonicalizes a raw management-key enrollment before setup commit", async () => {
+    const fixture = installPushSetupFixture();
+    const generation = "b729659b8fdc79ab10f78094c0f4663891ec515af708cbe437c9a1d843564210";
+
+    fixture.storage.setItem("sub-etha-push-delivery-key", "delivery-existing");
+    fixture.storage.setItem("sub-etha-push-management-key", "management-existing");
+    fixture.storage.setItem("sub-etha-push-generation", "management-existing");
+    fixture.setWorkerConfig({
+        deliveryKey: "delivery-existing",
+        managementKey: "management-existing",
+        generation: "management-existing",
+    });
+
+    const state = await refreshPushState(fixture.service);
+
+    assert.equal(state.enabled, true);
+    assert.equal(fixture.storage.getItem("sub-etha-push-generation"), generation);
+    assert.equal(fixture.gatewayPosts[0]?.generation, generation);
+    assert.equal(fixture.storage.getItem("sub-etha-push-cleanup-v1"), null);
+});
+
+test("cleanup uses the canonical fence for a raw management-key enrollment", async () => {
+    const fixture = installPushSetupFixture();
+
+    fixture.storage.setItem("sub-etha-push-delivery-key", "delivery-existing");
+    fixture.storage.setItem("sub-etha-push-management-key", "management-existing");
+    fixture.storage.setItem("sub-etha-push-generation", "management-existing");
+    fixture.setWorkerConfig({
+        deliveryKey: "delivery-existing",
+        managementKey: "management-existing",
+        generation: "management-existing",
+    });
+
+    const result = await forgetLocalPushState(fixture.service);
+
+    assert.equal(result.complete, true);
+    assert.deepEqual(fixture.gatewayDeletes, ["management-existing"]);
+    assert.deepEqual(fixture.removedPushers, ["delivery-existing"]);
+    assert.equal(fixture.storage.getItem("sub-etha-push-generation"), null);
+    assert.equal(fixture.storage.getItem("sub-etha-push-cleanup-v1"), null);
+});
+
+test("setup failure journals a canonical fence when local raw generation has no worker config", async () => {
+    const fixture = installPushSetupFixture();
+    const generation = "b729659b8fdc79ab10f78094c0f4663891ec515af708cbe437c9a1d843564210";
+
+    fixture.storage.setItem("sub-etha-push-delivery-key", "delivery-existing");
+    fixture.storage.setItem("sub-etha-push-management-key", "management-existing");
+    fixture.storage.setItem("sub-etha-push-generation", "management-existing");
+    fixture.setPusherOperation(async () => {
+        throw new Error("setPusher failed");
+    });
+    fixture.setGatewayDeleteFails(true);
+    fixture.setRemovePusherFails(true);
+
+    await assert.rejects(enablePush(fixture.service), /setPusher failed/i);
+
+    const marker = JSON.parse(fixture.storage.getItem("sub-etha-push-cleanup-v1") ?? "{}") as {
+        generation?: string;
+    };
+
+    assert.equal(marker.generation, generation);
+    assert.equal(fixture.storage.getItem("sub-etha-push-generation"), null);
+
+    fixture.setGatewayDeleteFails(false);
+    fixture.setRemovePusherFails(false);
+    assert.equal((await forgetLocalPushState(fixture.service)).complete, true);
 });
 
 test("ambiguous gateway registration remains durably retryable", async () => {

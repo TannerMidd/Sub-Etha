@@ -61,13 +61,14 @@ async function aesEncrypt(
     additionalData: Uint8Array<ArrayBuffer>,
 ): Promise<AesGcmBox> {
     const iv = randomBytes(IV_BYTES);
+    const ownedAdditionalData = new Uint8Array(additionalData);
 
     try {
         const ciphertext = await requireWebCrypto().encrypt(
             {
                 name: "AES-GCM",
                 iv,
-                additionalData,
+                additionalData: ownedAdditionalData,
                 tagLength: 128,
             },
             key,
@@ -81,7 +82,7 @@ async function aesEncrypt(
         };
     } finally {
         iv.fill(0);
-        additionalData.fill(0);
+        ownedAdditionalData.fill(0);
     }
 }
 
@@ -99,13 +100,14 @@ async function aesDecrypt(
         minimumBytes: 16,
         maximumBytes: maximumPlaintextBytes + 16,
     });
+    const ownedAdditionalData = new Uint8Array(additionalData);
 
     try {
         const plaintext = await requireWebCrypto().decrypt(
             {
                 name: "AES-GCM",
                 iv,
-                additionalData,
+                additionalData: ownedAdditionalData,
                 tagLength: 128,
             },
             key,
@@ -130,7 +132,7 @@ async function aesDecrypt(
     } finally {
         iv.fill(0);
         ciphertext.fill(0);
-        additionalData.fill(0);
+        ownedAdditionalData.fill(0);
     }
 }
 

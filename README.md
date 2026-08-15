@@ -44,6 +44,7 @@ Provision Neon from the Vercel Marketplace and configure these production values
 - `VAPID_SUBJECT=https://sub-etha-matrix.vercel.app`
 - `PUSH_ENDPOINT_HOSTS` for comma-separated, exact additional provider hostnames (optional)
 - `PUSH_MAX_SUBSCRIPTIONS=10000`
+- `PUSH_MAX_REVOKED_MANAGEMENT_KEYS=100000`
 - `PUSH_REGISTRATION_LIMIT_PER_10M=300`
 - `PUSH_TEST_LIMIT_PER_MIN=60`
 - `PUSH_NOTIFY_LIMIT_PER_MIN=600`

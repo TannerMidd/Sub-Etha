@@ -128,7 +128,7 @@ export function LoginScreen({
                     </div>
                     <div>
                         <strong>Installable</strong>
-                        <span>A proper app, offline included.</span>
+                        <span>Install it for closed-app notifications.</span>
                     </div>
                 </div>
             </section>

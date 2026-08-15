@@ -66,9 +66,17 @@ const TIMELINE_COMPACT_BREAKPOINT_PX = 720;
 const TIMELINE_ESTIMATED_MEDIA_GUTTER_PX = 70;
 const TIMELINE_MAX_ESTIMATED_MEDIA_WIDTH_PX = 520;
 const HISTORY_ANCHOR_MIN_SETTLE_MS = 120;
-const HISTORY_ANCHOR_MAX_SETTLE_MS = 600;
+// Slow devices can continue delivering Virtuoso height corrections well after
+// the first stable frames. Keep the anchor live long enough to absorb those
+// late measurements; any real user gesture still cancels or defers restoration.
+const HISTORY_ANCHOR_MAX_SETTLE_MS = 1_500;
 const HISTORY_ANCHOR_STABLE_FRAMES = 4;
-const USER_SCROLL_END_DELAY_MS = 160;
+const HISTORY_COMMIT_GRACE_FRAMES = 4;
+const HISTORY_COMMIT_GRACE_MAX_MS = 250;
+// Trackpad and wheel bursts can arrive farther apart on a busy or low-power
+// device. Do not hand geometry correction back to the list between events that
+// still belong to the same gesture.
+const USER_SCROLL_END_DELAY_MS = 600;
 const TIMELINE_BOTTOM_TOLERANCE_PX = 2;
 const NEWEST_MESSAGE_MIN_SETTLE_MS = 200;
 const NEWEST_MESSAGE_MAX_SETTLE_MS = 2_000;
@@ -1618,6 +1626,10 @@ export function Timeline({
     const finishUserScrollRef = useRef<() => void>(() => undefined);
     const userScrollDirection = useRef<UserScrollDirection>(0);
     const olderIntentLatched = useRef(false);
+    // Virtuoso can report `startReached` while it is still resolving the
+    // initial align-to-bottom layout. Keep that notification inert until a
+    // real upward gesture has handed history pagination to the user.
+    const historyPaginationIntent = useRef(false);
     const unreadBoundaryInitialized = useRef(items.length > 0 || !initializing);
     const transitionScrollMode = useCallback((event: TimelineScrollEvent) => {
         const nextMode = transitionTimelineScrollMode(scrollModeRef.current, event);
@@ -1807,72 +1819,100 @@ export function Timeline({
             setEstimateLayoutRevision((revision) => revision + 1);
         }
     }, [estimateLayoutSignature]);
-    const loadEarlierHistory = useCallback(() => {
-        if (
-            scrollModeRef.current === "initializing" ||
-            !hasMoreHistory ||
-            loadingHistory ||
-            historyRequestInFlight.current
-        ) {
-            return;
-        }
-
-        cancelHistoryRestoration();
-        detachedViewportAnchor.current = null;
-        const element = scroller.current;
-        const scrollerBounds = element?.getBoundingClientRect();
-        const visibleEvent =
-            element && scrollerBounds
-                ? [...element.querySelectorAll<HTMLElement>("[data-event-id]")]
-                      .filter((candidate) => {
-                          const bounds = candidate.getBoundingClientRect();
-
-                          return (
-                              bounds.bottom > scrollerBounds.top &&
-                              bounds.top < scrollerBounds.bottom
-                          );
-                      })
-                      .sort(
-                          (left, right) =>
-                              left.getBoundingClientRect().top - right.getBoundingClientRect().top,
-                      )[0]
-                : null;
-        const firstRenderedItem = element?.querySelector<HTMLElement>("[data-index]") ?? null;
-
-        historyAnchor.current = visibleEvent?.dataset.eventId
-            ? {
-                  id: visibleEvent.dataset.eventId,
-                  index: Number.parseInt(
-                      visibleEvent.closest<HTMLElement>("[data-index]")?.dataset.index ??
-                          `${firstItemIndex}`,
-                      10,
-                  ),
-                  target: "event",
-                  top: visibleEvent.getBoundingClientRect().top,
-              }
-            : firstRenderedItem
-              ? {
-                    id: items[0]?.id ?? "",
-                    index: Number.parseInt(
-                        firstRenderedItem.dataset.index ?? `${firstItemIndex}`,
-                        10,
-                    ),
-                    target: "item",
-                    top: firstRenderedItem.getBoundingClientRect().top,
-                }
-              : null;
-        historyRequestInFlight.current = true;
-        const requestGeneration = ++historyRequestGeneration.current;
-        const requestedFirstItemIndex = firstItemIndex;
-
-        void service.paginate().finally(() => {
-            if (historyRequestGeneration.current !== requestGeneration) {
+    const loadEarlierHistory = useCallback(
+        (fromUserGesture = false) => {
+            if (
+                scrollModeRef.current === "initializing" ||
+                !hasMoreHistory ||
+                loadingHistory ||
+                historyRequestInFlight.current
+            ) {
                 return;
             }
 
-            historyRequestInFlight.current = false;
-            window.requestAnimationFrame(() => {
-                if (previousFirstItemIndex.current === requestedFirstItemIndex) {
+            if (!fromUserGesture && !historyPaginationIntent.current) {
+                return;
+            }
+
+            historyPaginationIntent.current = false;
+
+            cancelHistoryRestoration();
+            detachedViewportAnchor.current = null;
+            const element = scroller.current;
+            const scrollerBounds = element?.getBoundingClientRect();
+            const visibleEvent =
+                element && scrollerBounds
+                    ? [...element.querySelectorAll<HTMLElement>("[data-event-id]")]
+                          .filter((candidate) => {
+                              const bounds = candidate.getBoundingClientRect();
+
+                              return (
+                                  bounds.bottom > scrollerBounds.top &&
+                                  bounds.top < scrollerBounds.bottom
+                              );
+                          })
+                          .sort(
+                              (left, right) =>
+                                  left.getBoundingClientRect().top -
+                                  right.getBoundingClientRect().top,
+                          )[0]
+                    : null;
+            const firstRenderedItem = element?.querySelector<HTMLElement>("[data-index]") ?? null;
+
+            historyAnchor.current = visibleEvent?.dataset.eventId
+                ? {
+                      id: visibleEvent.dataset.eventId,
+                      index: Number.parseInt(
+                          visibleEvent.closest<HTMLElement>("[data-index]")?.dataset.index ??
+                              `${firstItemIndex}`,
+                          10,
+                      ),
+                      target: "event",
+                      top: visibleEvent.getBoundingClientRect().top,
+                  }
+                : firstRenderedItem
+                  ? {
+                        id: items[0]?.id ?? "",
+                        index: Number.parseInt(
+                            firstRenderedItem.dataset.index ?? `${firstItemIndex}`,
+                            10,
+                        ),
+                        target: "item",
+                        top: firstRenderedItem.getBoundingClientRect().top,
+                    }
+                  : null;
+            historyRequestInFlight.current = true;
+            const requestGeneration = ++historyRequestGeneration.current;
+            const requestedFirstItemIndex = firstItemIndex;
+
+            void service.paginate().finally(() => {
+                if (historyRequestGeneration.current !== requestGeneration) {
+                    return;
+                }
+
+                historyRequestInFlight.current = false;
+                const resolvedAt = window.performance.now();
+                let graceFramesRemaining = HISTORY_COMMIT_GRACE_FRAMES;
+
+                const reconcileCommittedHistory = () => {
+                    if (historyRequestGeneration.current !== requestGeneration) {
+                        return;
+                    }
+
+                    if (previousFirstItemIndex.current !== requestedFirstItemIndex) {
+                        return;
+                    }
+
+                    if (
+                        graceFramesRemaining > 0 &&
+                        window.performance.now() - resolvedAt < HISTORY_COMMIT_GRACE_MAX_MS
+                    ) {
+                        graceFramesRemaining -= 1;
+                        window.requestAnimationFrame(reconcileCommittedHistory);
+
+                        return;
+                    }
+
                     historyAnchor.current = null;
                     historyRestoreDeferred.current = false;
 
@@ -1883,19 +1923,22 @@ export function Timeline({
                     if (scrollModeRef.current !== "attached" && !userScrollActive.current) {
                         captureDetachedAnchor();
                     }
-                }
+                };
+
+                window.requestAnimationFrame(reconcileCommittedHistory);
             });
-        });
-    }, [
-        cancelHistoryRestoration,
-        captureDetachedAnchor,
-        firstItemIndex,
-        hasMoreHistory,
-        items,
-        loadingHistory,
-        service,
-        transitionScrollMode,
-    ]);
+        },
+        [
+            cancelHistoryRestoration,
+            captureDetachedAnchor,
+            firstItemIndex,
+            hasMoreHistory,
+            items,
+            loadingHistory,
+            service,
+            transitionScrollMode,
+        ],
+    );
 
     const firstTimestamp = items[0]?.timestamp ?? null;
     const virtuosoContext = useMemo(
@@ -1903,7 +1946,7 @@ export function Timeline({
             loadingHistory,
             hasMoreHistory,
             firstTimestamp,
-            requestEarlierHistory: loadEarlierHistory,
+            requestEarlierHistory: () => loadEarlierHistory(true),
         }),
         [firstTimestamp, hasMoreHistory, loadEarlierHistory, loadingHistory],
     );
@@ -2069,6 +2112,10 @@ export function Timeline({
             userScrollDirection.current = 0;
             olderIntentLatched.current = false;
 
+            if (direction > 0) {
+                historyPaginationIntent.current = false;
+            }
+
             if (restoreDeferredHistory) {
                 historyRestoreDeferred.current = false;
                 restoreHistoryAnchor();
@@ -2138,6 +2185,7 @@ export function Timeline({
 
     const detachFromBottom = useCallback(() => {
         beginUserScroll(-1);
+        historyPaginationIntent.current = true;
 
         if (bottomFrame.current !== null) {
             window.cancelAnimationFrame(bottomFrame.current);
@@ -2296,10 +2344,32 @@ export function Timeline({
     }, [scheduleBottomPosition, scheduleDetachedAnchorRestore]);
 
     const preserveAttachedBottomAfterTimelineHeightChange = useCallback(() => {
-        if (!userScrollActive.current && scrollModeRef.current === "attached") {
-            scheduleBottomPosition();
+        if (userScrollActive.current) {
+            return;
         }
-    }, [scheduleBottomPosition]);
+
+        if (scrollModeRef.current === "attached") {
+            scheduleBottomPosition();
+
+            return;
+        }
+
+        if (scrollModeRef.current === "initializing") {
+            // Virtuoso may recalculate the virtual list after the initial
+            // settle loop has observed a provisional height. Re-assert the
+            // newest edge for every such geometry change while attachment is
+            // still withheld; otherwise the first attached frame can be tens
+            // of thousands of pixels above the live edge.
+            const element = scroller.current;
+
+            if (element) {
+                programmaticScroll.current = true;
+                element.scrollTo({ top: element.scrollHeight, behavior: "auto" });
+            }
+
+            settleAtNewestMessage();
+        }
+    }, [scheduleBottomPosition, settleAtNewestMessage]);
 
     const setScroller = useCallback(
         (value: HTMLElement | Window | null) => {
@@ -2321,6 +2391,7 @@ export function Timeline({
                 const atBottom =
                     element.scrollHeight - element.clientHeight - element.scrollTop <=
                     TIMELINE_BOTTOM_TOLERANCE_PX;
+                const atTop = element.scrollTop <= TIMELINE_BOTTOM_TOLERANCE_PX;
 
                 if (
                     userScrollActive.current &&
@@ -2357,6 +2428,19 @@ export function Timeline({
                     ) {
                         transitionScrollMode({ type: "bottom-state", atBottom: true });
                     }
+                }
+
+                // `startReached` is debounced by Virtuoso and may have
+                // already emitted (and been intentionally ignored) during
+                // the initial layout. A real upward gesture that reaches the
+                // top must still paginate even when the stream has no new
+                // value to publish.
+                if (
+                    atTop &&
+                    scrollModeRef.current === "detached" &&
+                    historyPaginationIntent.current
+                ) {
+                    loadEarlierHistory();
                 }
             };
 
@@ -2484,6 +2568,7 @@ export function Timeline({
             armUserScrollEnd,
             beginUserScroll,
             detachFromBottom,
+            loadEarlierHistory,
             preservePositionAfterGeometryChange,
             refreshHistoryAnchorPosition,
             transitionScrollMode,
@@ -2546,7 +2631,16 @@ export function Timeline({
         previousFirstItemIndex.current = firstItemIndex;
 
         if (firstItemIndex < previousStartIndex) {
+            const latestReadingAnchor = detachedViewportAnchor.current;
+
             detachedViewportAnchor.current = null;
+
+            // A user can continue moving after startReached begins the request.
+            // Prefer the last anchor captured when that gesture settled over
+            // the earlier request-time position.
+            if (historyAnchor.current && latestReadingAnchor) {
+                historyAnchor.current = { ...latestReadingAnchor };
+            }
 
             if (scrollModeRef.current === "attached") {
                 cancelHistoryRestoration();
@@ -2581,6 +2675,7 @@ export function Timeline({
 
         if (change.appendedLocalItem) {
             cancelHistoryRestoration();
+            historyPaginationIntent.current = false;
             transitionScrollMode({ type: "local-append" });
         } else if (wasAttachedRemoteAppend) {
             transitionScrollMode({ type: "bottom-state", atBottom: true });
@@ -2705,7 +2800,7 @@ export function Timeline({
                 heightEstimates={itemHeightEstimates}
                 computeItemKey={(_index, item) => item.id}
                 followOutput={false}
-                startReached={loadEarlierHistory}
+                startReached={() => loadEarlierHistory()}
                 scrollerRef={setScroller}
                 itemsRendered={onItemsRendered}
                 totalListHeightChanged={preserveAttachedBottomAfterTimelineHeightChange}

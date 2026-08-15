@@ -727,25 +727,52 @@ export function SubEthaApp() {
         }
 
         let registration: ServiceWorkerRegistration | null = null;
+        let cancelled = false;
+        const installingWatchers = new Map<ServiceWorker, () => void>();
+
+        const stopWatchingInstalling = (worker: ServiceWorker) => {
+            const changed = installingWatchers.get(worker);
+
+            if (!changed) {
+                return;
+            }
+
+            worker.removeEventListener("statechange", changed);
+            installingWatchers.delete(worker);
+        };
 
         const watchInstalling = () => {
             const installing = registration?.installing;
 
-            if (!installing) {
+            if (!installing || installingWatchers.has(installing)) {
                 return;
             }
 
             const changed = () => {
                 if (installing.state === "installed" && navigator.serviceWorker.controller) {
-                    setWaitingWorker(registration?.waiting ?? null);
+                    setWaitingWorker(registration?.waiting ?? installing);
+                }
+
+                if (
+                    installing.state === "installed" ||
+                    installing.state === "activated" ||
+                    installing.state === "redundant"
+                ) {
+                    stopWatchingInstalling(installing);
                 }
             };
 
+            installingWatchers.set(installing, changed);
             installing.addEventListener("statechange", changed);
+            changed();
         };
 
         void registerServiceWorker()
             .then((nextRegistration) => {
+                if (cancelled) {
+                    return;
+                }
+
                 registration = nextRegistration;
 
                 if (registration?.waiting && navigator.serviceWorker.controller) {
@@ -753,9 +780,9 @@ export function SubEthaApp() {
                 }
 
                 registration?.addEventListener("updatefound", watchInstalling);
+                watchInstalling();
             })
             .catch(() => undefined);
-        let cancelled = false;
 
         void (async () => {
             const operation = advanceOperation();
@@ -826,6 +853,10 @@ export function SubEthaApp() {
         return () => {
             cancelled = true;
             registration?.removeEventListener("updatefound", watchInstalling);
+
+            for (const installing of installingWatchers.keys()) {
+                stopWatchingInstalling(installing);
+            }
         };
     }, [advanceOperation, prepareSetup, routeInspection]);
 

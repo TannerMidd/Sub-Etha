@@ -1,5 +1,7 @@
 import { expect, test, type Locator, type Page } from "@playwright/test";
 
+test.use({ serviceWorkers: "block" });
+
 const PREVIEW_URL = "/?design-preview#/room/signal-watch";
 const STRESS_PREVIEW_URL = "/?design-preview&ux-preview=timeline-stress#/room/signal-watch";
 const FAILURE_PREVIEW_URL =
@@ -323,13 +325,14 @@ async function waitForMessageTop(page: Page, eventId: string): Promise<number> {
                 (candidate) => candidate.dataset.eventId === nextEventId,
             );
 
-            return element ? element.getBoundingClientRect().y : false;
+            return element ? { top: element.getBoundingClientRect().y } : null;
         },
         eventId,
         { polling: "raf", timeout: 8_000 },
     );
+    const result = (await handle.jsonValue()) as { top: number };
 
-    return Number(await handle.jsonValue());
+    return result.top;
 }
 
 test.describe("composer regression coverage", () => {
@@ -952,7 +955,7 @@ test("a planted touch keeps older-message intent until the contact ends", async 
 
     expect(plantedIdleMs).toBeGreaterThanOrEqual(240);
 
-    for (const y of [startY + 90, startY + 30, startY - 50]) {
+    for (const y of [startY + 90, startY + 30, startY - 50, startY - 140, startY - 230]) {
         await session.send("Input.dispatchTouchEvent", {
             type: "touchMove",
             touchPoints: [{ x, y }],
@@ -1134,6 +1137,7 @@ test("failed history loading exposes retry without concurrent pagination", async
     const timeline = page.locator('[data-ui="timeline"]');
     const scroller = page.locator('[data-virtuoso-scroller="true"]');
 
+    await expect(timeline).toHaveAttribute("data-scroll-mode", "attached");
     await scrollTimelineTo(scroller, "top");
     await expect(page.getByRole("alert")).toContainText(
         "The earlier transmission index could not be reached",
@@ -1179,6 +1183,7 @@ test("failed history loading exposes retry without concurrent pagination", async
 test("top pagination preserves the reading anchor, exhausts history, and keeps the newest message reachable", async ({
     page,
 }) => {
+    test.slow();
     await openPreview(page, STRESS_PREVIEW_URL);
 
     const timeline = page.locator('[data-ui="timeline"]');
@@ -1189,6 +1194,10 @@ test("top pagination preserves the reading anchor, exhausts history, and keeps t
     await expect(timeline).toHaveAttribute("data-first-item-index", "1000000");
     await expect(page.getByRole("button", { name: "Load earlier transmissions" })).toBeAttached();
     await scrollTimelineTo(scroller, "top");
+    await expect(timeline).toHaveAttribute("data-pagination-state", "loading");
+    // Let the synthetic wheel gesture hand control back before sampling the
+    // anchor that the completed history request must preserve.
+    await page.waitForTimeout(300);
     const anchorBefore = await waitForMessageTop(page, "stress-80");
 
     await expect(timeline).toHaveAttribute("data-first-item-index", "999960");
@@ -1226,6 +1235,7 @@ test("a local send stays attached while an earlier-history request completes", a
     const timeline = page.locator('[data-ui="timeline"]');
     const textarea = page.locator("#message-composer");
 
+    await expect(timeline).toHaveAttribute("data-scroll-mode", "attached");
     await page.getByRole("button", { name: "Load earlier transmissions" }).click();
     await expect(timeline).toHaveAttribute("data-pagination-state", "loading");
     await textarea.fill("Keep this transmission at the live edge.");

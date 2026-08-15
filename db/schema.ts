@@ -59,6 +59,12 @@ export const pushRevokedManagementKeys = pgTable("push_revoked_management_keys",
 export const pushGatewayState = pgTable("push_gateway_state", {
     id: integer("id").primaryKey(),
     subscriptionCount: bigint("subscription_count", { mode: "number" }).notNull().default(0),
+    revokedManagementKeyCount: bigint("revoked_management_key_count", { mode: "number" })
+        .notNull()
+        .default(0),
+    revokedManagementKeyLimit: bigint("revoked_management_key_limit", { mode: "number" }).default(
+        100_000,
+    ),
 });
 
 export const pushGlobalRateBudgets = pgTable("push_global_rate_budgets", {

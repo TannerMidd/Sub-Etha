@@ -24,6 +24,7 @@ const at = (hour: number, minute: number) => {
 const STRESS_INITIAL_START = 80;
 const STRESS_INITIAL_COUNT = 120;
 const STRESS_PAGE_SIZE = 40;
+const STRESS_PAGINATION_DELAY_MS = 1_000;
 
 function previewRoom(
     id: string,
@@ -471,7 +472,7 @@ function createPreviewService(): MatrixService {
             previewWindow.__previewPaginationRequests =
                 (previewWindow.__previewPaginationRequests ?? 0) + 1;
             update({ loadingHistory: true });
-            await new Promise((resolve) => window.setTimeout(resolve, 250));
+            await new Promise((resolve) => window.setTimeout(resolve, STRESS_PAGINATION_DELAY_MS));
 
             if (failNextStressPagination) {
                 failNextStressPagination = false;

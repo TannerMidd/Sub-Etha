@@ -99,6 +99,7 @@ test("invalid push limit overrides fail closed to documented defaults", () => {
         }),
         {
             maxSubscriptions: 10_000,
+            maxRevokedManagementKeys: 100_000,
             registrationPerTenMinutes: 300,
             testsPerMinute: 60,
             notifyPerMinute: 600,
@@ -108,6 +109,7 @@ test("invalid push limit overrides fail closed to documented defaults", () => {
     assert.deepEqual(
         pushLimitsFromEnvironment({
             PUSH_MAX_SUBSCRIPTIONS: "25",
+            PUSH_MAX_REVOKED_MANAGEMENT_KEYS: "30",
             PUSH_REGISTRATION_LIMIT_PER_10M: "26",
             PUSH_TEST_LIMIT_PER_MIN: "27",
             PUSH_NOTIFY_LIMIT_PER_MIN: "28",
@@ -115,6 +117,7 @@ test("invalid push limit overrides fail closed to documented defaults", () => {
         }),
         {
             maxSubscriptions: 25,
+            maxRevokedManagementKeys: 30,
             registrationPerTenMinutes: 26,
             testsPerMinute: 27,
             notifyPerMinute: 28,

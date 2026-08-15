@@ -229,13 +229,16 @@ export function createDocumentSecurityContext(
     // to every framework-owned script and style. Development's loopback Vite
     // runtime remains report-only because its HMR internals are not nonce/TT
     // compatible; every other document navigation enforces the same policy.
+    forwardedRequestHeaders.delete(CONTENT_SECURITY_POLICY);
+    forwardedRequestHeaders.delete(CONTENT_SECURITY_POLICY_REPORT_ONLY);
+
     if (enforcePolicy) {
         forwardedRequestHeaders.set(CONTENT_SECURITY_POLICY, policy);
         responseHeaders.set(CONTENT_SECURITY_POLICY, policy);
+    } else {
+        forwardedRequestHeaders.set(CONTENT_SECURITY_POLICY_REPORT_ONLY, policy);
+        responseHeaders.set(CONTENT_SECURITY_POLICY_REPORT_ONLY, policy);
     }
-
-    forwardedRequestHeaders.set(CONTENT_SECURITY_POLICY_REPORT_ONLY, policy);
-    responseHeaders.set(CONTENT_SECURITY_POLICY_REPORT_ONLY, policy);
 
     return { forwardedRequestHeaders, nonce, policy, responseHeaders };
 }

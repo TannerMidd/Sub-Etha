@@ -56,16 +56,21 @@ test("Trusted Types policy and dependency patches stay narrow and fail-closed", 
         readFile(`${PROJECT_ROOT}/scripts/apply-security-patches.mjs`, "utf8"),
     ]);
     const packageManifest = JSON.parse(packageSource) as {
+        dependencies: Record<string, string>;
         scripts: Record<string, string>;
         devDependencies: Record<string, string>;
     };
     const packageLock = JSON.parse(lockSource) as {
-        packages: Record<string, { version?: string }>;
+        packages: Record<string, { dependencies?: Record<string, string>; version?: string }>;
     };
 
     assert.equal(packageManifest.devDependencies["patch-package"], undefined);
+    assert.equal(packageManifest.dependencies["emoji-picker-react"], "4.19.1");
+    assert.equal(packageManifest.dependencies.flairup, "1.0.0");
     assert.equal(packageManifest.scripts.postinstall, "node scripts/apply-security-patches.mjs");
     assert.equal(packageManifest.scripts.prebuild, "node scripts/apply-security-patches.mjs");
+    assert.equal(packageLock.packages[""]?.dependencies?.["emoji-picker-react"], "4.19.1");
+    assert.equal(packageLock.packages[""]?.dependencies?.flairup, "1.0.0");
     assert.equal(packageLock.packages["node_modules/flairup"]?.version, "1.0.0");
     assert.equal(packageLock.packages["node_modules/emoji-picker-react"]?.version, "4.19.1");
     assert.equal(packageLock.packages["node_modules/patch-package"], undefined);

@@ -166,10 +166,6 @@ async function settle(event: DispatchedEvent): Promise<Response | null> {
 }
 
 test("install is cache-free and cannot be blocked by optional asset failures", async () => {
-    let releaseSkipWaiting: (() => void) | undefined;
-    const skipWaitingGate = new Promise<void>((resolve) => {
-        releaseSkipWaiting = resolve;
-    });
     const worker = createWorker({
         fetch: async (url) => {
             if (url.pathname.endsWith(".png")) {
@@ -181,29 +177,26 @@ test("install is cache-free and cannot be blocked by optional asset failures", a
 
             throw new TypeError("optional font unavailable");
         },
-        skipWaiting: () => skipWaitingGate,
     });
     const install = worker.dispatch("install");
 
     assert.equal(install.handled, true);
-    assert.equal(install.waits.length, 1);
-    assert.equal(worker.skipWaitingCalls(), 1);
-
-    let installFinished = false;
-
-    void install.waits[0].then(() => {
-        installFinished = true;
-    });
-    await Promise.resolve();
-    assert.equal(installFinished, false);
-
-    releaseSkipWaiting?.();
+    assert.equal(install.waits.length, 0);
     assert.equal(await settle(install), null);
-    assert.equal(installFinished, true);
+    assert.equal(worker.skipWaitingCalls(), 0);
     assert.deepEqual(worker.fetches, []);
     assert.deepEqual(worker.cacheStorage.openedNames, []);
     assert.deepEqual(worker.cacheStorage.puts, []);
     assert.doesNotMatch(WORKER_SOURCE, /\bcaches\.open\b|\bcache\.put\b|\.addAll\(/);
+});
+
+test("worker updates only skip waiting after an explicit app message", async () => {
+    const worker = createWorker();
+    const update = worker.dispatch("message", { data: { type: "SKIP_WAITING" } });
+
+    assert.equal(update.waits.length, 0);
+    await settle(update);
+    assert.equal(worker.skipWaitingCalls(), 1);
 });
 
 test("online navigation HTML is returned from network but never stored", async () => {

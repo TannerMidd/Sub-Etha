@@ -22,11 +22,15 @@ const PUSH_APP_ID = "chat.subetha.pwa";
 const LEGACY_PUSH_HOST_SUFFIX = ".chatgpt.site";
 const PUSH_CONFIRMATION_TIMEOUT_MS = 15_000;
 const PUSH_CLEANUP_TIMEOUT_MS = 5_000;
+const SUPPORTED_SERVICE_WORKER_PROTOCOL_VERSION = 2;
+const SERVICE_WORKER_UPDATE_REQUIRED_ERROR =
+    "This app requires a service-worker update before push notifications can be changed.";
 
 interface PushCredentials {
     deliveryKey: string;
     managementKey: string;
     generation: string;
+    legacyGeneration?: boolean;
 }
 
 interface PendingPushCleanup {
@@ -72,12 +76,20 @@ interface WorkerPushConfig {
     deliveryKey: string;
     managementKey: string;
     generation: string | null;
+    legacyGeneration: boolean;
+}
+
+interface ServiceWorkerPushSession {
+    registration: ServiceWorkerRegistration;
+    worker: ServiceWorker;
+    config: WorkerPushConfig | null;
 }
 
 type OrphanedPushDatabaseState = { exists: false } | { exists: true; credentials: PushCredentials };
 
 interface PushConfigMessageResult {
     ok: true;
+    protocolVersion: number;
     cleared?: boolean;
     config?: WorkerPushConfig | null;
 }
@@ -337,15 +349,9 @@ async function withPushLifecycleLock<T>(operation: () => Promise<T>): Promise<T>
 }
 
 async function sendPushConfigMessage(
-    registration: ServiceWorkerRegistration,
+    worker: ServiceWorker,
     message: Record<string, unknown>,
 ): Promise<PushConfigMessageResult> {
-    const worker = registration.active;
-
-    if (!worker) {
-        throw new Error("The active service worker is unavailable.");
-    }
-
     const channel = new MessageChannel();
 
     try {
@@ -354,6 +360,15 @@ async function sendPushConfigMessage(
             () =>
                 new Promise<PushConfigMessageResult>((resolve, reject) => {
                     channel.port1.onmessage = (event) => {
+                        if (
+                            event.data?.protocolVersion !==
+                            SUPPORTED_SERVICE_WORKER_PROTOCOL_VERSION
+                        ) {
+                            reject(new Error(SERVICE_WORKER_UPDATE_REQUIRED_ERROR));
+
+                            return;
+                        }
+
                         if (event.data?.ok === true) {
                             const rawConfig = event.data.config;
                             const config: WorkerPushConfig | null | undefined =
@@ -363,16 +378,20 @@ async function sendPushConfigMessage(
                                         typeof rawConfig.deliveryKey === "string" &&
                                         typeof rawConfig.managementKey === "string" &&
                                         (rawConfig.generation === null ||
-                                            typeof rawConfig.generation === "string")
+                                            typeof rawConfig.generation === "string") &&
+                                        (rawConfig.legacyGeneration === undefined ||
+                                            typeof rawConfig.legacyGeneration === "boolean")
                                       ? {
                                             deliveryKey: rawConfig.deliveryKey,
                                             managementKey: rawConfig.managementKey,
                                             generation: rawConfig.generation,
+                                            legacyGeneration: rawConfig.legacyGeneration === true,
                                         }
                                       : undefined;
 
                             resolve({
                                 ok: true,
+                                protocolVersion: SUPPORTED_SERVICE_WORKER_PROTOCOL_VERSION,
                                 ...(typeof event.data.cleared === "boolean"
                                     ? { cleared: event.data.cleared }
                                     : {}),
@@ -398,6 +417,12 @@ async function sendPushConfigMessage(
                     worker.postMessage(message, [channel.port2]);
                 }),
         );
+    } catch (error) {
+        if (error instanceof Error && /timed out|unavailable/i.test(error.message)) {
+            throw new Error(SERVICE_WORKER_UPDATE_REQUIRED_ERROR);
+        }
+
+        throw error;
     } finally {
         channel.port1.close();
         channel.port2.close();
@@ -405,9 +430,9 @@ async function sendPushConfigMessage(
 }
 
 async function readServiceWorkerPushConfig(
-    registration: ServiceWorkerRegistration,
+    worker: ServiceWorker,
 ): Promise<WorkerPushConfig | null> {
-    const result = await sendPushConfigMessage(registration, { type: "READ_PUSH_CONFIG" });
+    const result = await sendPushConfigMessage(worker, { type: "READ_PUSH_CONFIG" });
 
     if (!("config" in result)) {
         throw new Error("The service worker did not return its push configuration state.");
@@ -417,22 +442,24 @@ async function readServiceWorkerPushConfig(
 }
 
 async function configureServiceWorker(
-    registration: ServiceWorkerRegistration,
+    worker: ServiceWorker,
     credentials: PushCredentials,
     publicKey: string,
 ): Promise<void> {
-    await sendPushConfigMessage(registration, {
+    await sendPushConfigMessage(worker, {
         type: "SET_PUSH_CONFIG",
-        ...credentials,
+        deliveryKey: credentials.deliveryKey,
+        managementKey: credentials.managementKey,
+        generation: credentials.generation,
         publicKey,
     });
 }
 
 async function clearServiceWorkerPushConfig(
-    registration: ServiceWorkerRegistration,
+    worker: ServiceWorker,
     cleanup: PendingPushCleanup,
 ): Promise<void> {
-    const result = await sendPushConfigMessage(registration, {
+    const result = await sendPushConfigMessage(worker, {
         type: "CLEAR_PUSH_CONFIG",
         generation: cleanup.generation,
         deliveryKey: cleanup.deliveryKey,
@@ -441,6 +468,114 @@ async function clearServiceWorkerPushConfig(
     if (result.cleared !== true) {
         throw new Error("The active push configuration did not match this cleanup generation.");
     }
+}
+
+async function migrateServiceWorkerPushConfig(
+    worker: ServiceWorker,
+    managementKey: string,
+    generation: string,
+): Promise<WorkerPushConfig> {
+    const result = await sendPushConfigMessage(worker, {
+        type: "MIGRATE_PUSH_CONFIG",
+        managementKey,
+        generation,
+    });
+
+    if (
+        !result.config ||
+        result.config.managementKey !== managementKey ||
+        result.config.generation !== generation ||
+        result.config.legacyGeneration !== true
+    ) {
+        throw new Error("The legacy service-worker push configuration could not be migrated.");
+    }
+
+    return result.config;
+}
+
+async function generationForManagementKey(managementKey: string): Promise<string> {
+    const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(managementKey));
+
+    return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join(
+        "",
+    );
+}
+
+async function readAndMigrateServiceWorkerPushConfig(
+    worker: ServiceWorker,
+): Promise<WorkerPushConfig | null> {
+    const config = await readServiceWorkerPushConfig(worker);
+
+    if (
+        !config ||
+        (config.generation !== null &&
+            !config.legacyGeneration &&
+            config.generation !== config.managementKey)
+    ) {
+        return config;
+    }
+
+    const generation = await generationForManagementKey(config.managementKey);
+
+    return migrateServiceWorkerPushConfig(worker, config.managementKey, generation);
+}
+
+async function waitForInstallingServiceWorker(
+    registration: ServiceWorkerRegistration,
+): Promise<ServiceWorker | null> {
+    const installing = registration.installing;
+
+    if (!installing) {
+        return registration.waiting ?? null;
+    }
+
+    if (installing.state === "installed") {
+        return registration.waiting ?? null;
+    }
+
+    try {
+        await bounded(
+            "Service-worker update installation",
+            () =>
+                new Promise<void>((resolve) => {
+                    const check = () => {
+                        if (installing.state === "installed" || installing.state === "redundant") {
+                            installing.removeEventListener("statechange", check);
+                            resolve();
+                        }
+                    };
+
+                    installing.addEventListener("statechange", check);
+                    check();
+                }),
+        );
+    } catch {
+        return null;
+    }
+
+    return (installing.state as string) === "installed" ? (registration.waiting ?? null) : null;
+}
+
+async function probeServiceWorker(
+    registration: ServiceWorkerRegistration,
+): Promise<ServiceWorkerPushSession> {
+    let worker = registration.waiting;
+
+    if (!worker) {
+        worker = await waitForInstallingServiceWorker(registration);
+    }
+
+    // A waiting worker is intentionally preferred. If it is an old protocol, do not silently
+    // fall through to the active worker and mutate a different generation.
+    worker ??= registration.active ?? null;
+
+    if (!worker) {
+        throw new Error(SERVICE_WORKER_UPDATE_REQUIRED_ERROR);
+    }
+
+    const config = await readAndMigrateServiceWorkerPushConfig(worker);
+
+    return { registration, worker, config };
 }
 
 async function currentSubscription(
@@ -470,6 +605,7 @@ function readPushCredentials(create: boolean): PushCredentials | null {
         localStorage.getItem(PUSH_DELIVERY_KEY_STORAGE) ??
         localStorage.getItem(LEGACY_PUSH_KEY_STORAGE);
     const managementKey = localStorage.getItem(PUSH_MANAGEMENT_KEY_STORAGE);
+    const storedGeneration = localStorage.getItem(PUSH_GENERATION_STORAGE);
 
     if ((!deliveryKey || !managementKey) && !create) {
         return null;
@@ -478,8 +614,10 @@ function readPushCredentials(create: boolean): PushCredentials | null {
     return {
         deliveryKey: deliveryKey ?? randomBase64Url(32),
         managementKey: managementKey ?? randomBase64Url(32),
-        generation:
-            localStorage.getItem(PUSH_GENERATION_STORAGE) ?? managementKey ?? randomBase64Url(16),
+        generation: storedGeneration ?? managementKey ?? randomBase64Url(16),
+        ...(managementKey && (storedGeneration === null || storedGeneration === managementKey)
+            ? { legacyGeneration: true }
+            : {}),
     };
 }
 
@@ -496,11 +634,13 @@ function clearPushCredentials(
     managementKey?: string | null,
     deliveryKey?: string | null,
 ): void {
+    const storedGeneration = localStorage.getItem(PUSH_GENERATION_STORAGE);
+
     if (
         generation &&
-        localStorage.getItem(PUSH_GENERATION_STORAGE) !== generation &&
+        storedGeneration !== generation &&
         !(
-            localStorage.getItem(PUSH_GENERATION_STORAGE) === null &&
+            (storedGeneration === null || storedGeneration === managementKey) &&
             managementKey &&
             deliveryKey &&
             localStorage.getItem(PUSH_MANAGEMENT_KEY_STORAGE) === managementKey &&
@@ -808,7 +948,10 @@ function queuePushSetupCleanup(
 
         const active = readPushCredentials(false);
         const protectsAnotherGeneration = Boolean(
-            active && active.generation !== credentials.generation,
+            active &&
+            active.generation !== credentials.generation &&
+            (active.deliveryKey !== credentials.deliveryKey ||
+                active.managementKey !== credentials.managementKey),
         );
         const cleanup: PendingPushCleanup = {
             version: 1,
@@ -847,7 +990,7 @@ function queuePushSetupCleanup(
 
 async function rollbackUndurablePushSetup(
     service: MatrixService,
-    registration: ServiceWorkerRegistration,
+    workerSession: ServiceWorkerPushSession,
     subscription: PushSubscription,
     credentials: PushCredentials,
 ): Promise<void> {
@@ -889,11 +1032,11 @@ async function rollbackUndurablePushSetup(
     };
 
     try {
-        await clearServiceWorkerPushConfig(registration, cleanup);
+        await clearServiceWorkerPushConfig(workerSession.worker, cleanup);
         safeToUnsubscribe = true;
     } catch {
         try {
-            safeToUnsubscribe = (await readServiceWorkerPushConfig(registration)) === null;
+            safeToUnsubscribe = (await readServiceWorkerPushConfig(workerSession.worker)) === null;
         } catch {
             // An unverifiable worker config may still recreate a subscription.
         }
@@ -902,7 +1045,7 @@ async function rollbackUndurablePushSetup(
     if (safeToUnsubscribe) {
         try {
             const current = await bounded("Push subscription rollback lookup", () =>
-                registration.pushManager.getSubscription(),
+                workerSession.registration.pushManager.getSubscription(),
             );
 
             if (current?.endpoint === subscription.endpoint) {
@@ -926,6 +1069,17 @@ export function hasPendingLocalPushCleanup(): boolean {
         localStorage.getItem(PUSH_FALLBACK_CLEANUP_STORAGE) !== null ||
         localStorage.getItem(PUSH_CLEANUP_INTENT_STORAGE) !== null
     );
+}
+
+function hasDurablePushCleanupRecord(): boolean {
+    try {
+        return (
+            localStorage.getItem(PUSH_CLEANUP_STORAGE) !== null ||
+            localStorage.getItem(PUSH_FALLBACK_CLEANUP_STORAGE) !== null
+        );
+    } catch {
+        return false;
+    }
 }
 
 export function hasLocalPushStateForCleanup(): boolean {
@@ -970,11 +1124,20 @@ function strictPersistedPushConfig(value: unknown): PushCredentials | null {
 
     const config = value as Record<string, unknown>;
     const keys = Object.keys(config).sort();
-    const currentKeys = ["deliveryKey", "generation", "managementKey", "publicKey"];
+    const currentKeys = [
+        "deliveryKey",
+        "generation",
+        "legacyGeneration",
+        "managementKey",
+        "publicKey",
+    ];
+    const currentKeysWithoutMarker = ["deliveryKey", "generation", "managementKey", "publicKey"];
     const legacyKeys = ["deliveryKey", "managementKey", "publicKey"];
     const validShape =
         (keys.length === currentKeys.length &&
             keys.every((key, index) => key === currentKeys[index])) ||
+        (keys.length === currentKeysWithoutMarker.length &&
+            keys.every((key, index) => key === currentKeysWithoutMarker[index])) ||
         (keys.length === legacyKeys.length &&
             keys.every((key, index) => key === legacyKeys[index]));
     const validToken = (token: unknown) =>
@@ -990,7 +1153,8 @@ function strictPersistedPushConfig(value: unknown): PushCredentials | null {
         !validCapability(config.managementKey) ||
         config.deliveryKey === config.managementKey ||
         !validToken(config.publicKey) ||
-        ("generation" in config && !validGeneration(config.generation))
+        ("generation" in config && !validGeneration(config.generation)) ||
+        ("legacyGeneration" in config && typeof config.legacyGeneration !== "boolean")
     ) {
         return null;
     }
@@ -1101,6 +1265,11 @@ async function inspectOrphanedPushDatabase(): Promise<OrphanedPushDatabaseState>
             throw new Error("The orphaned push configuration is missing or malformed.");
         }
 
+        if (credentials.generation === credentials.managementKey) {
+            credentials.generation = await generationForManagementKey(credentials.managementKey);
+            credentials.legacyGeneration = true;
+        }
+
         return { exists: true, credentials };
     } finally {
         database.close();
@@ -1187,17 +1356,23 @@ export async function hasBrowserPushArtifacts(): Promise<boolean> {
             return pushDatabaseExists();
         }
 
-        const [subscription, notifications, config] = await Promise.all([
-            bounded("Push subscription artifact lookup", () =>
-                registration.pushManager.getSubscription(),
-            ),
-            bounded("Displayed notification artifact lookup", () =>
-                registration.getNotifications(),
-            ),
-            readServiceWorkerPushConfig(registration),
-        ]);
+        const subscription = await bounded("Push subscription artifact lookup", () =>
+            registration.pushManager.getSubscription(),
+        );
+        const notifications = await bounded("Displayed notification artifact lookup", () =>
+            registration.getNotifications(),
+        );
 
-        return Boolean(subscription || notifications.length || config);
+        // A registration may be visible before its first worker reaches active. The browser
+        // surfaces remain inspectable in that state; messaging registration.active would turn a
+        // clean first load into a durable cleanup gate.
+        if (!registration.active) {
+            return Boolean(subscription || notifications.length || (await pushDatabaseExists()));
+        }
+
+        const session = await probeServiceWorker(registration);
+
+        return Boolean(subscription || notifications.length || session.config);
     } catch {
         // Fail closed: an uninspectable browser push surface must be cleaned before a new login.
         return true;
@@ -1372,6 +1547,7 @@ async function runDurablePushSetup(
             throw new Error("Notification cleanup started while push setup was in progress.");
         }
 
+        const workerSession = await probeServiceWorker(registration);
         const subscription = await currentSubscription(registration, publicKey, true);
 
         if (!subscription) {
@@ -1388,11 +1564,34 @@ async function runDurablePushSetup(
             throw new Error("Push credentials could not be created.");
         }
 
+        const workerConfig = workerSession.config;
+        const effectiveCredentials = credentials.legacyGeneration
+            ? {
+                  ...credentials,
+                  generation: await generationForManagementKey(credentials.managementKey),
+              }
+            : workerConfig &&
+                workerConfig.deliveryKey === credentials.deliveryKey &&
+                workerConfig.managementKey === credentials.managementKey &&
+                typeof workerConfig.generation === "string"
+              ? { ...credentials, generation: workerConfig.generation }
+              : credentials;
+
         const setupEpoch = randomBase64Url(16);
-        const queued = queuePushSetupCleanup(credentials, subscription.endpoint, true, setupEpoch);
+        const queued = queuePushSetupCleanup(
+            effectiveCredentials,
+            subscription.endpoint,
+            true,
+            setupEpoch,
+        );
 
         if (queued !== "primary") {
-            await rollbackUndurablePushSetup(service, registration, subscription, credentials);
+            await rollbackUndurablePushSetup(
+                service,
+                workerSession,
+                subscription,
+                effectiveCredentials,
+            );
 
             throw new Error(
                 queued === "fallback"
@@ -1401,23 +1600,23 @@ async function runDurablePushSetup(
             );
         }
 
-        assertOwnedPushSetupJournal(credentials, setupEpoch);
+        assertOwnedPushSetupJournal(effectiveCredentials, setupEpoch);
         // The gateway challenge is handled by the worker, so the exact generation must be
         // installed before registration begins. The durable journal above makes this safe.
-        await configureServiceWorker(registration, credentials, publicKey);
-        assertOwnedPushSetupJournal(credentials, setupEpoch);
+        await configureServiceWorker(workerSession.worker, effectiveCredentials, publicKey);
+        assertOwnedPushSetupJournal(effectiveCredentials, setupEpoch);
 
-        await registerGatewaySubscription(credentials, subscription);
-        assertOwnedPushSetupJournal(credentials, setupEpoch);
+        await registerGatewaySubscription(effectiveCredentials, subscription);
+        assertOwnedPushSetupJournal(effectiveCredentials, setupEpoch);
 
-        await registerPusher(credentials);
-        assertOwnedPushSetupJournal(credentials, setupEpoch);
+        await registerPusher(effectiveCredentials);
+        assertOwnedPushSetupJournal(effectiveCredentials, setupEpoch);
 
         const current = await bounded("Push subscription commit check", () =>
             registration.pushManager.getSubscription(),
         );
 
-        assertOwnedPushSetupJournal(credentials, setupEpoch);
+        assertOwnedPushSetupJournal(effectiveCredentials, setupEpoch);
 
         if (!current || current.endpoint !== subscription.endpoint) {
             throw new Error("The browser push subscription changed during setup.");
@@ -1426,7 +1625,7 @@ async function runDurablePushSetup(
         // Keep the single-record cleanup journal until every sequential credential write and
         // the successful-commit epoch rotation have completed. A crash or quota error at any
         // earlier point therefore retains both remote management capabilities for retry.
-        persistPushCredentials(credentials, subscription.endpoint);
+        persistPushCredentials(effectiveCredentials, subscription.endpoint);
         localStorage.setItem(PUSH_LIFECYCLE_EPOCH_STORAGE, randomBase64Url(16));
         localStorage.removeItem(PUSH_CLEANUP_STORAGE);
     });
@@ -1593,6 +1792,39 @@ async function performLocalPushCleanup(
     service?: MatrixService,
     options?: PushCleanupOptions,
 ): Promise<PushCleanupResult> {
+    const errors: string[] = [];
+    let registration: ServiceWorkerRegistration | undefined;
+    let workerSession: ServiceWorkerPushSession | undefined;
+    let registrationStateKnown = !("serviceWorker" in navigator);
+    let orphanedDatabaseReadyForDeletion = false;
+
+    if ("serviceWorker" in navigator) {
+        try {
+            registration = await bounded("Service-worker registration lookup", () =>
+                navigator.serviceWorker.getRegistration(),
+            );
+            registrationStateKnown = true;
+        } catch (error) {
+            errors.push(error instanceof Error ? error.message : "Service-worker lookup failed.");
+        }
+    }
+
+    if (registration) {
+        try {
+            // Do not create a cleanup journal, revoke remote capabilities, or touch the browser
+            // subscription until a protocol-v2 worker has explicitly acknowledged the probe.
+            workerSession = await probeServiceWorker(registration);
+        } catch (error) {
+            return {
+                complete: false,
+                durable: false,
+                ...abandonedMatrixPusherResult(),
+                error:
+                    error instanceof Error ? error.message : SERVICE_WORKER_UPDATE_REQUIRED_ERROR,
+            };
+        }
+    }
+
     let cleanup: PendingPushCleanup;
 
     try {
@@ -1611,40 +1843,46 @@ async function performLocalPushCleanup(
         };
     }
 
-    const errors: string[] = [];
-    let registration: ServiceWorkerRegistration | undefined;
-    let registrationStateKnown = !("serviceWorker" in navigator);
-    let orphanedDatabaseReadyForDeletion = false;
-
-    if ("serviceWorker" in navigator) {
+    if (cleanup.generation && cleanup.generation === cleanup.managementKey) {
         try {
-            registration = await bounded("Service-worker registration lookup", () =>
-                navigator.serviceWorker.getRegistration(),
-            );
-            registrationStateKnown = true;
+            cleanup.generation = await generationForManagementKey(cleanup.managementKey!);
+            persistPendingPushCleanup(cleanup);
         } catch (error) {
-            errors.push(error instanceof Error ? error.message : "Service-worker lookup failed.");
+            return {
+                complete: false,
+                durable: true,
+                ...abandonedMatrixPusherResult(),
+                error:
+                    error instanceof Error
+                        ? error.message
+                        : "Notification cleanup generation could not be canonicalized.",
+            };
         }
     }
 
-    if (registration && !cleanup.generation && !cleanup.deliveryKey && !cleanup.managementKey) {
-        try {
-            const workerConfig = await readServiceWorkerPushConfig(registration);
+    if (
+        workerSession?.config &&
+        (!cleanup.generation || !cleanup.deliveryKey || !cleanup.managementKey)
+    ) {
+        cleanup.generation = workerSession.config.generation;
+        cleanup.deliveryKey = workerSession.config.deliveryKey;
+        cleanup.managementKey = workerSession.config.managementKey;
+        cleanup.gatewayDone = false;
+        persistPendingPushCleanup(cleanup);
+    } else if (
+        workerSession?.config &&
+        cleanup.deliveryKey === workerSession.config.deliveryKey &&
+        cleanup.managementKey === workerSession.config.managementKey &&
+        cleanup.generation !== workerSession.config.generation
+    ) {
+        // Legacy workers are migrated before this point, so their canonical generation becomes
+        // the cleanup fence even when an older local journal still used managementKey.
+        cleanup.generation = workerSession.config.generation;
+        persistPendingPushCleanup(cleanup);
+    }
 
-            if (workerConfig) {
-                cleanup.generation = workerConfig.generation;
-                cleanup.deliveryKey = workerConfig.deliveryKey;
-                cleanup.managementKey = workerConfig.managementKey;
-                cleanup.gatewayDone = false;
-                persistPendingPushCleanup(cleanup);
-            }
-        } catch (error) {
-            errors.push(
-                error instanceof Error
-                    ? error.message
-                    : "Service-worker push configuration lookup failed.",
-            );
-        }
+    if (cleanup.generation) {
+        clearPushCredentials(cleanup.generation, cleanup.managementKey, cleanup.deliveryKey);
     }
 
     if (!registration && registrationStateKnown) {
@@ -1754,7 +1992,11 @@ async function performLocalPushCleanup(
         }
 
         try {
-            await clearServiceWorkerPushConfig(registration, cleanup);
+            if (!workerSession) {
+                throw new Error(SERVICE_WORKER_UPDATE_REQUIRED_ERROR);
+            }
+
+            await clearServiceWorkerPushConfig(workerSession.worker, cleanup);
             cleanup.workerDone = true;
         } catch (error) {
             errors.push(
@@ -1973,11 +2215,16 @@ export async function forgetLocalPushState(
     }
 
     try {
-        return await withPushLifecycleLock(() => performLocalPushCleanup(service, options));
+        const result = await withPushLifecycleLock(() => performLocalPushCleanup(service, options));
+
+        return {
+            ...result,
+            durable: result.durable || durableIntent || hasDurablePushCleanupRecord(),
+        };
     } catch (error) {
         return {
             complete: false,
-            durable: hasPendingLocalPushCleanup() || durableIntent,
+            durable: hasDurablePushCleanupRecord() || durableIntent,
             ...abandonedMatrixPusherResult(),
             error: error instanceof Error ? error.message : "Notification cleanup could not start.",
         };

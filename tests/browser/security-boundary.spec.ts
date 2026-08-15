@@ -14,6 +14,8 @@ const DOCUMENT_REQUEST_HEADERS = {
     "sec-fetch-dest": "document",
     "sec-fetch-mode": "navigate",
 };
+const useBuiltNitroServer =
+    process.env.PLAYWRIGHT_NITRO_SERVER === "1" && Boolean(process.env.PLAYWRIGHT_BASE_URL);
 
 interface RuntimeResponse {
     body: string;
@@ -102,7 +104,7 @@ function assertSecuredDocument(response: RuntimeResponse): {
     const reportOnlyPolicy = headers[CONTENT_SECURITY_POLICY_REPORT_ONLY.toLowerCase()];
 
     expect(policy).toBeDefined();
-    expect(reportOnlyPolicy).toBe(policy);
+    expect(reportOnlyPolicy).toBeUndefined();
     expect(
         response.headerEntries.filter(
             ({ name }) => name.toLowerCase() === CONTENT_SECURITY_POLICY.toLowerCase(),
@@ -112,7 +114,7 @@ function assertSecuredDocument(response: RuntimeResponse): {
         response.headerEntries.filter(
             ({ name }) => name.toLowerCase() === CONTENT_SECURITY_POLICY_REPORT_ONLY.toLowerCase(),
         ),
-    ).toHaveLength(1);
+    ).toHaveLength(0);
 
     const nonce = policyNonce(policy);
 
@@ -162,6 +164,11 @@ test("Nitro documents receive fresh nonce headers and nonce-bearing markup", asy
     baseURL,
     request,
 }) => {
+    test.skip(
+        !useBuiltNitroServer,
+        "requires PLAYWRIGHT_NITRO_SERVER=1 with a built Nitro base URL",
+    );
+
     expect(baseURL).toBeDefined();
 
     const navigation = assertSecuredDocument(
@@ -198,8 +205,8 @@ test("production CSP enforces inline-script, event-handler, and Trusted Types bo
     page,
 }) => {
     test.skip(
-        !process.env.PLAYWRIGHT_BASE_URL,
-        "requires a built Nitro server supplied through PLAYWRIGHT_BASE_URL",
+        !useBuiltNitroServer,
+        "requires PLAYWRIGHT_NITRO_SERVER=1 with a built Nitro base URL",
     );
 
     await page.addInitScript(() => {
@@ -308,8 +315,8 @@ test("production emoji picker uses a nonce-bearing, Trusted-Types-safe styleshee
     page,
 }) => {
     test.skip(
-        !process.env.PLAYWRIGHT_BASE_URL,
-        "requires a built Nitro server supplied through PLAYWRIGHT_BASE_URL",
+        !useBuiltNitroServer,
+        "requires PLAYWRIGHT_NITRO_SERVER=1 with a built Nitro base URL",
     );
 
     const emojiChunk = builtChunk("EmojiPickerPanel");

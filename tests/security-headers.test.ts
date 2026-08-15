@@ -67,7 +67,12 @@ test("only the loopback development design preview bypasses document security", 
 });
 
 test("only loopback development documents receive a report-only policy", () => {
-    const loopbackDocument = new Request("http://localhost:4173/");
+    const loopbackDocument = new Request("http://localhost:4173/", {
+        headers: {
+            [CONTENT_SECURITY_POLICY]: "default-src https:",
+            [CONTENT_SECURITY_POLICY_REPORT_ONLY]: "default-src https:",
+        },
+    });
     const remoteDevelopmentDocument = new Request("https://sub-etha.example/");
     const production = createDocumentSecurityContext(request("/"), () => FIXED_NONCE, true);
     const loopbackDevelopment = createDocumentSecurityContext(
@@ -93,15 +98,22 @@ test("only loopback development documents receive a report-only policy", () => {
     assert.ok(loopbackDevelopment);
     assert.ok(remoteDevelopment);
     assert.equal(production.responseHeaders.get(CONTENT_SECURITY_POLICY), production.policy);
+    assert.equal(production.responseHeaders.get(CONTENT_SECURITY_POLICY_REPORT_ONLY), null);
     assert.equal(loopbackDevelopment.responseHeaders.get(CONTENT_SECURITY_POLICY), null);
     assert.equal(
         loopbackDevelopment.responseHeaders.get(CONTENT_SECURITY_POLICY_REPORT_ONLY),
+        loopbackDevelopment.policy,
+    );
+    assert.equal(loopbackDevelopment.forwardedRequestHeaders.get(CONTENT_SECURITY_POLICY), null);
+    assert.equal(
+        loopbackDevelopment.forwardedRequestHeaders.get(CONTENT_SECURITY_POLICY_REPORT_ONLY),
         loopbackDevelopment.policy,
     );
     assert.equal(
         remoteDevelopment.responseHeaders.get(CONTENT_SECURITY_POLICY),
         remoteDevelopment.policy,
     );
+    assert.equal(remoteDevelopment.responseHeaders.get(CONTENT_SECURITY_POLICY_REPORT_ONLY), null);
     assert.equal(excluded, null);
 });
 
@@ -240,15 +252,9 @@ test("forwarded and response policies enforce the same nonce policy without muta
     assert.equal(original.headers.get(CONTENT_SECURITY_POLICY_REPORT_ONLY), "default-src https:");
     assert.notEqual(security.forwardedRequestHeaders, original.headers);
     assert.equal(security.forwardedRequestHeaders.get(CONTENT_SECURITY_POLICY), security.policy);
-    assert.equal(
-        security.forwardedRequestHeaders.get(CONTENT_SECURITY_POLICY_REPORT_ONLY),
-        security.policy,
-    );
+    assert.equal(security.forwardedRequestHeaders.get(CONTENT_SECURITY_POLICY_REPORT_ONLY), null);
     assert.equal(security.responseHeaders.get(CONTENT_SECURITY_POLICY), security.policy);
-    assert.equal(
-        security.responseHeaders.get(CONTENT_SECURITY_POLICY_REPORT_ONLY),
-        security.policy,
-    );
+    assert.equal(security.responseHeaders.get(CONTENT_SECURITY_POLICY_REPORT_ONLY), null);
     assert.equal(security.forwardedRequestHeaders.get("x-request-id"), "request-1");
     assert.equal(security.forwardedRequestHeaders.get("referrer-policy"), null);
 
@@ -261,7 +267,7 @@ test("forwarded and response policies enforce the same nonce policy without muta
             [...headers].filter(
                 ([name]) => name === CONTENT_SECURITY_POLICY_REPORT_ONLY.toLowerCase(),
             ).length,
-            1,
+            0,
         );
     }
 });
@@ -273,7 +279,6 @@ test("document responses receive only the exact fixed defensive header values", 
     assert.equal(PERMISSIONS_POLICY.includes("fullscreen"), false);
     assert.deepEqual(Object.fromEntries(security.responseHeaders), {
         "content-security-policy": buildContentSecurityPolicy(FIXED_NONCE),
-        "content-security-policy-report-only": buildContentSecurityPolicy(FIXED_NONCE),
         "cross-origin-opener-policy": "same-origin",
         "permissions-policy":
             "accelerometer=(), autoplay=(), camera=(), display-capture=(), encrypted-media=(), geolocation=(), gyroscope=(), magnetometer=(), microphone=(), payment=(), screen-wake-lock=(), usb=(), clipboard-write=(self), publickey-credentials-create=(self), publickey-credentials-get=(self)",

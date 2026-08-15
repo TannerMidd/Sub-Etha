@@ -1,6 +1,16 @@
 import { expect, test, type Locator, type Page } from "@playwright/test";
 
+test.use({ serviceWorkers: "block" });
+
 const PREVIEW_URL = "/?design-preview#/room/signal-watch";
+
+async function openFreshPreviewDocument(page: Page, url: string): Promise<void> {
+    // Pagehide intentionally scrubs the outgoing app history entry. Navigate through a neutral
+    // document before opening another development-only preview surface.
+    await page.goto("/manifest.webmanifest");
+    await page.evaluate(() => sessionStorage.removeItem("sub-etha-route-scrub-v1"));
+    await page.goto(url);
+}
 
 async function dispatchTouchSwipe(
     page: Page,
@@ -222,7 +232,10 @@ test("editable fields retain native text selection and replacement", async ({ pa
         "hab watch",
     );
 
-    await page.goto("/?design-preview&surface-preview=settings#/room/signal-watch");
+    await openFreshPreviewDocument(
+        page,
+        "/?design-preview&surface-preview=settings#/room/signal-watch",
+    );
     await replaceSelectedText(
         page,
         page.locator("#display-name"),
@@ -233,7 +246,7 @@ test("editable fields retain native text selection and replacement", async ({ pa
         "Field Agent",
     );
 
-    await page.goto("/?design-preview&surface-preview=login");
+    await openFreshPreviewDocument(page, "/?design-preview&surface-preview=login");
     await replaceSelectedText(
         page,
         page.locator("#homeserver"),
@@ -272,7 +285,7 @@ test("header Back, room selection, and browser Back preserve mobile history", as
 
 test("reduced motion removes drawer and dialog transition timing", async ({ page }) => {
     await page.emulateMedia({ reducedMotion: "reduce" });
-    await page.reload();
+    await openFreshPreviewDocument(page, PREVIEW_URL);
     await expect(page.locator('[data-ui="app-shell"]')).toBeVisible();
 
     const durations = await Promise.all(
@@ -303,7 +316,8 @@ test("the installed shell reports safe-area insets and never triggers focus zoom
         "/?design-preview&surface-preview=settings#/room/signal-watch",
         "/?design-preview&surface-preview=login",
     ]) {
-        await page.goto(url);
+        await openFreshPreviewDocument(page, url);
+        await expect(page).toHaveURL(/design-preview/);
         await expect(page.locator("body")).toBeVisible();
 
         const fontSizes = await page.evaluate(() =>

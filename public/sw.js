@@ -6,6 +6,7 @@ const PUSH_STORE = "settings";
 const ROOM_NOTIFICATION_PREFIX = "sub-etha-room:";
 const GENERIC_NOTIFICATION_TAG = "sub-etha-generic";
 const TEST_NOTIFICATION_TAG = "sub-etha-test";
+const PUSH_PROTOCOL_VERSION = 2;
 // Push configuration, badges, and stale-push compensation all share one queue.
 // A badge API call cannot be cancelled once it has started, so configuration
 // changes must wait for an in-flight call and then reconcile the badge before a
@@ -44,6 +45,14 @@ async function dismissRoomNotification(roomId) {
     const notifications = await self.registration.getNotifications({
         tag: notificationTag(roomId),
     });
+
+    for (const notification of notifications) {
+        notification.close();
+    }
+}
+
+async function dismissAllNotifications() {
+    const notifications = await self.registration.getNotifications({});
 
     for (const notification of notifications) {
         notification.close();
@@ -178,9 +187,73 @@ function setPushConfig(config) {
         // A replacement generation must never inherit the preceding account's
         // unread count. The next push for this generation will set its own value.
         if (previous && !samePushConfig(previous, config)) {
+            await dismissNotificationsForGeneration(previous.generation);
             await syncBadge(0);
         }
     });
+}
+
+async function dismissNotificationsForGeneration(generation) {
+    if (typeof generation !== "string") {
+        return;
+    }
+
+    const notifications = await self.registration.getNotifications({});
+
+    for (const notification of notifications) {
+        if (notification.data?.generation === generation) {
+            notification.close();
+        }
+    }
+}
+
+async function canonicalGeneration(managementKey) {
+    const digest = await self.crypto.subtle.digest(
+        "SHA-256",
+        new TextEncoder().encode(managementKey),
+    );
+
+    return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join(
+        "",
+    );
+}
+
+async function migratePushConfigInQueue(generation, managementKey) {
+    const current = await readPushConfig();
+
+    if (!current || current.managementKey !== managementKey) {
+        throw new Error("The legacy push configuration no longer matches this account.");
+    }
+
+    if (
+        typeof current.generation === "string" &&
+        current.generation !== current.managementKey &&
+        current.legacyGeneration !== true
+    ) {
+        return current;
+    }
+
+    if (generation !== (await canonicalGeneration(managementKey))) {
+        throw new Error("The legacy push configuration generation is invalid.");
+    }
+
+    if (current.generation === generation && current.legacyGeneration === true) {
+        return current;
+    }
+
+    const migrated = {
+        ...current,
+        generation,
+        legacyGeneration: true,
+    };
+
+    await writePushConfig(migrated);
+
+    return migrated;
+}
+
+function migratePushConfig(generation, managementKey) {
+    return queuePushConfigMutation(() => migratePushConfigInQueue(generation, managementKey));
 }
 
 function clearPushConfigForGeneration(expectedGeneration, expectedDeliveryKey) {
@@ -188,6 +261,8 @@ function clearPushConfigForGeneration(expectedGeneration, expectedDeliveryKey) {
         const cleared = await clearPushConfig(expectedGeneration, expectedDeliveryKey);
 
         if (cleared) {
+            await dismissAllNotifications();
+
             // This is ordered after every badge write owned by the cleared
             // generation, and before a later generation can set its badge.
             await syncBadge(0);
@@ -218,6 +293,18 @@ function syncBadgeForGeneration(config, unread) {
     });
 }
 
+function showNotificationForGeneration(config, title, options) {
+    return queuePushConfigMutation(async () => {
+        const current = await readPushConfig();
+
+        if (!samePushConfig(config, current)) {
+            return;
+        }
+
+        await self.registration.showNotification(title, options);
+    });
+}
+
 function dismissStaleNotification(config, tag) {
     return queuePushConfigMutation(async () => {
         const current = await readPushConfig();
@@ -243,9 +330,9 @@ function offlineNavigationResponse() {
     );
 }
 
-self.addEventListener("install", (event) => {
-    // Installation is deliberately cache-free so an update cannot be blocked by optional assets.
-    event.waitUntil(self.skipWaiting());
+self.addEventListener("install", () => {
+    // Installation is deliberately cache-free. Updates remain waiting until the connected app
+    // explicitly accepts them, so a background update cannot interrupt an active session.
 });
 
 self.addEventListener("message", (event) => {
@@ -259,10 +346,22 @@ self.addEventListener("message", (event) => {
                 deliveryKey: event.data.deliveryKey,
                 managementKey: event.data.managementKey,
                 publicKey: event.data.publicKey,
-                generation: event.data.generation,
+                ...(typeof event.data.generation === "string"
+                    ? { generation: event.data.generation }
+                    : { legacyGeneration: true }),
             })
-                .then(() => event.ports?.[0]?.postMessage({ ok: true }))
-                .catch(() => event.ports?.[0]?.postMessage({ ok: false })),
+                .then(() =>
+                    event.ports?.[0]?.postMessage({
+                        ok: true,
+                        protocolVersion: PUSH_PROTOCOL_VERSION,
+                    }),
+                )
+                .catch(() =>
+                    event.ports?.[0]?.postMessage({
+                        ok: false,
+                        protocolVersion: PUSH_PROTOCOL_VERSION,
+                    }),
+                ),
         );
     }
 
@@ -272,29 +371,71 @@ self.addEventListener("message", (event) => {
                 .then((config) =>
                     event.ports?.[0]?.postMessage({
                         ok: true,
+                        protocolVersion: PUSH_PROTOCOL_VERSION,
                         config: config
                             ? {
                                   deliveryKey: config.deliveryKey,
                                   managementKey: config.managementKey,
                                   generation: config.generation ?? null,
+                                  legacyGeneration: config.legacyGeneration === true,
                               }
                             : null,
                     }),
                 )
-                .catch(() => event.ports?.[0]?.postMessage({ ok: false })),
+                .catch(() =>
+                    event.ports?.[0]?.postMessage({
+                        ok: false,
+                        protocolVersion: PUSH_PROTOCOL_VERSION,
+                    }),
+                ),
+        );
+    }
+
+    if (event.data?.type === "MIGRATE_PUSH_CONFIG") {
+        event.waitUntil(
+            migratePushConfig(event.data.generation, event.data.managementKey)
+                .then((config) =>
+                    event.ports?.[0]?.postMessage({
+                        ok: true,
+                        protocolVersion: PUSH_PROTOCOL_VERSION,
+                        config: {
+                            deliveryKey: config.deliveryKey,
+                            managementKey: config.managementKey,
+                            generation: config.generation ?? null,
+                            legacyGeneration: config.legacyGeneration === true,
+                        },
+                    }),
+                )
+                .catch(() =>
+                    event.ports?.[0]?.postMessage({
+                        ok: false,
+                        protocolVersion: PUSH_PROTOCOL_VERSION,
+                    }),
+                ),
         );
     }
 
     if (event.data?.type === "CLEAR_PUSH_CONFIG") {
         event.waitUntil(
             clearPushConfigForGeneration(event.data.generation, event.data.deliveryKey)
-                .then((cleared) => event.ports?.[0]?.postMessage({ ok: true, cleared }))
-                .catch(() => event.ports?.[0]?.postMessage({ ok: false })),
+                .then((cleared) =>
+                    event.ports?.[0]?.postMessage({
+                        ok: true,
+                        protocolVersion: PUSH_PROTOCOL_VERSION,
+                        cleared,
+                    }),
+                )
+                .catch(() =>
+                    event.ports?.[0]?.postMessage({
+                        ok: false,
+                        protocolVersion: PUSH_PROTOCOL_VERSION,
+                    }),
+                ),
         );
     }
 
     if (event.data?.type === "DISMISS_ROOM_NOTIFICATION") {
-        event.waitUntil(dismissRoomNotification(event.data.roomId));
+        event.waitUntil(queuePushConfigMutation(() => dismissRoomNotification(event.data.roomId)));
     }
 });
 
@@ -343,11 +484,15 @@ self.addEventListener("push", (event) => {
             if (
                 payload.kind === "subscription-challenge" &&
                 typeof payload.challenge === "string" &&
-                typeof payload.generation === "string"
+                (typeof payload.generation === "string" || payload.generation === undefined)
             ) {
                 const config = await readPushConfig();
+                const generationMatches =
+                    typeof payload.generation === "string"
+                        ? config?.generation === payload.generation
+                        : config?.legacyGeneration === true;
 
-                if (config?.generation !== payload.generation) {
+                if (!generationMatches) {
                     return;
                 }
 
@@ -395,7 +540,7 @@ self.addEventListener("push", (event) => {
 
             if (!visible) {
                 operations.push(
-                    self.registration.showNotification("Sub-Etha", {
+                    showNotificationForGeneration(config, "Sub-Etha", {
                         body: test
                             ? "The test transmission arrived successfully."
                             : "A new transmission has arrived.",
@@ -426,20 +571,30 @@ self.addEventListener("push", (event) => {
 
 self.addEventListener("pushsubscriptionchange", (event) => {
     event.waitUntil(
-        (async () => {
+        queuePushConfigMutation(async () => {
             const config = await readPushConfig();
 
             if (!config?.deliveryKey || !config?.managementKey || !config?.publicKey) {
                 return;
             }
 
+            const current =
+                typeof config.generation === "string" &&
+                config.generation !== config.managementKey &&
+                config.legacyGeneration !== true
+                    ? config
+                    : await migratePushConfigInQueue(
+                          await canonicalGeneration(config.managementKey),
+                          config.managementKey,
+                      );
+
             const subscription = await self.registration.pushManager.subscribe({
                 userVisibleOnly: true,
-                applicationServerKey: decodeApplicationServerKey(config.publicKey),
+                applicationServerKey: decodeApplicationServerKey(current.publicKey),
             });
-            const current = await readPushConfig();
+            const confirmedConfig = await readPushConfig();
 
-            if (!samePushConfig(config, current)) {
+            if (!samePushConfig(current, confirmedConfig)) {
                 await subscription.unsubscribe();
 
                 return;
@@ -449,9 +604,9 @@ self.addEventListener("pushsubscriptionchange", (event) => {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({
-                    deliveryKey: config.deliveryKey,
-                    managementKey: config.managementKey,
-                    generation: config.generation,
+                    deliveryKey: current.deliveryKey,
+                    managementKey: current.managementKey,
+                    generation: current.generation,
                     subscription: subscription.toJSON(),
                 }),
             });
@@ -462,15 +617,15 @@ self.addEventListener("pushsubscriptionchange", (event) => {
 
             const confirmed = await readPushConfig();
 
-            if (!samePushConfig(config, confirmed)) {
+            if (!samePushConfig(current, confirmed)) {
                 await subscription.unsubscribe();
                 await fetch("/api/push/subscriptions", {
                     method: "DELETE",
                     headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ managementKey: config.managementKey }),
+                    body: JSON.stringify({ managementKey: current.managementKey }),
                 });
             }
-        })(),
+        }),
     );
 });
 

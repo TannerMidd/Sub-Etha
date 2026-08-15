@@ -1,9 +1,15 @@
 import { expect, test, type Page } from "@playwright/test";
 
+test.use({ serviceWorkers: "block" });
+
 function runtimeProblems(page: Page): string[] {
     const problems: string[] = [];
 
     page.on("console", (message) => {
+        if (message.text() === "Service Worker registration blocked by Playwright") {
+            return;
+        }
+
         if (message.type() === "warning" || message.type() === "error") {
             problems.push(`${message.type()}: ${message.text()}`);
         }
