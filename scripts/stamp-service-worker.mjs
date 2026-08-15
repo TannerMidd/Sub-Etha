@@ -1,8 +1,30 @@
 import { readFile, writeFile } from "node:fs/promises";
 
-const outputPath = new URL("../.output/public/sw.js", import.meta.url);
+const localOutputPath = new URL("../.output/public/sw.js", import.meta.url);
+const vercelOutputPath = new URL("../.vercel/output/static/sw.js", import.meta.url);
+const candidates = process.env.VERCEL
+    ? [vercelOutputPath, localOutputPath]
+    : [localOutputPath, vercelOutputPath];
 const sentinel = '"__SUB_ETHA_BUILD_ID__"';
-const source = await readFile(outputPath, "utf8");
+let outputPath;
+let source;
+
+for (const candidate of candidates) {
+    try {
+        source = await readFile(candidate, "utf8");
+        outputPath = candidate;
+        break;
+    } catch (error) {
+        if (error?.code !== "ENOENT") {
+            throw error;
+        }
+    }
+}
+
+if (!outputPath || source === undefined) {
+    throw new Error("The built service worker was not found in a supported Nitro output path.");
+}
+
 const occurrences = source.split(sentinel).length - 1;
 
 if (occurrences !== 1) {
