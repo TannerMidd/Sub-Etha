@@ -8,6 +8,7 @@ import {
 import {
     neonPushRepository,
     type PushRepository,
+    type PushSubscriptionSnapshot,
     type StoredPushSubscription,
 } from "./push-repository";
 
@@ -43,7 +44,7 @@ interface MatrixNotifyRequest {
         event_id?: string;
         room_id?: string;
         counts?: { unread?: number; missed_calls?: number };
-        devices?: PushDevice[];
+        devices?: unknown[];
     };
 }
 
@@ -55,6 +56,7 @@ interface PushConfiguration {
 
 export interface PushLimits {
     maxSubscriptions: number;
+    maxRevokedManagementKeys: number;
     registrationPerTenMinutes: number;
     testsPerMinute: number;
     notifyPerMinute: number;
@@ -77,6 +79,20 @@ interface PushServerDependencies {
 }
 
 type DeviceDeliveryResult = "sent" | "suppressed" | "rejected" | "transient";
+
+interface ResolvedPushDevice {
+    device: PushDevice;
+    keyHash: string | null;
+    snapshot: PushSubscriptionSnapshot | null;
+}
+
+function isPushDevice(value: unknown): value is PushDevice {
+    return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function validPushGeneration(value: unknown): value is string {
+    return typeof value === "string" && /^[A-Za-z0-9_-]{16,128}$/.test(value);
+}
 
 function json(body: unknown, status = 200, additionalHeaders: HeadersInit = {}): Response {
     return Response.json(body, {
@@ -111,6 +127,11 @@ function positiveIntegerEnvironment(
 export function pushLimitsFromEnvironment(environment: PushEnvironment): PushLimits {
     return {
         maxSubscriptions: positiveIntegerEnvironment(environment, "PUSH_MAX_SUBSCRIPTIONS", 10_000),
+        maxRevokedManagementKeys: positiveIntegerEnvironment(
+            environment,
+            "PUSH_MAX_REVOKED_MANAGEMENT_KEYS",
+            100_000,
+        ),
         registrationPerTenMinutes: positiveIntegerEnvironment(
             environment,
             "PUSH_REGISTRATION_LIMIT_PER_10M",
@@ -339,25 +360,24 @@ export function createPushServer(dependencies: PushServerDependencies = {}) {
     };
 
     const deliver = async (
-        device: PushDevice,
+        resolved: ResolvedPushDevice,
         notification: NonNullable<MatrixNotifyRequest["notification"]>,
         pushConfiguration: PushConfiguration,
     ): Promise<DeviceDeliveryResult> => {
+        const { device, keyHash, snapshot } = resolved;
+
         if (device.app_id !== APP_ID || !validPushKey(device.pushkey)) {
             return "rejected";
         }
 
-        const keyHash = await hashCapability(device.pushkey);
-        const subscription = await repository.getSubscription(keyHash);
-
-        if (!subscription) {
+        if (!keyHash || !snapshot) {
             return "rejected";
         }
 
-        if (!validPushEndpoint(subscription.endpoint)) {
-            await repository.deleteSubscriptionByDeliveryKey(keyHash);
+        if (!validPushEndpoint(snapshot.endpoint)) {
+            const removed = await repository.deleteSubscriptionByDeliveryKeyIfCurrent(snapshot);
 
-            return "rejected";
+            return removed ? "rejected" : "transient";
         }
 
         const timestamp = now();
@@ -403,20 +423,31 @@ export function createPushServer(dependencies: PushServerDependencies = {}) {
 
         try {
             await sendNotification(
-                subscription,
+                snapshot,
                 genericNotificationPayload(notification),
                 pushConfiguration,
             );
-            await repository.markDelivered(keyHash, eventId, timestamp);
+
+            if (!(await repository.markDelivered(snapshot, eventId, timestamp))) {
+                if (eventId) {
+                    await repository.releaseDelivery(keyHash, eventId);
+                }
+
+                return "transient";
+            }
 
             return "sent";
         } catch (error) {
             const pushStatus = statusCode(error);
 
             if (pushStatus === 404 || pushStatus === 410) {
-                await repository.deleteSubscriptionByDeliveryKey(keyHash);
+                const removed = await repository.deleteSubscriptionByDeliveryKeyIfCurrent(snapshot);
 
-                return "rejected";
+                if (!removed && eventId) {
+                    await repository.releaseDelivery(keyHash, eventId);
+                }
+
+                return removed ? "rejected" : "transient";
             }
 
             if (eventId) {
@@ -463,7 +494,11 @@ export function createPushServer(dependencies: PushServerDependencies = {}) {
                         limits.maxSubscriptions,
                     );
 
-                    if (outcome === "invalid_challenge" || outcome === "expired_challenge") {
+                    if (
+                        outcome === "invalid_challenge" ||
+                        outcome === "expired_challenge" ||
+                        outcome === "revoked"
+                    ) {
                         return json(
                             { error: "Push confirmation expired or was not recognized." },
                             410,
@@ -490,10 +525,6 @@ export function createPushServer(dependencies: PushServerDependencies = {}) {
 
                     const managementKeyHash = await hashCapability(body.managementKey);
 
-                    if (!(await repository.getManagedSubscription(managementKeyHash))) {
-                        return json({ error: "Push subscription was not found." }, 404);
-                    }
-
                     if (
                         !(await consumeBudget(
                             BUDGET_SUBSCRIPTION_MUTATIONS,
@@ -504,7 +535,23 @@ export function createPushServer(dependencies: PushServerDependencies = {}) {
                         return json({ error: "Push subscription rate limit exceeded." }, 429);
                     }
 
-                    await repository.deleteSubscription(managementKeyHash);
+                    const outcome = await repository.deleteSubscription(
+                        managementKeyHash,
+                        now(),
+                        limits.maxRevokedManagementKeys,
+                    );
+
+                    if (outcome === "capacity_exceeded") {
+                        return json(
+                            { error: "Push revocation capacity is temporarily full." },
+                            503,
+                            { "Retry-After": String(RETRY_AFTER_SECONDS) },
+                        );
+                    }
+
+                    if (outcome === "not_found") {
+                        return json({ error: "Push subscription was not found." }, 404);
+                    }
 
                     return json({ removed: true });
                 }
@@ -512,6 +559,7 @@ export function createPushServer(dependencies: PushServerDependencies = {}) {
                 const body = await readJson<{
                     deliveryKey?: unknown;
                     managementKey?: unknown;
+                    generation?: unknown;
                     subscription?: {
                         endpoint?: unknown;
                         keys?: { p256dh?: unknown; auth?: unknown };
@@ -529,6 +577,12 @@ export function createPushServer(dependencies: PushServerDependencies = {}) {
                     typeof p256dh !== "string" ||
                     typeof auth !== "string"
                 ) {
+                    return json({ error: "Invalid push subscription." }, 400);
+                }
+
+                const generation = body.generation;
+
+                if (generation !== undefined && !validPushGeneration(generation)) {
                     return json({ error: "Invalid push subscription." }, 400);
                 }
 
@@ -573,6 +627,10 @@ export function createPushServer(dependencies: PushServerDependencies = {}) {
                     );
                 }
 
+                if (outcome === "revoked") {
+                    return json({ error: "This push registration was revoked." }, 410);
+                }
+
                 if (outcome === "capacity_exceeded" || outcome === "pending_capacity_exceeded") {
                     return json({ error: "Push subscription capacity is temporarily full." }, 503, {
                         "Retry-After": String(RETRY_AFTER_SECONDS),
@@ -594,7 +652,11 @@ export function createPushServer(dependencies: PushServerDependencies = {}) {
                 try {
                     await sendNotification(
                         { endpoint, p256dh, auth },
-                        JSON.stringify({ kind: "subscription-challenge", challenge }),
+                        JSON.stringify({
+                            kind: "subscription-challenge",
+                            challenge,
+                            ...(generation === undefined ? {} : { generation }),
+                        }),
                         pushConfiguration,
                     );
 
@@ -632,8 +694,19 @@ export function createPushServer(dependencies: PushServerDependencies = {}) {
                     return json({ error: "Push subscription was not found." }, 404);
                 }
 
+                const snapshot: PushSubscriptionSnapshot = subscription;
+
                 if (!validPushEndpoint(subscription.endpoint)) {
-                    await repository.deleteSubscription(managementKeyHash);
+                    const removed =
+                        await repository.deleteSubscriptionByDeliveryKeyIfCurrent(snapshot);
+
+                    if (!removed) {
+                        return json(
+                            { error: "The push subscription changed while it was being checked." },
+                            503,
+                            { "Retry-After": String(RETRY_AFTER_SECONDS) },
+                        );
+                    }
 
                     return json({ error: "Push subscription is no longer valid." }, 410);
                 }
@@ -678,14 +751,32 @@ export function createPushServer(dependencies: PushServerDependencies = {}) {
                     );
 
                     await sendNotification(subscription, payload, pushConfiguration);
-                    await repository.markDelivered(subscription.deliveryKeyHash, null, timestamp);
+
+                    if (!(await repository.markDelivered(snapshot, null, timestamp))) {
+                        return json(
+                            { error: "The push subscription changed while it was being tested." },
+                            503,
+                            { "Retry-After": String(RETRY_AFTER_SECONDS) },
+                        );
+                    }
 
                     return json({ sent: true });
                 } catch (error) {
                     const pushStatus = statusCode(error);
 
                     if (pushStatus === 404 || pushStatus === 410) {
-                        await repository.deleteSubscription(managementKeyHash);
+                        const removed =
+                            await repository.deleteSubscriptionByDeliveryKeyIfCurrent(snapshot);
+
+                        if (!removed) {
+                            return json(
+                                {
+                                    error: "The push subscription changed while it was being tested.",
+                                },
+                                503,
+                                { "Retry-After": String(RETRY_AFTER_SECONDS) },
+                            );
+                        }
 
                         return json({ error: "Push subscription expired." }, 410);
                     }
@@ -710,12 +801,46 @@ export function createPushServer(dependencies: PushServerDependencies = {}) {
                 if (
                     !notification ||
                     !Array.isArray(devices) ||
-                    devices.length > MAX_DEVICES_PER_REQUEST
+                    devices.length > MAX_DEVICES_PER_REQUEST ||
+                    devices.some((device) => !isPushDevice(device))
                 ) {
                     return json(
                         { errcode: "M_BAD_JSON", error: "Invalid Matrix notification." },
                         400,
                     );
+                }
+
+                const validDevices = devices as PushDevice[];
+
+                const deviceHashes = await Promise.all(
+                    validDevices.map((device) =>
+                        device.app_id === APP_ID && validPushKey(device.pushkey)
+                            ? hashCapability(device.pushkey)
+                            : Promise.resolve(null),
+                    ),
+                );
+                const uniqueHashes = [
+                    ...new Set(deviceHashes.filter((hash): hash is string => hash !== null)),
+                ];
+                const snapshots = await repository.getSubscriptions(uniqueHashes);
+                const snapshotByHash = new Map(
+                    snapshots.map((snapshot) => [snapshot.deliveryKeyHash, snapshot]),
+                );
+                const resolvedDevices: ResolvedPushDevice[] = validDevices.map((device, index) => ({
+                    device,
+                    keyHash: deviceHashes[index],
+                    snapshot:
+                        deviceHashes[index] === null
+                            ? null
+                            : (snapshotByHash.get(deviceHashes[index]) ?? null),
+                }));
+
+                if (snapshots.length === 0) {
+                    const rejected = validDevices.flatMap((device) =>
+                        typeof device.pushkey === "string" ? [device.pushkey] : [],
+                    );
+
+                    return json({ rejected });
                 }
 
                 if (
@@ -732,10 +857,12 @@ export function createPushServer(dependencies: PushServerDependencies = {}) {
                     );
                 }
 
-                const results = await mapWithConcurrency(devices, DELIVERY_CONCURRENCY, (device) =>
-                    deliver(device, notification, pushConfiguration),
+                const results = await mapWithConcurrency(
+                    resolvedDevices,
+                    DELIVERY_CONCURRENCY,
+                    (device) => deliver(device, notification, pushConfiguration),
                 );
-                const rejected = devices.flatMap((device, index) =>
+                const rejected = validDevices.flatMap((device, index) =>
                     results[index] === "rejected" && typeof device.pushkey === "string"
                         ? [device.pushkey]
                         : [],
@@ -753,7 +880,11 @@ export function createPushServer(dependencies: PushServerDependencies = {}) {
                     .cleanupDeliveries(now() - DELIVERY_RETENTION_SECONDS)
                     .catch(() => undefined);
                 await cleanupStaleSubscriptions().catch(() => undefined);
-                log({ route: "matrix-notify-summary", ...counts, deviceCount: devices.length });
+                log({
+                    route: "matrix-notify-summary",
+                    ...counts,
+                    deviceCount: validDevices.length,
+                });
 
                 if (counts.transient > 0) {
                     return json(

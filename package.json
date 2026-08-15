@@ -7,8 +7,9 @@
     },
     "scripts": {
         "dev": "vinext dev",
+        "prebuild": "node scripts/apply-security-patches.mjs",
         "build": "vite build",
-        "start": "vinext start",
+        "start": "node .output/server/index.mjs",
         "format": "prettier --write . --ignore-unknown",
         "format:check": "prettier --check . --ignore-unknown",
         "check": "npm run format:check && npm run lint && npm test && npm run test:browser",
@@ -18,14 +19,16 @@
         "test": "npm run typecheck && npm run test:unit && npm run build",
         "lint": "eslint . --ignore-pattern dist --ignore-pattern .next --ignore-pattern .output --ignore-pattern .vercel",
         "db:generate": "node --env-file-if-exists=.env.local ./node_modules/drizzle-kit/bin.cjs generate",
-        "db:migrate": "node --env-file-if-exists=.env.local ./node_modules/drizzle-kit/bin.cjs migrate"
+        "db:migrate": "node --env-file-if-exists=.env.local ./node_modules/drizzle-kit/bin.cjs migrate",
+        "postinstall": "node scripts/apply-security-patches.mjs"
     },
     "dependencies": {
         "@neondatabase/serverless": "^1.1.0",
         "clsx": "^2.1.1",
         "dompurify": "^3.4.13",
         "drizzle-orm": "0.45.2",
-        "emoji-picker-react": "^4.19.1",
+        "emoji-picker-react": "4.19.1",
+        "flairup": "1.0.0",
         "ipaddr.js": "2.5.0",
         "lucide-react": "^1.31.0",
         "matrix-encrypt-attachment": "^1.0.3",
@@ -53,6 +56,7 @@
         "eslint-plugin-jsx-a11y": "6.10.2",
         "eslint-plugin-react": "7.37.5",
         "eslint-plugin-react-hooks": "7.1.1",
+        "fake-indexeddb": "6.2.5",
         "globals": "16.4.0",
         "prettier": "^3.9.6",
         "react-server-dom-webpack": "19.2.8",

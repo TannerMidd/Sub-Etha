@@ -2,7 +2,7 @@ import {
     ClientEvent,
     EventTimeline,
     EventType,
-    IndexedDBStore,
+    MemoryStore,
     MatrixClient,
     MatrixEvent,
     MatrixEventEvent,
@@ -17,7 +17,7 @@ import {
     type IPusherRequest,
     type Room,
 } from "matrix-js-sdk";
-import { CryptoEvent } from "matrix-js-sdk/lib/crypto-api";
+import { CryptoEvent, type GeneratedSecretStorageKey } from "matrix-js-sdk/lib/crypto-api";
 import {
     VerificationPhase,
     VerificationRequestEvent,
@@ -33,23 +33,49 @@ import {
     encryptAttachment,
     type IEncryptedFile,
 } from "matrix-encrypt-attachment";
-import { base64UrlToBytes, clearSession, saveSession } from "./session-store";
+import {
+    base64UrlToBytes,
+    cleanupExactSessionDatabasesWhileHoldingVaultLock,
+    cleanupSessionDatabases,
+    completeLocalSessionCleanup,
+    deleteSessionRecord,
+    SESSION_VAULT_LOCK_NAME,
+    type SessionCleanupDescriptor,
+    type SessionDeletionResult,
+    type SessionLease,
+} from "./session-store";
 import { humanizeMatrixError } from "./auth";
 import { assertAllowedHomeserverUrl } from "./url-policy";
 import {
     assertMediaByteLength,
     assertDeclaredMediaLimits,
     assertSafeImageBytes,
+    boundedMediaString,
+    canonicalMediaFileName,
+    encryptedMediaDigest,
     imageDimensions,
-    MAX_CONCURRENT_MEDIA_LOADS,
-    MAX_MEDIA_BYTES,
+    isImageUploadCandidate,
+    isSafeNonNegativeInteger,
+    MediaBusyError,
+    MediaOperationGate,
+    MAX_AVATAR_BYTES,
+    MAX_ENCRYPTED_UPLOAD_BYTES,
+    MAX_IMAGE_BYTES,
+    MAX_IMAGE_DECODED_BYTES,
+    MAX_MEDIA_CONFIG_BYTES,
     MAX_MEDIA_CACHE_BYTES,
     MAX_MEDIA_CACHE_ENTRIES,
+    MAX_NONIMAGE_MEDIA_BYTES,
+    MAX_PLAIN_UPLOAD_BYTES,
+    MEDIA_IDLE_TIMEOUT_MS,
+    MEDIA_IMAGE_DEADLINE_MS,
+    MEDIA_NONIMAGE_DEADLINE_MS,
     MediaLimitError,
     MediaTimeoutError,
     normalizeMediaFile,
     readBoundedResponse,
     type MediaExpectedKind,
+    type MediaOperationLease,
 } from "./media";
 import { normalizeRooms, normalizeTimeline } from "./normalize";
 import { createMediaContent, createTextContent } from "./message-content";
@@ -65,10 +91,135 @@ import type {
 import { INITIAL_TIMELINE_ITEM_INDEX, timelineStartIndexAfterPrepend } from "../timeline-window";
 
 type Listener = () => void;
+type ShutdownMode = "none" | "stop" | "logout" | "pagehide";
+
+const REMOTE_LOGOUT_TIMEOUT_MS = 10_000;
+const REMOTE_REFRESH_TIMEOUT_MS = 30_000;
+
+export interface MatrixLogoutResult {
+    remoteSessionEnded: boolean;
+}
+
+export interface MatrixPageHideShutdownResult {
+    refreshInFlight: boolean;
+}
+
+export interface PendingMatrixSessionRevocationResult {
+    confirmed: boolean;
+}
+
+class DiscardedRefreshSessionError extends Error {
+    constructor(readonly revocationConfirmed: boolean) {
+        super("The Matrix session was locked during token refresh.");
+    }
+}
+
+class CommittedRefreshDuringShutdownError extends Error {
+    constructor() {
+        super("The Matrix session was locked during token refresh.");
+    }
+}
+
+class MatrixRefreshTimeoutError extends Error {
+    constructor() {
+        super("The Matrix token refresh timed out.");
+    }
+}
+
+async function performMatrixSessionRevocation(
+    session: Readonly<PersistedMatrixSession>,
+): Promise<boolean> {
+    if (session.authKind === "oauth" && session.oauth) {
+        const oauth = new OAuth2(session.oauth.metadata, {
+            clientId: session.oauth.clientId,
+            deviceId: session.oauth.deviceId,
+            redirectUri: session.oauth.redirectUri,
+        });
+        const revocations: Promise<void>[] = [];
+
+        if (session.refreshToken) {
+            revocations.push(
+                Promise.resolve().then(() =>
+                    oauth.revokeToken(session.refreshToken!, "refresh_token"),
+                ),
+            );
+        }
+
+        revocations.push(
+            Promise.resolve().then(() => oauth.revokeToken(session.accessToken, "access_token")),
+        );
+
+        const results = await Promise.allSettled(revocations);
+
+        return results.every((result) => result.status === "fulfilled");
+    }
+
+    const logoutClient = createClient({
+        baseUrl: assertAllowedHomeserverUrl(session.baseUrl),
+        accessToken: session.accessToken,
+        disableVoip: true,
+        localTimeoutMs: REMOTE_LOGOUT_TIMEOUT_MS,
+        store: new MemoryStore(),
+    });
+
+    await logoutClient.logout();
+
+    return true;
+}
+
+async function boundedMatrixSessionRevocation(
+    operation: () => Promise<boolean>,
+    timeoutMs: number,
+): Promise<PendingMatrixSessionRevocationResult> {
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+
+    try {
+        const confirmed = await Promise.race([
+            operation().catch(() => false),
+            new Promise<boolean>((resolve) => {
+                timeout = setTimeout(() => resolve(false), timeoutMs);
+            }),
+        ]);
+
+        return { confirmed: confirmed === true };
+    } catch {
+        return { confirmed: false };
+    } finally {
+        if (timeout !== undefined) {
+            clearTimeout(timeout);
+        }
+    }
+}
+
+export function revokePendingMatrixSession(
+    session: Readonly<PersistedMatrixSession>,
+): Promise<PendingMatrixSessionRevocationResult> {
+    return boundedMatrixSessionRevocation(
+        () => performMatrixSessionRevocation(session),
+        REMOTE_LOGOUT_TIMEOUT_MS,
+    );
+}
 
 export class MatrixAlreadyOpenError extends Error {
     constructor() {
         super("Sub-Etha is already tuned to this account in another tab.");
+    }
+}
+
+export class MatrixOwnershipUnavailableError extends Error {
+    constructor() {
+        super("This browser cannot safely own the persistent Matrix encryption store.");
+    }
+}
+
+export class MatrixSessionRevocationUnconfirmedError extends Error {
+    readonly remoteSessionEnded = false;
+
+    constructor(cause: Error) {
+        super(`${cause.message} Newly issued remote credentials could not be confirmed revoked.`, {
+            cause,
+        });
+        this.name = "MatrixSessionRevocationUnconfirmedError";
     }
 }
 
@@ -103,6 +254,8 @@ function hasMoreRoomHistory(room: Room | null | undefined): boolean {
 
 interface ActiveVerification {
     request: VerificationRequest;
+    client: MatrixClient;
+    lifecycleGeneration: number;
     direction: "incoming" | "outgoing";
     verifierStarted: boolean;
     verifier: Verifier | null;
@@ -111,13 +264,19 @@ interface ActiveVerification {
     showSas: ((callbacks: ShowSasCallbacks) => void) | null;
 }
 
+interface TransientRecoverySetup {
+    generated: GeneratedSecretStorageKey;
+}
+
 interface MediaCacheEntry<T> {
     promise: Promise<T>;
+    value?: T;
     byteLength: number;
     lastUsed: number;
     settled: boolean;
     released: boolean;
     controller?: AbortController;
+    alias?: string;
 }
 
 interface PosterAsset {
@@ -131,29 +290,50 @@ interface MediaRequestOptions {
     resizeMethod?: "crop" | "scale";
     cacheKey?: string;
     expectedKind?: MediaExpectedKind;
+    signal?: AbortSignal;
+}
+
+interface PreparedImageFile {
+    file: File;
+    bytes: ArrayBuffer;
+    safety: ReturnType<typeof assertSafeImageBytes>;
+}
+
+interface MediaConfigState {
+    client: MatrixClient;
+    generation: number;
+    uploadSize: number | null;
 }
 
 async function acquireExclusiveLock(name: string): Promise<(() => void) | null> {
-    if (!("locks" in navigator)) {
-        return () => undefined;
+    if (
+        typeof navigator === "undefined" ||
+        !("locks" in navigator) ||
+        typeof navigator.locks?.request !== "function"
+    ) {
+        throw new MatrixOwnershipUnavailableError();
     }
 
     let releaseLock: (() => void) | undefined;
     let resolveAcquired: (acquired: boolean) => void = () => undefined;
-    const acquired = new Promise<boolean>((resolve) => {
+    let rejectAcquired: (error: unknown) => void = () => undefined;
+    const acquired = new Promise<boolean>((resolve, reject) => {
         resolveAcquired = resolve;
+        rejectAcquired = reject;
     });
     const held = new Promise<void>((resolve) => {
         releaseLock = resolve;
     });
 
-    void navigator.locks.request(name, { ifAvailable: true }, async (lock) => {
-        resolveAcquired(Boolean(lock));
+    void navigator.locks
+        .request(name, { ifAvailable: true }, async (lock) => {
+            resolveAcquired(Boolean(lock));
 
-        if (lock) {
-            await held;
-        }
-    });
+            if (lock) {
+                await held;
+            }
+        })
+        .catch(rejectAcquired);
 
     if (!(await acquired)) {
         return null;
@@ -162,12 +342,15 @@ async function acquireExclusiveLock(name: string): Promise<(() => void) | null> 
     return () => releaseLock?.();
 }
 
-async function messageInfo(file: File): Promise<Record<string, unknown>> {
+async function messageInfo(
+    file: File,
+    imageSafety?: ReturnType<typeof assertSafeImageBytes>,
+): Promise<Record<string, unknown>> {
     const info: Record<string, unknown> = {
         size: file.size,
         mimetype: file.type || "application/octet-stream",
     };
-    const dimensions = await imageDimensions(file);
+    const dimensions = imageSafety ?? (await imageDimensions(file));
 
     if (dimensions.width) {
         info.w = dimensions.width;
@@ -215,18 +398,46 @@ export function findOwnReactionEventId(
 
 export class MatrixService {
     private client: MatrixClient | null = null;
-    private store: IndexedDBStore | null = null;
-    private session: PersistedMatrixSession;
+    private store: MemoryStore | null = null;
+    private lease: SessionLease | null;
     private snapshot: MatrixSnapshot;
     private listeners = new Set<Listener>();
     private releaseLock: (() => void) | null = null;
+    private releaseVaultLock: (() => void) | null = null;
+    private startTask: Promise<void> | null = null;
+    private refreshTask: Promise<{
+        accessToken: string;
+        refreshToken?: string;
+        expiry?: Date;
+    }> | null = null;
+    private logoutTask: Promise<MatrixLogoutResult> | null = null;
+    private pendingStopReleaseTask: Promise<void> | null = null;
+    private pageHideReleaseTask: Promise<void> | null = null;
+    private pageHideRefreshInFlight = false;
+    private invalidationReported = false;
+    private revocationUncertaintyReported = false;
+    private refreshSessionEndUncertain = false;
+    private lifecycleGeneration = 0;
+    private shutdownMode: ShutdownMode = "none";
+    private started = false;
+    private readonly remoteLogoutTimeoutMs = REMOTE_LOGOUT_TIMEOUT_MS;
+    private readonly remoteRefreshTimeoutMs = REMOTE_REFRESH_TIMEOUT_MS;
+    private activeUploadControllers = new Set<AbortController>();
+    private readonly mediaGate = new MediaOperationGate();
     private mediaAssets = new Map<string, MediaCacheEntry<MediaAsset>>();
+    private mediaAssetKeys = new WeakMap<object, string>();
     private gifPosters = new Map<string, MediaCacheEntry<PosterAsset | null>>();
+    private mediaAliases = new Map<string, Set<string>>();
+    private mediaInvalidationGeneration = 0;
+    private mediaConfigTask: Promise<MediaConfigState> | null = null;
+    private mediaConfigTaskClient: MatrixClient | null = null;
+    private mediaConfigTaskGeneration = -1;
+    private mediaConfigState: MediaConfigState | null = null;
     private mediaCacheBytes = 0;
     private mediaCacheClock = 0;
-    private activeMediaLoads = 0;
-    private mediaLoadWaiters: Array<() => void> = [];
     private secretStorageKey: [string, Uint8Array<ArrayBuffer>] | null = null;
+    private rustCryptoStorageKey: Uint8Array<ArrayBuffer> | null = null;
+    private transientRecoverySetups = new Set<TransientRecoverySetup>();
     private activeVerification: ActiveVerification | null = null;
     private derivedRefreshFrame: number | null = null;
     private pendingTimelineRefresh = false;
@@ -238,9 +449,12 @@ export class MatrixService {
     private stopped = false;
     private readonly takeoverStorageKey = "sub-etha-account-takeover";
 
-    constructor(session: PersistedMatrixSession) {
-        this.session = session;
-        this.snapshot = emptySnapshot(session);
+    constructor(
+        lease: SessionLease,
+        private readonly onSessionInvalidated?: (error: Error) => void,
+    ) {
+        this.lease = lease;
+        this.snapshot = emptySnapshot(lease.session);
     }
 
     subscribe = (listener: Listener): (() => void) => {
@@ -251,7 +465,11 @@ export class MatrixService {
 
     getSnapshot = (): MatrixSnapshot => this.snapshot;
 
-    private emit(next: Partial<MatrixSnapshot> = {}): void {
+    private emit(next: Partial<MatrixSnapshot> = {}, allowWhenStopped = false): void {
+        if (this.stopped && !allowWhenStopped) {
+            return;
+        }
+
         this.snapshot = { ...this.snapshot, ...next };
 
         for (const listener of this.listeners) {
@@ -267,116 +485,408 @@ export class MatrixService {
         return this.client;
     }
 
-    private async refreshTokens(refreshToken: string) {
-        this.session.baseUrl = assertAllowedHomeserverUrl(this.session.baseUrl);
+    private requireLease(): SessionLease {
+        if (!this.lease) {
+            throw new Error("The unlocked Matrix session is no longer available.");
+        }
 
-        if (this.session.authKind === "oauth" && this.session.oauth) {
-            const oauth = new OAuth2(this.session.oauth.metadata, {
-                clientId: this.session.oauth.clientId,
-                deviceId: this.session.oauth.deviceId,
-                redirectUri: this.session.oauth.redirectUri,
+        return this.lease;
+    }
+
+    private refreshTokens(refreshToken: string) {
+        if (this.refreshTask) {
+            return this.refreshTask;
+        }
+
+        const task = this.performTokenRefresh(refreshToken);
+        const tracked = task.finally(() => {
+            if (this.refreshTask === tracked) {
+                this.refreshTask = null;
+            }
+        });
+
+        this.refreshTask = tracked;
+
+        return tracked;
+    }
+
+    private async performTokenRefresh(refreshToken: string) {
+        if (this.stopped) {
+            throw new Error("The Matrix session was locked before token refresh could begin.");
+        }
+
+        const lease = this.requireLease();
+        const session = lease.session;
+        const baseUrl = assertAllowedHomeserverUrl(session.baseUrl);
+        let nextSession: PersistedMatrixSession;
+
+        if (session.authKind === "oauth" && session.oauth) {
+            const oauth = new OAuth2(session.oauth.metadata, {
+                clientId: session.oauth.clientId,
+                deviceId: session.oauth.deviceId,
+                redirectUri: session.oauth.redirectUri,
             });
-            const response = await oauth.performRefreshTokenGrant(refreshToken);
-
-            this.session = {
-                ...this.session,
+            const toNextSession = (
+                response: Awaited<ReturnType<OAuth2["performRefreshTokenGrant"]>>,
+            ): PersistedMatrixSession => ({
+                ...session,
+                baseUrl,
                 accessToken: response.access_token,
                 refreshToken: response.refresh_token ?? refreshToken,
                 expiresAt: response.expires_in
                     ? Date.now() + response.expires_in * 1000
                     : undefined,
-            };
-        } else {
-            const response = await createClient({
-                baseUrl: this.session.baseUrl,
-                disableVoip: true,
-            }).refreshToken(refreshToken);
+            });
+            const response = await this.awaitRemoteRefresh(
+                oauth.performRefreshTokenGrant(refreshToken),
+                (lateResponse) => this.revokeDiscardedRefreshSession(toNextSession(lateResponse)),
+            );
 
-            this.session = {
-                ...this.session,
+            nextSession = toNextSession(response);
+        } else {
+            const toNextSession = (response: {
+                access_token: string;
+                refresh_token?: string;
+                expires_in_ms: number;
+            }): PersistedMatrixSession => ({
+                ...session,
+                baseUrl,
                 accessToken: response.access_token,
                 refreshToken: response.refresh_token ?? refreshToken,
                 expiresAt: Date.now() + response.expires_in_ms,
-            };
+            });
+            const response = await this.awaitRemoteRefresh(
+                createClient({
+                    baseUrl,
+                    disableVoip: true,
+                    store: new MemoryStore(),
+                }).refreshToken(refreshToken),
+                (lateResponse) => this.revokeDiscardedRefreshSession(toNextSession(lateResponse)),
+            );
+
+            nextSession = toNextSession(response);
         }
 
-        await saveSession(this.session);
+        if (this.stopped) {
+            const revocation = await this.revokeDiscardedRefreshSession(nextSession);
+
+            throw new DiscardedRefreshSessionError(revocation.confirmed);
+        }
+
+        try {
+            await lease.reseal(nextSession, "token-refresh");
+        } catch (error) {
+            const resealError =
+                error instanceof Error
+                    ? error
+                    : new Error("The refreshed Matrix session could not be sealed.");
+            const revocation = await this.revokeDiscardedRefreshSession(nextSession);
+
+            if (this.stopped) {
+                throw new DiscardedRefreshSessionError(revocation.confirmed);
+            }
+
+            const invalidation = revocation.confirmed
+                ? resealError
+                : new MatrixSessionRevocationUnconfirmedError(resealError);
+
+            this.invalidateSession(invalidation);
+
+            throw invalidation;
+        }
+
+        if (this.stopped || this.lease !== lease) {
+            // The successful reseal is serialized before logout's tombstone, so the final
+            // session captured by deleteRecord includes these credentials and logout revokes
+            // them as its authoritative snapshot.
+            throw new CommittedRefreshDuringShutdownError();
+        }
 
         return {
-            accessToken: this.session.accessToken,
-            refreshToken: this.session.refreshToken,
-            expiry: this.session.expiresAt ? new Date(this.session.expiresAt) : undefined,
+            accessToken: nextSession.accessToken,
+            refreshToken: nextSession.refreshToken,
+            expiry: nextSession.expiresAt ? new Date(nextSession.expiresAt) : undefined,
         };
     }
 
-    async start(): Promise<void> {
-        this.session.baseUrl = assertAllowedHomeserverUrl(this.session.baseUrl);
-        const storeName = stableStoreName(this.session);
+    private async awaitRemoteRefresh<T>(
+        operation: Promise<T>,
+        onLateFulfilled: (response: T) => Promise<unknown>,
+    ): Promise<T> {
+        let timeout: ReturnType<typeof setTimeout> | undefined;
+        let timedOut = false;
+        const observedOperation = operation.then((response) => {
+            if (timedOut) {
+                // A timed-out token endpoint request cannot be cancelled reliably. If it
+                // eventually returns credentials, revoke that discarded session without ever
+                // publishing or persisting it.
+                void Promise.resolve()
+                    .then(() => onLateFulfilled(response))
+                    .catch(() => undefined);
+            }
 
-        this.releaseLock = await acquireExclusiveLock(`sub-etha-matrix-${storeName}`);
+            return response;
+        });
 
-        if (!this.releaseLock) {
-            throw new MatrixAlreadyOpenError();
+        try {
+            return await Promise.race([
+                observedOperation,
+                new Promise<never>((_resolve, reject) => {
+                    timeout = setTimeout(() => {
+                        timedOut = true;
+                        this.refreshSessionEndUncertain = true;
+                        const invalidation = new MatrixSessionRevocationUnconfirmedError(
+                            new MatrixRefreshTimeoutError(),
+                        );
+
+                        // The token endpoint may have issued rotated credentials even though
+                        // its response missed our deadline. Lock immediately and surface the
+                        // typed uncertainty signal while this document can still persist it.
+                        // A response that arrives later is still revoked best-effort above.
+                        this.invalidateSession(invalidation);
+                        reject(invalidation);
+                    }, this.remoteRefreshTimeoutMs);
+                }),
+            ]);
+        } finally {
+            if (timeout !== undefined) {
+                clearTimeout(timeout);
+            }
+        }
+    }
+
+    private revokeDiscardedRefreshSession(
+        session: Readonly<PersistedMatrixSession>,
+    ): Promise<PendingMatrixSessionRevocationResult> {
+        return this.endRemoteSessionWithinDeadline(session);
+    }
+
+    start(): Promise<void> {
+        if (this.startTask) {
+            return this.startTask;
         }
 
-        this.store = new IndexedDBStore({
-            indexedDB: window.indexedDB,
-            dbName: `sub-etha-sync-${storeName}`,
+        if (this.started) {
+            return Promise.resolve();
+        }
+
+        if (this.stopped) {
+            return Promise.reject(new Error("A locked Matrix service cannot be restarted."));
+        }
+
+        let lease: SessionLease;
+
+        try {
+            lease = this.requireLease();
+        } catch (error) {
+            return Promise.reject(error);
+        }
+
+        const generation = ++this.lifecycleGeneration;
+        const tracked = this.performStart(lease, generation).finally(() => {
+            if (this.startTask === tracked) {
+                this.startTask = null;
+            }
+
+            if (this.stopped) {
+                this.closeRuntime();
+
+                if (this.shutdownMode === "stop" && !this.pendingStopReleaseTask) {
+                    this.disposeLeaseAndReleaseLock();
+                }
+            }
         });
-        const scheduler = new MatrixScheduler();
 
-        this.client = createClient({
-            baseUrl: this.session.baseUrl,
-            userId: this.session.userId,
-            deviceId: this.session.deviceId,
-            accessToken: this.session.accessToken,
-            refreshToken: this.session.refreshToken,
-            tokenRefreshFunction: (token) => this.refreshTokens(token),
-            store: this.store,
-            scheduler,
-            timelineSupport: true,
-            disableVoip: true,
-            localTimeoutMs: 30_000,
-            verificationMethods: ["m.sas.v1"],
-            cryptoCallbacks: {
-                getSecretStorageKey: async ({ keys }) => {
-                    if (this.secretStorageKey && keys[this.secretStorageKey[0]]) {
-                        return this.secretStorageKey;
-                    }
+        this.startTask = tracked;
 
-                    return null;
+        return tracked;
+    }
+
+    private assertStartupActive(lease: SessionLease, generation: number): void {
+        if (this.stopped || this.lease !== lease || this.lifecycleGeneration !== generation) {
+            throw new Error("Matrix startup was cancelled because the session was locked.");
+        }
+    }
+
+    private isClientLifecycleActive(client: MatrixClient, generation: number): boolean {
+        return !this.stopped && this.lifecycleGeneration === generation && this.client === client;
+    }
+
+    private assertClientLifecycleActive(client: MatrixClient, generation: number): void {
+        if (!this.isClientLifecycleActive(client, generation)) {
+            throw new Error("The Matrix operation was cancelled because the session was locked.");
+        }
+    }
+
+    private cacheSecretStorageKey(
+        client: MatrixClient,
+        generation: number,
+        keyId: string,
+        key: Uint8Array<ArrayBuffer>,
+    ): void {
+        if (!this.isClientLifecycleActive(client, generation)) {
+            key.fill(0);
+
+            return;
+        }
+
+        const cachedKey = new Uint8Array(key);
+
+        this.secretStorageKey?.[1].fill(0);
+        this.secretStorageKey = [keyId, cachedKey];
+    }
+
+    private clearTransientRecoverySetup(material: TransientRecoverySetup): void {
+        try {
+            material.generated.privateKey.fill(0);
+        } catch {
+            /* detached buffers no longer expose readable key bytes */
+        }
+
+        try {
+            material.generated.privateKey = new Uint8Array(0);
+        } catch {
+            /* SDK-owned records may not expose writable properties */
+        }
+
+        try {
+            material.generated.encodedPrivateKey = undefined;
+            Reflect.deleteProperty(material.generated, "encodedPrivateKey");
+        } catch {
+            /* SDK-owned records may not expose writable properties */
+        }
+
+        this.transientRecoverySetups.delete(material);
+    }
+
+    private clearTransientRecoverySetups(): void {
+        for (const material of this.transientRecoverySetups) {
+            this.clearTransientRecoverySetup(material);
+        }
+    }
+
+    private async performStart(lease: SessionLease, generation: number): Promise<void> {
+        try {
+            const session = lease.session;
+            const baseUrl = assertAllowedHomeserverUrl(session.baseUrl);
+            const releaseVaultLock = await acquireExclusiveLock(SESSION_VAULT_LOCK_NAME);
+
+            if (!releaseVaultLock) {
+                throw new MatrixAlreadyOpenError();
+            }
+
+            this.releaseVaultLock = releaseVaultLock;
+            this.assertStartupActive(lease, generation);
+            const releaseLock = await acquireExclusiveLock(
+                `sub-etha-matrix-${stableStoreName(session)}`,
+            );
+
+            if (!releaseLock) {
+                throw new MatrixAlreadyOpenError();
+            }
+
+            this.releaseLock = releaseLock;
+            this.assertStartupActive(lease, generation);
+            await lease.assertCurrent();
+            this.assertStartupActive(lease, generation);
+
+            const store = new MemoryStore();
+            const scheduler = new MatrixScheduler();
+            const client = createClient({
+                baseUrl,
+                userId: session.userId,
+                deviceId: session.deviceId,
+                accessToken: session.accessToken,
+                refreshToken: session.refreshToken,
+                tokenRefreshFunction: (token) => this.refreshTokens(token),
+                store,
+                scheduler,
+                timelineSupport: true,
+                disableVoip: true,
+                localTimeoutMs: 30_000,
+                verificationMethods: ["m.sas.v1"],
+                cryptoCallbacks: {
+                    getSecretStorageKey: async ({ keys }) => {
+                        if (
+                            this.isClientLifecycleActive(client, generation) &&
+                            this.secretStorageKey &&
+                            keys[this.secretStorageKey[0]]
+                        ) {
+                            return this.secretStorageKey;
+                        }
+
+                        return null;
+                    },
+                    cacheSecretStorageKey: (keyId, _keyInfo, key) => {
+                        this.cacheSecretStorageKey(client, generation, keyId, key);
+                    },
                 },
-                cacheSecretStorageKey: (keyId, _keyInfo, key) => {
-                    this.secretStorageKey = [keyId, key];
-                },
-            },
-        });
+            });
 
-        await this.store.startup();
-        await this.client.initRustCrypto({
-            useIndexedDB: true,
-            cryptoDatabasePrefix: `sub-etha-crypto-${storeName}`,
-            storageKey: base64UrlToBytes(this.session.cryptoStorageKey),
-        });
+            this.store = store;
+            this.client = client;
+            this.mediaConfigState = null;
 
-        this.client.on(ClientEvent.Sync, this.handleSync);
-        this.client.on(MatrixEventEvent.Decrypted, this.handleDecrypted);
-        this.client.on(RoomEvent.Timeline, this.handleTimeline);
-        this.client.on(RoomEvent.Name, this.handleRoomChange);
-        this.client.on(RoomEvent.Receipt, this.handleRoomChange);
-        this.client.on(RoomEvent.MyMembership, this.handleRoomChange);
-        this.client.on(RoomMemberEvent.Typing, this.handleTyping);
-        this.client.on(CryptoEvent.VerificationRequestReceived, this.handleIncomingVerification);
-        window.addEventListener("storage", this.handleTakeoverRequest);
-        this.client.startClient({
-            initialSyncLimit: 30,
-            lazyLoadMembers: true,
-            pendingEventOrdering: "chronological" as never,
-            disablePresence: true,
-            clientWellKnownPollPeriod: 6 * 60 * 60,
-        });
-        this.refreshDerivedState();
-        void this.refreshOwnProfile();
+            await store.startup();
+            this.assertStartupActive(lease, generation);
+            const cryptoStorageKey = base64UrlToBytes(session.cryptoStorageKey);
+
+            this.rustCryptoStorageKey = cryptoStorageKey;
+
+            try {
+                await client.initRustCrypto({
+                    useIndexedDB: true,
+                    cryptoDatabasePrefix: lease.cryptoDatabasePrefix,
+                    storageKey: cryptoStorageKey,
+                });
+            } finally {
+                this.clearRustCryptoStorageKey(cryptoStorageKey);
+            }
+
+            this.assertStartupActive(lease, generation);
+            client.on(ClientEvent.Sync, this.handleSync);
+            client.on(MatrixEventEvent.Decrypted, this.handleDecrypted);
+            client.on(RoomEvent.Timeline, this.handleTimeline);
+            client.on(RoomEvent.Name, this.handleRoomChange);
+            client.on(RoomEvent.Receipt, this.handleRoomChange);
+            client.on(RoomEvent.MyMembership, this.handleRoomChange);
+            client.on(RoomMemberEvent.Typing, this.handleTyping);
+            client.on(CryptoEvent.VerificationRequestReceived, this.handleIncomingVerification);
+            window.addEventListener("storage", this.handleTakeoverRequest);
+
+            try {
+                await client.startClient({
+                    initialSyncLimit: 30,
+                    lazyLoadMembers: true,
+                    pendingEventOrdering: "chronological" as never,
+                    disablePresence: true,
+                    clientWellKnownPollPeriod: 6 * 60 * 60,
+                });
+                this.assertStartupActive(lease, generation);
+            } catch (error) {
+                // closeRuntime may already have detached this client during logout. Stop the
+                // local startup reference again in case startClient resumed after that scrub.
+                client.stopClient();
+
+                throw error;
+            }
+
+            this.started = true;
+            this.refreshDerivedState();
+            void this.refreshOwnProfile();
+        } catch (error) {
+            this.stopped = true;
+            this.lifecycleGeneration += 1;
+
+            if (this.shutdownMode === "none") {
+                this.shutdownMode = "stop";
+            }
+
+            this.scrubSnapshot(this.snapshot.error);
+            this.closeRuntime();
+
+            throw error;
+        }
     }
 
     private handleSync = (state: SyncState): void => {
@@ -483,12 +993,48 @@ export class MatrixService {
             return;
         }
 
-        this.emit({
-            connection: "idle",
-            error: "This receiver was safely released for another tab.",
-        });
-        this.stop();
+        const error = new Error("This receiver was safely locked for another tab.");
+
+        this.invalidateSession(error);
     };
+
+    private invalidateSession(error: Error): void {
+        if (this.invalidationReported) {
+            return;
+        }
+
+        this.invalidationReported = true;
+
+        if (error instanceof MatrixSessionRevocationUnconfirmedError) {
+            this.revocationUncertaintyReported = true;
+        }
+
+        this.stopWithError(error.message);
+
+        try {
+            this.onSessionInvalidated?.(error);
+        } catch {
+            /* session invalidation is already complete */
+        }
+    }
+
+    private reportRevocationUncertainty(cause: Error): void {
+        if (this.revocationUncertaintyReported) {
+            return;
+        }
+
+        this.revocationUncertaintyReported = true;
+        const error =
+            cause instanceof MatrixSessionRevocationUnconfirmedError
+                ? cause
+                : new MatrixSessionRevocationUnconfirmedError(cause);
+
+        try {
+            this.onSessionInvalidated?.(error);
+        } catch {
+            /* the local runtime is already closed; warning persistence is best-effort */
+        }
+    }
 
     private verificationState(
         context: ActiveVerification,
@@ -535,10 +1081,14 @@ export class MatrixService {
         request: VerificationRequest,
         direction: "incoming" | "outgoing",
     ): ActiveVerification {
+        const client = this.requireClient();
+
         this.releaseVerificationContext();
         const requestChange = () => this.handleVerificationChange(request);
         const context: ActiveVerification = {
             request,
+            client,
+            lifecycleGeneration: this.lifecycleGeneration,
             direction,
             verifierStarted: false,
             verifier: null,
@@ -621,14 +1171,26 @@ export class MatrixService {
                 return;
             }
 
-            if (this.activeVerification !== context) {
+            if (
+                this.activeVerification !== context ||
+                !this.isClientLifecycleActive(context.client, context.lifecycleGeneration)
+            ) {
+                verifier.cancel(
+                    new Error("Verification was cancelled because the Matrix session was locked."),
+                );
+
                 return;
             }
 
             context.verifier = verifier;
 
             const showSas = (callbacks: ShowSasCallbacks) => {
-                if (this.activeVerification !== context) {
+                if (
+                    this.activeVerification !== context ||
+                    !this.isClientLifecycleActive(context.client, context.lifecycleGeneration)
+                ) {
+                    callbacks.cancel();
+
                     return;
                 }
 
@@ -658,7 +1220,10 @@ export class MatrixService {
 
             await verifier.verify();
 
-            if (this.activeVerification === context) {
+            if (
+                this.activeVerification === context &&
+                this.isClientLifecycleActive(context.client, context.lifecycleGeneration)
+            ) {
                 this.finishVerification(
                     "complete",
                     "These two Sub-Etha receivers now trust one another.",
@@ -680,7 +1245,7 @@ export class MatrixService {
         }
     }
 
-    private releaseVerificationContext(): void {
+    private releaseVerificationContext(cancel = false): void {
         const context = this.activeVerification;
 
         if (!context) {
@@ -694,6 +1259,24 @@ export class MatrixService {
         }
 
         this.activeVerification = null;
+
+        if (cancel) {
+            try {
+                if (context.sasCallbacks) {
+                    context.sasCallbacks.cancel();
+                } else if (context.verifier && !context.verifier.hasBeenCancelled) {
+                    context.verifier.cancel(
+                        new Error(
+                            "Verification was cancelled because the Matrix session was locked.",
+                        ),
+                    );
+                } else if (context.request.pending) {
+                    void context.request.cancel().catch(() => undefined);
+                }
+            } catch {
+                /* local verification state is already released */
+            }
+        }
     }
 
     private finishVerification(stage: "complete" | "cancelled" | "error", message: string): void {
@@ -903,6 +1486,331 @@ export class MatrixService {
         }
     }
 
+    private mediaReceiveLimit(expectedKind: MediaExpectedKind = "file"): number {
+        return expectedKind === "image" ? MAX_IMAGE_BYTES : MAX_NONIMAGE_MEDIA_BYTES;
+    }
+
+    private mediaUploadLimit(encrypted: boolean, image = false, avatar = false): number {
+        if (avatar) {
+            return MAX_AVATAR_BYTES;
+        }
+
+        if (image) {
+            return MAX_IMAGE_BYTES;
+        }
+
+        return encrypted ? MAX_ENCRYPTED_UPLOAD_BYTES : MAX_PLAIN_UPLOAD_BYTES;
+    }
+
+    private async prepareImageFile(source: File, maximumBytes: number): Promise<PreparedImageFile> {
+        assertMediaByteLength(source.size, maximumBytes);
+        const bytes = await source.arrayBuffer();
+        const safety = assertSafeImageBytes(new Uint8Array(bytes));
+        const file = new File([bytes], canonicalMediaFileName(source, safety.mimeType), {
+            type: safety.mimeType,
+            lastModified: source.lastModified || Date.now(),
+        });
+
+        return { file, bytes, safety };
+    }
+
+    private linkGateAbort(lease: MediaOperationLease, controller: AbortController): () => void {
+        const abort = () => {
+            if (!controller.signal.aborted) {
+                controller.abort(lease.signal.reason);
+            }
+        };
+
+        lease.signal.addEventListener("abort", abort, { once: true });
+
+        return () => lease.signal.removeEventListener("abort", abort);
+    }
+
+    private assertMediaOperationActive(
+        client: MatrixClient,
+        generation: number,
+        lease?: MediaOperationLease,
+    ): void {
+        this.assertClientLifecycleActive(client, generation);
+        lease?.signal.throwIfAborted();
+    }
+
+    private assertMediaDeadline(deadlineAt: number): void {
+        if (Date.now() >= deadlineAt) {
+            throw new MediaTimeoutError();
+        }
+    }
+
+    private async getMediaUploadConfig(
+        client: MatrixClient,
+        generation: number,
+        signal?: AbortSignal,
+    ): Promise<number | null> {
+        if (
+            this.mediaConfigState?.client === client &&
+            this.mediaConfigState.generation === generation
+        ) {
+            return this.mediaConfigState.uploadSize;
+        }
+
+        if (
+            this.mediaConfigTask &&
+            this.mediaConfigTaskClient === client &&
+            this.mediaConfigTaskGeneration === generation
+        ) {
+            const state = await this.mediaConfigTask;
+
+            this.assertClientLifecycleActive(client, generation);
+
+            return state.uploadSize;
+        }
+
+        const task = this.fetchMediaUploadConfig(client, generation, signal).then((uploadSize) => {
+            const state = { client, generation, uploadSize };
+
+            if (
+                this.client === client &&
+                this.lifecycleGeneration === generation &&
+                !this.stopped
+            ) {
+                this.mediaConfigState = state;
+            }
+
+            return state;
+        });
+
+        this.mediaConfigTask = task;
+        this.mediaConfigTaskClient = client;
+        this.mediaConfigTaskGeneration = generation;
+
+        try {
+            const state = await task;
+
+            this.assertClientLifecycleActive(client, generation);
+
+            return state.uploadSize;
+        } finally {
+            if (this.mediaConfigTask === task) {
+                this.mediaConfigTask = null;
+                this.mediaConfigTaskClient = null;
+                this.mediaConfigTaskGeneration = -1;
+            }
+        }
+    }
+
+    private async fetchMediaUploadConfig(
+        client: MatrixClient,
+        generation: number,
+        signal?: AbortSignal,
+    ): Promise<number | null> {
+        if (
+            typeof (client as unknown as { getHomeserverUrl?: unknown }).getHomeserverUrl !==
+                "function" ||
+            typeof (client as unknown as { getAccessToken?: unknown }).getAccessToken !== "function"
+        ) {
+            return null;
+        }
+
+        let baseUrl: string;
+        let token: string | null;
+
+        try {
+            baseUrl = client.getHomeserverUrl();
+            token = client.getAccessToken();
+        } catch {
+            return null;
+        }
+
+        const deadline = Date.now() + 30_000;
+        const paths = ["/_matrix/client/v1/media/config", "/_matrix/media/v3/config"];
+
+        for (let index = 0; index < paths.length; index += 1) {
+            signal?.throwIfAborted();
+            this.assertClientLifecycleActive(client, generation);
+            const controller = new AbortController();
+            const abort = () => controller.abort(signal?.reason);
+            const timeout = setTimeout(
+                () => controller.abort(new MediaTimeoutError()),
+                Math.max(0, deadline - Date.now()),
+            );
+
+            const cleanupRequest = () => {
+                clearTimeout(timeout);
+                signal?.removeEventListener("abort", abort);
+            };
+
+            signal?.addEventListener("abort", abort, { once: true });
+            let url: string;
+
+            try {
+                url = new URL(paths[index], baseUrl).href;
+            } catch {
+                cleanupRequest();
+
+                return null;
+            }
+
+            let response: Response;
+
+            try {
+                response = await fetch(url, {
+                    headers: mediaAuthorizationHeaders(url, baseUrl, token),
+                    cache: "no-store",
+                    signal: controller.signal,
+                });
+            } catch (error) {
+                cleanupRequest();
+
+                if (signal?.aborted) {
+                    throw signal.reason ?? error;
+                }
+
+                return null;
+            }
+
+            try {
+                signal?.throwIfAborted();
+                this.assertClientLifecycleActive(client, generation);
+            } catch (error) {
+                await response.body?.cancel().catch(() => undefined);
+                cleanupRequest();
+
+                throw error;
+            }
+
+            if (response.status === 200) {
+                try {
+                    const bytes = await readBoundedResponse(response, MAX_MEDIA_CONFIG_BYTES, {
+                        signal: controller.signal,
+                        deadlineAt: deadline,
+                        idleTimeoutMs: MEDIA_IDLE_TIMEOUT_MS,
+                    });
+
+                    this.assertMediaDeadline(deadline);
+                    const parsed = JSON.parse(new TextDecoder().decode(bytes)) as Record<
+                        string,
+                        unknown
+                    >;
+                    const value = parsed["m.upload.size"];
+
+                    return isSafeNonNegativeInteger(value) ? value : null;
+                } catch (error) {
+                    await response.body?.cancel().catch(() => undefined);
+
+                    if (signal?.aborted) {
+                        throw signal.reason ?? error;
+                    }
+
+                    return null;
+                } finally {
+                    cleanupRequest();
+                }
+            }
+
+            await response.body?.cancel().catch(() => undefined);
+            cleanupRequest();
+
+            if (![400, 404, 405, 501].includes(response.status) || index === paths.length - 1) {
+                return null;
+            }
+        }
+
+        return null;
+    }
+
+    private async effectiveUploadLimit(
+        client: MatrixClient,
+        generation: number,
+        localLimit: number,
+        signal?: AbortSignal,
+    ): Promise<number> {
+        const serverLimit = await this.getMediaUploadConfig(client, generation, signal);
+
+        this.assertClientLifecycleActive(client, generation);
+
+        return serverLimit === null ? localLimit : Math.min(localLimit, serverLimit);
+    }
+
+    private isUploadTooLarge(error: unknown): boolean {
+        if (!error || typeof error !== "object") {
+            return false;
+        }
+
+        const value = error as {
+            httpStatus?: unknown;
+            errcode?: unknown;
+            data?: { errcode?: unknown };
+        };
+
+        return (
+            value.httpStatus === 413 &&
+            (value.errcode === "M_TOO_LARGE" || value.data?.errcode === "M_TOO_LARGE")
+        );
+    }
+
+    private assertEncryptedMetadata(info: IEncryptedFile): void {
+        const source = info as unknown as Record<string, unknown>;
+        const key =
+            source.key && typeof source.key === "object"
+                ? (source.key as Record<string, unknown>)
+                : null;
+        const hashes =
+            source.hashes && typeof source.hashes === "object"
+                ? (source.hashes as Record<string, unknown>)
+                : null;
+        const keyOps = key?.key_ops;
+
+        if (
+            !key ||
+            !hashes ||
+            typeof key.ext !== "boolean" ||
+            !Array.isArray(keyOps) ||
+            keyOps.length > 16 ||
+            keyOps.some((value) => typeof value !== "string")
+        ) {
+            throw new MediaLimitError("The encrypted attachment metadata is invalid.");
+        }
+
+        if (source.v !== undefined) {
+            boundedMediaString(source.v, 32);
+        }
+
+        if (source.url !== undefined) {
+            boundedMediaString(source.url, 4096);
+        }
+
+        boundedMediaString(source.iv, 256);
+        boundedMediaString(hashes.sha256, 256);
+        boundedMediaString(key.alg, 128);
+        boundedMediaString(key.kty, 128);
+        boundedMediaString(key.k, 4096);
+        keyOps.forEach((value) => boundedMediaString(value, 128));
+    }
+
+    private async uploadMedia(
+        client: MatrixClient,
+        generation: number,
+        lease: MediaOperationLease,
+        controller: AbortController,
+        body: Blob,
+        options: Parameters<MatrixClient["uploadContent"]>[1],
+    ) {
+        this.assertMediaOperationActive(client, generation, lease);
+
+        try {
+            return await client.uploadContent(body, {
+                ...options,
+                abortController: controller,
+            });
+        } catch (error) {
+            if (this.isUploadTooLarge(error)) {
+                throw new MediaLimitError("The homeserver rejected this attachment as too large.");
+            }
+
+            throw error;
+        }
+    }
+
     async sendFile(
         sourceFile: File,
         options: { caption?: string; replyTo?: string } = {},
@@ -922,119 +1830,346 @@ export class MatrixService {
             return;
         }
 
-        const file = await normalizeMediaFile(sourceFile);
+        const generation = this.lifecycleGeneration;
+        const abortController = new AbortController();
+        const caption =
+            options.caption === undefined ? undefined : boundedMediaString(options.caption, 4096);
+        const replyTo =
+            options.replyTo === undefined ? undefined : boundedMediaString(options.replyTo, 1024);
+        const candidate = isImageUploadCandidate(sourceFile);
         const encrypted = room.hasEncryptionStateEvent();
-        let uploadBody: Blob = file;
-        let encryptedFile: IEncryptedFile | undefined;
+        const localLimit = candidate ? MAX_IMAGE_BYTES : this.mediaUploadLimit(encrypted);
 
-        if (encrypted) {
-            const result = await encryptAttachment(await file.arrayBuffer());
+        assertMediaByteLength(sourceFile.size, localLimit);
+        this.activeUploadControllers.add(abortController);
+        onCancellable?.(() => abortController.abort());
+        let lease: MediaOperationLease | null = null;
+        let unlinkGateAbort: () => void = () => undefined;
 
-            uploadBody = new Blob([result.data], { type: "application/octet-stream" });
-            encryptedFile = result.info;
+        try {
+            lease = await this.mediaGate.acquire(sourceFile.size, abortController.signal);
+            unlinkGateAbort = this.linkGateAbort(lease, abortController);
+            this.assertMediaOperationActive(client, generation, lease);
+            const limit = await this.effectiveUploadLimit(
+                client,
+                generation,
+                localLimit,
+                lease.signal,
+            );
+
+            this.assertMediaOperationActive(client, generation, lease);
+            assertMediaByteLength(sourceFile.size, limit);
+            const prepared = candidate
+                ? await this.prepareImageFile(sourceFile, MAX_IMAGE_BYTES)
+                : null;
+
+            this.assertMediaOperationActive(client, generation, lease);
+            const file = prepared?.file ?? (await normalizeMediaFile(sourceFile));
+
+            this.assertMediaOperationActive(client, generation, lease);
+            assertMediaByteLength(file.size, limit);
+            let uploadBody: Blob = file;
+            let encryptedFile: IEncryptedFile | undefined;
+
+            if (encrypted) {
+                const fileBuffer = prepared?.bytes ?? (await file.arrayBuffer());
+
+                this.assertMediaOperationActive(client, generation, lease);
+                const result = await encryptAttachment(fileBuffer);
+
+                this.assertMediaOperationActive(client, generation, lease);
+                this.assertEncryptedMetadata(result.info);
+                uploadBody = new Blob([result.data], { type: "application/octet-stream" });
+                encryptedFile = result.info;
+            }
+
+            assertMediaByteLength(uploadBody.size, limit);
+            this.assertMediaOperationActive(client, generation, lease);
+            const upload = await this.uploadMedia(
+                client,
+                generation,
+                lease,
+                abortController,
+                uploadBody,
+                {
+                    name: file.name,
+                    type: encrypted ? "application/octet-stream" : file.type,
+                    progressHandler: (progress) => {
+                        if (
+                            abortController.signal.aborted ||
+                            this.stopped ||
+                            this.lifecycleGeneration !== generation ||
+                            this.client !== client
+                        ) {
+                            return;
+                        }
+
+                        const total = progress.total || file.size;
+
+                        onProgress?.(total ? Math.round((progress.loaded / total) * 100) : 0);
+                    },
+                },
+            );
+
+            this.assertMediaOperationActive(client, generation, lease);
+            const info = await messageInfo(file, prepared?.safety);
+
+            this.assertMediaOperationActive(client, generation, lease);
+            const content = createMediaContent({
+                fileName: file.name,
+                mimeType: file.type,
+                contentUri: upload.content_uri,
+                info,
+                caption,
+                replyTo,
+                encryptedFile: encryptedFile as unknown as Record<string, unknown> | undefined,
+            });
+
+            this.assertMediaOperationActive(client, generation, lease);
+            await client.sendMessage(roomId, content as never);
+            this.assertMediaOperationActive(client, generation, lease);
+        } finally {
+            unlinkGateAbort();
+            this.activeUploadControllers.delete(abortController);
+            onCancellable?.(null);
+            lease?.release();
+        }
+    }
+
+    private assertUploadActive(
+        client: MatrixClient,
+        generation: number,
+        signal?: AbortSignal,
+    ): void {
+        if (
+            signal?.aborted ||
+            this.stopped ||
+            this.lifecycleGeneration !== generation ||
+            this.client !== client
+        ) {
+            throw new DOMException("The attachment upload was cancelled.", "AbortError");
+        }
+    }
+
+    private mediaCacheAlias(media: MatrixMediaRef, cacheKey?: string): string {
+        return `${boundedMediaString(cacheKey ?? media.mxcUrl, 4096)}|${boundedMediaString(media.mxcUrl, 4096)}`;
+    }
+
+    private async mediaCacheKey(
+        media: MatrixMediaRef,
+        options: MediaRequestOptions,
+    ): Promise<string> {
+        const encrypted = Boolean(media.encryptedFile);
+        const digest = encrypted ? await encryptedMediaDigest(media.encryptedFile) : null;
+        const mimeType =
+            media.mimeType === undefined ? "unknown" : boundedMediaString(media.mimeType, 256);
+
+        for (const dimension of [media.width, media.height]) {
+            if (dimension !== undefined && !isSafeNonNegativeInteger(dimension)) {
+                throw new MediaLimitError("The media dimensions are invalid.");
+            }
         }
 
-        const uploadPromise = client.uploadContent(uploadBody, {
-            name: file.name,
-            type: encrypted ? "application/octet-stream" : file.type,
-            progressHandler: (progress) => {
-                const total = progress.total || file.size;
+        for (const dimension of [options.width, options.height]) {
+            if (
+                dimension !== undefined &&
+                (!isSafeNonNegativeInteger(dimension) || dimension <= 0 || dimension > 16_384)
+            ) {
+                throw new MediaLimitError("The media dimensions are invalid.");
+            }
+        }
 
-                onProgress?.(total ? Math.round((progress.loaded / total) * 100) : 0);
-            },
-        });
+        if (
+            options.width !== undefined &&
+            options.height !== undefined &&
+            options.width * options.height > 16_777_216
+        ) {
+            throw new MediaLimitError("The media dimensions are invalid.");
+        }
 
-        onCancellable?.(() => {
-            client.cancelUpload(uploadPromise);
-        });
-        const upload = await uploadPromise.finally(() => onCancellable?.(null));
-        const content = createMediaContent({
-            fileName: file.name,
-            mimeType: file.type,
-            contentUri: upload.content_uri,
-            info: await messageInfo(file),
-            caption: options.caption,
-            replyTo: options.replyTo,
-            encryptedFile: encryptedFile as unknown as Record<string, unknown> | undefined,
-        });
+        if (
+            options.resizeMethod !== undefined &&
+            options.resizeMethod !== "crop" &&
+            options.resizeMethod !== "scale"
+        ) {
+            throw new MediaLimitError("The media options are invalid.");
+        }
 
-        await client.sendMessage(roomId, content as never);
+        if (
+            options.expectedKind !== undefined &&
+            !["image", "video", "audio", "file"].includes(options.expectedKind)
+        ) {
+            throw new MediaLimitError("The media options are invalid.");
+        }
+
+        const tuple = {
+            alias: boundedMediaString(options.cacheKey ?? media.mxcUrl, 4096),
+            mxcUrl: boundedMediaString(media.mxcUrl, 4096),
+            mode: encrypted ? "encrypted" : "plain",
+            size: media.size ?? "unknown",
+            mimeType,
+            mediaWidth: media.width ?? "unknown",
+            mediaHeight: media.height ?? "unknown",
+            width: options.width ?? "full",
+            height: options.height ?? "full",
+            resizeMethod: options.resizeMethod ?? "scale",
+            expectedKind: options.expectedKind ?? "unknown",
+            encryptedDigest: digest,
+        };
+
+        if (
+            (typeof tuple.width === "number" && !Number.isSafeInteger(tuple.width)) ||
+            (typeof tuple.height === "number" && !Number.isSafeInteger(tuple.height))
+        ) {
+            throw new MediaLimitError("The media dimensions are invalid.");
+        }
+
+        return JSON.stringify(tuple);
+    }
+
+    private addMediaAlias(alias: string, key: string): void {
+        const keys = this.mediaAliases.get(alias) ?? new Set<string>();
+
+        keys.add(key);
+        this.mediaAliases.set(alias, keys);
+    }
+
+    private removeMediaAlias(alias: string, key: string): void {
+        const keys = this.mediaAliases.get(alias);
+
+        if (!keys) {
+            return;
+        }
+
+        keys.delete(key);
+
+        if (keys.size === 0) {
+            this.mediaAliases.delete(alias);
+        }
     }
 
     async getMediaAsset(
         media: MatrixMediaRef,
         options: MediaRequestOptions = {},
     ): Promise<MediaAsset> {
-        assertDeclaredMediaLimits(media);
-        const key = [
-            options.cacheKey ?? media.mxcUrl,
-            options.width ?? "full",
-            options.height ?? "full",
-            options.resizeMethod ?? "scale",
-            options.expectedKind ?? "unknown",
-        ].join("|");
-        const existing = this.mediaAssets.get(key);
+        const client = this.requireClient();
+        const generation = this.lifecycleGeneration;
+        const expectedKind = options.expectedKind ?? "file";
+        const maximumBytes = this.mediaReceiveLimit(expectedKind);
 
-        if (existing) {
-            this.touchCacheEntry(this.mediaAssets, key, existing);
-
-            return existing.promise;
-        }
-
-        this.ensureMediaCacheSlot();
-        const controller = new AbortController();
-        const entry: MediaCacheEntry<MediaAsset> = {
-            promise: Promise.resolve(null as unknown as MediaAsset),
-            byteLength: 0,
-            lastUsed: ++this.mediaCacheClock,
-            settled: false,
-            released: false,
-            controller,
-        };
-
-        entry.promise = this.withMediaLoadSlot(
-            () => this.loadMedia(media, options, controller.signal),
-            controller.signal,
+        assertDeclaredMediaLimits(
+            expectedKind === "image" ? media : { size: media.size },
+            maximumBytes,
         );
-        this.mediaAssets.set(key, entry);
+        const reservation = isSafeNonNegativeInteger(media.size) ? media.size : maximumBytes;
+        const invalidationGeneration = this.mediaInvalidationGeneration;
+        const lease = await this.mediaGate.acquire(reservation, options.signal);
+        const controller = new AbortController();
+        const unlinkGateAbort = this.linkGateAbort(lease, controller);
 
         try {
-            const asset = await entry.promise;
+            this.assertMediaOperationActive(client, generation, lease);
+            const key = await this.mediaCacheKey(media, options);
 
-            entry.settled = true;
+            this.assertMediaOperationActive(client, generation, lease);
+            const alias = this.mediaCacheAlias(media, options.cacheKey);
 
-            if (this.mediaAssets.get(key) === entry && !entry.released) {
-                entry.byteLength = asset.blob.size;
-                this.mediaCacheBytes += entry.byteLength;
-                this.evictMediaCache("media", key);
+            if (invalidationGeneration !== this.mediaInvalidationGeneration) {
+                throw new DOMException("The media request was invalidated.", "AbortError");
             }
 
-            return asset;
-        } catch (error) {
-            if (this.mediaAssets.get(key) === entry) {
-                this.mediaAssets.delete(key);
+            const existing = this.mediaAssets.get(key);
+
+            if (existing) {
+                this.touchCacheEntry(this.mediaAssets, key, existing);
+                const asset = await existing.promise;
+
+                this.assertMediaOperationActive(client, generation, lease);
+                existing.value = asset;
+
+                if (invalidationGeneration !== this.mediaInvalidationGeneration) {
+                    throw new DOMException("The media request was invalidated.", "AbortError");
+                }
+
+                return asset;
             }
 
-            entry.released = true;
+            this.ensureMediaCacheSlot();
+            const entry: MediaCacheEntry<MediaAsset> = {
+                promise: Promise.resolve(null as unknown as MediaAsset),
+                byteLength: 0,
+                lastUsed: ++this.mediaCacheClock,
+                settled: false,
+                released: false,
+                controller,
+                alias,
+            };
 
-            throw error;
+            entry.promise = this.loadMedia(
+                media,
+                options,
+                controller.signal,
+                lease.signal,
+                client,
+                generation,
+                lease,
+            );
+            this.mediaAssets.set(key, entry);
+            this.addMediaAlias(alias, key);
+
+            try {
+                const asset = await entry.promise;
+
+                entry.value = asset;
+                this.mediaAssetKeys.set(asset, key);
+                this.assertMediaOperationActive(client, generation, lease);
+
+                if (invalidationGeneration !== this.mediaInvalidationGeneration) {
+                    throw new DOMException("The media request was invalidated.", "AbortError");
+                }
+
+                entry.settled = true;
+
+                if (this.mediaAssets.get(key) === entry && !entry.released) {
+                    entry.byteLength = asset.blob.size;
+                    this.mediaCacheBytes += entry.byteLength;
+                    this.evictMediaCache("media", key);
+                }
+
+                return asset;
+            } catch (error) {
+                if (this.mediaAssets.get(key) === entry) {
+                    this.mediaAssets.delete(key);
+                    this.removeMediaAlias(alias, key);
+                }
+
+                this.releaseMediaEntry(entry);
+
+                throw error;
+            }
+        } finally {
+            unlinkGateAbort();
+            lease.release();
         }
     }
 
     invalidateMedia(media: MatrixMediaRef, cacheKey?: string): void {
-        const prefix = cacheKey ?? media.mxcUrl;
+        this.mediaInvalidationGeneration += 1;
+        const alias = this.mediaCacheAlias(media, cacheKey);
+        const keys = new Set(this.mediaAliases.get(alias) ?? []);
 
-        for (const [key, entry] of this.mediaAssets) {
-            if (!key.startsWith(`${prefix}|`)) {
-                continue;
+        for (const key of keys) {
+            const entry = this.mediaAssets.get(key);
+
+            if (entry) {
+                this.mediaAssets.delete(key);
+                this.removeMediaAlias(alias, key);
+                this.releaseMediaEntry(entry);
             }
-
-            this.mediaAssets.delete(key);
-            this.releaseMediaEntry(entry);
         }
 
         for (const [key, entry] of this.gifPosters) {
-            if (!key.startsWith(`${prefix}|`)) {
+            if (entry.alias !== alias) {
                 continue;
             }
 
@@ -1044,17 +2179,48 @@ export class MatrixService {
     }
 
     async getGifPoster(media: MatrixMediaRef, cacheKey?: string): Promise<string | null> {
-        const key = `${cacheKey ?? media.mxcUrl}|poster`;
+        const client = this.requireClient();
+        const generation = this.lifecycleGeneration;
+        const invalidationGeneration = this.mediaInvalidationGeneration;
+        const alias = this.mediaCacheAlias(media, cacheKey);
+        const controller = new AbortController();
+        const asset = await this.getMediaAsset(media, {
+            cacheKey,
+            expectedKind: "image",
+            signal: controller.signal,
+        });
+
+        this.assertMediaOperationActive(client, generation);
+
+        if (invalidationGeneration !== this.mediaInvalidationGeneration) {
+            throw new DOMException("The media request was invalidated.", "AbortError");
+        }
+
+        const mediaKey = this.mediaAssetKeys.get(asset);
+
+        if (!mediaKey) {
+            throw new MediaBusyError("The media cache entry is no longer available.");
+        }
+
+        const key = `${mediaKey}|poster`;
         const existing = this.gifPosters.get(key);
 
         if (existing) {
             this.touchCacheEntry(this.gifPosters, key, existing);
+            const poster = await existing.promise;
 
-            return (await existing.promise)?.url ?? null;
+            existing.value = poster;
+
+            this.assertMediaOperationActive(client, generation);
+
+            if (invalidationGeneration !== this.mediaInvalidationGeneration) {
+                throw new DOMException("The media request was invalidated.", "AbortError");
+            }
+
+            return poster?.url ?? null;
         }
 
         this.ensureMediaCacheSlot();
-        const controller = new AbortController();
         const entry: MediaCacheEntry<PosterAsset | null> = {
             promise: Promise.resolve(null),
             byteLength: 0,
@@ -1062,75 +2228,179 @@ export class MatrixService {
             settled: false,
             released: false,
             controller,
+            alias,
         };
 
-        entry.promise = this.createGifPoster(media, cacheKey, controller.signal);
+        entry.promise = this.createGifPoster(asset, client, generation, controller.signal);
         this.gifPosters.set(key, entry);
-        const poster = await entry.promise;
 
-        entry.settled = true;
+        try {
+            const poster = await entry.promise;
 
-        if (this.gifPosters.get(key) === entry && !entry.released) {
-            entry.byteLength = poster?.byteLength ?? 0;
-            this.mediaCacheBytes += entry.byteLength;
-            this.evictMediaCache("poster", key);
+            entry.value = poster;
+
+            this.assertMediaOperationActive(client, generation);
+
+            if (invalidationGeneration !== this.mediaInvalidationGeneration) {
+                throw new DOMException("The media request was invalidated.", "AbortError");
+            }
+
+            entry.settled = true;
+
+            if (this.gifPosters.get(key) === entry && !entry.released) {
+                entry.byteLength = poster?.byteLength ?? 0;
+                this.mediaCacheBytes += entry.byteLength;
+                this.evictMediaCache("poster", key);
+            }
+
+            return poster?.url ?? null;
+        } catch (error) {
+            if (this.gifPosters.get(key) === entry) {
+                this.gifPosters.delete(key);
+            }
+
+            this.releasePosterEntry(entry);
+
+            throw error;
         }
-
-        return poster?.url ?? null;
     }
 
     private async createGifPoster(
-        media: MatrixMediaRef,
-        cacheKey?: string,
+        asset: MediaAsset,
+        client?: MatrixClient,
+        generation?: number,
         signal?: AbortSignal,
     ): Promise<PosterAsset | null> {
         if (typeof document === "undefined") {
             return null;
         }
 
+        const posterClient = client ?? this.requireClient();
+        const posterGeneration = generation ?? this.lifecycleGeneration;
+        const deadlineController = new AbortController();
+        const deadlineAt = Date.now() + MEDIA_IMAGE_DEADLINE_MS;
+        const abort = () => deadlineController.abort(signal?.reason);
+        const timeout = setTimeout(
+            () => deadlineController.abort(new MediaTimeoutError("The image preview timed out.")),
+            Math.max(0, deadlineAt - Date.now()),
+        );
+
+        signal?.addEventListener("abort", abort, { once: true });
+        let decodeLease: MediaOperationLease | null = null;
+        let unlinkGateAbort: () => void = () => undefined;
+
         try {
-            signal?.throwIfAborted();
-            const asset = await this.getMediaAsset(media, { cacheKey, expectedKind: "image" });
+            this.assertMediaOperationActive(posterClient, posterGeneration);
+            const sourceBlob = asset.blob;
+            const decodeController = deadlineController;
 
-            signal?.throwIfAborted();
-            let source: CanvasImageSource;
-            let width: number;
-            let height: number;
-            let releaseSource: () => void = () => undefined;
-
-            if ("createImageBitmap" in globalThis) {
-                const bitmap = await createImageBitmap(asset.blob);
-
-                source = bitmap;
-                width = bitmap.width;
-                height = bitmap.height;
-                releaseSource = () => bitmap.close();
-            } else {
-                const image = new Image();
-
-                image.src = asset.url;
-                await image.decode();
-                source = image;
-                width = image.naturalWidth;
-                height = image.naturalHeight;
-            }
-
-            const scale = Math.min(1, 1000 / Math.max(width, height));
-            const canvas = document.createElement("canvas");
-
-            canvas.width = Math.max(1, Math.round(width * scale));
-            canvas.height = Math.max(1, Math.round(height * scale));
-            canvas.getContext("2d")?.drawImage(source, 0, 0, canvas.width, canvas.height);
-            releaseSource();
-            const blob = await new Promise<Blob | null>((resolve) =>
-                canvas.toBlob(resolve, "image/png"),
+            decodeLease = await this.mediaGate.acquire(
+                MAX_IMAGE_DECODED_BYTES,
+                decodeController.signal,
             );
+            unlinkGateAbort = this.linkGateAbort(decodeLease, decodeController);
+            this.assertMediaOperationActive(posterClient, posterGeneration, decodeLease);
 
-            signal?.throwIfAborted();
+            let source: CanvasImageSource | null = null;
+            let bitmap: ImageBitmap | null = null;
+            let image: HTMLImageElement | null = null;
+            let sourceUrl: string | null = null;
+            let width = 0;
+            let height = 0;
 
-            return blob ? { url: URL.createObjectURL(blob), byteLength: blob.size } : null;
-        } catch {
-            return null;
+            try {
+                this.assertMediaDeadline(deadlineAt);
+
+                if (typeof globalThis.createImageBitmap === "function") {
+                    bitmap = await createImageBitmap(sourceBlob);
+                    source = bitmap;
+                    width = bitmap.width;
+                    height = bitmap.height;
+                } else {
+                    sourceUrl = URL.createObjectURL(sourceBlob);
+                    image = new Image();
+                    image.src = sourceUrl;
+                    await image.decode();
+                    source = image;
+                    width = image.naturalWidth;
+                    height = image.naturalHeight;
+                }
+
+                this.assertMediaDeadline(deadlineAt);
+                this.assertMediaOperationActive(posterClient, posterGeneration, decodeLease);
+                assertDeclaredMediaLimits({ width, height });
+                this.assertMediaDeadline(deadlineAt);
+                const scale = Math.min(1, 1000 / Math.max(width, height));
+                const canvas = document.createElement("canvas");
+
+                canvas.width = Math.max(1, Math.round(width * scale));
+                canvas.height = Math.max(1, Math.round(height * scale));
+                const context = canvas.getContext("2d");
+
+                if (!context || !source) {
+                    return null;
+                }
+
+                context.drawImage(source, 0, 0, canvas.width, canvas.height);
+                this.assertMediaDeadline(deadlineAt);
+                const blob = await new Promise<Blob | null>((resolve) =>
+                    canvas.toBlob(resolve, "image/png"),
+                );
+
+                this.assertMediaDeadline(deadlineAt);
+                this.assertMediaOperationActive(posterClient, posterGeneration, decodeLease);
+
+                if (!blob) {
+                    return null;
+                }
+
+                const url = URL.createObjectURL(blob);
+
+                try {
+                    this.assertMediaDeadline(deadlineAt);
+                    this.assertMediaOperationActive(posterClient, posterGeneration, decodeLease);
+
+                    return { url, byteLength: blob.size };
+                } catch (error) {
+                    URL.revokeObjectURL(url);
+
+                    throw error;
+                }
+            } catch (error) {
+                if (
+                    decodeController.signal.aborted ||
+                    this.stopped ||
+                    this.client !== posterClient ||
+                    this.lifecycleGeneration !== posterGeneration ||
+                    error instanceof MediaLimitError ||
+                    error instanceof MediaBusyError ||
+                    error instanceof MediaTimeoutError
+                ) {
+                    if (
+                        !decodeController.signal.aborted &&
+                        (this.stopped ||
+                            this.client !== posterClient ||
+                            this.lifecycleGeneration !== posterGeneration)
+                    ) {
+                        throw new DOMException("The image preview was cancelled.", "AbortError");
+                    }
+
+                    throw error;
+                }
+
+                return null;
+            } finally {
+                bitmap?.close();
+
+                if (sourceUrl) {
+                    URL.revokeObjectURL(sourceUrl);
+                }
+            }
+        } finally {
+            clearTimeout(timeout);
+            signal?.removeEventListener("abort", abort);
+            unlinkGateAbort();
+            decodeLease?.release();
         }
     }
 
@@ -1138,34 +2408,49 @@ export class MatrixService {
         media: MatrixMediaRef,
         options: MediaRequestOptions = {},
         signal?: AbortSignal,
+        gateSignal?: AbortSignal,
+        operationClient?: MatrixClient,
+        operationGeneration = this.lifecycleGeneration,
+        operationLease?: MediaOperationLease,
     ): Promise<MediaAsset> {
-        assertDeclaredMediaLimits(media);
+        const expectedKind = options.expectedKind ?? "file";
+        const maximumBytes = this.mediaReceiveLimit(expectedKind);
+
+        assertDeclaredMediaLimits(
+            expectedKind === "image" ? media : { size: media.size },
+            maximumBytes,
+        );
         const deadlineController = new AbortController();
-        const onAbort = () => deadlineController.abort(signal?.reason);
+        const onAbort = () => deadlineController.abort(signal?.reason ?? gateSignal?.reason);
+        const onGateAbort = () => deadlineController.abort(gateSignal?.reason);
 
         signal?.addEventListener("abort", onAbort, { once: true });
+        gateSignal?.addEventListener("abort", onGateAbort, { once: true });
+        const totalTimeoutMs =
+            expectedKind === "image" ? MEDIA_IMAGE_DEADLINE_MS : MEDIA_NONIMAGE_DEADLINE_MS;
+        const deadlineAt = Date.now() + totalTimeoutMs;
         const deadline = setTimeout(() => {
             deadlineController.abort(new MediaTimeoutError());
-        }, 30_000);
-        const client = this.requireClient();
+        }, totalTimeoutMs);
+        const client = operationClient ?? this.requireClient();
         const useThumbnail = !media.encryptedFile && options.width && options.height;
-        const authenticatedUrl = client.mxcUrlToHttp(
-            media.mxcUrl,
-            useThumbnail ? options.width : undefined,
-            useThumbnail ? options.height : undefined,
-            useThumbnail ? (options.resizeMethod ?? "scale") : undefined,
-            false,
-            true,
-            true,
-        );
-
-        if (!authenticatedUrl) {
-            throw new Error("The homeserver returned an invalid media address.");
-        }
-
-        const token = client.getAccessToken();
 
         try {
+            const authenticatedUrl = client.mxcUrlToHttp(
+                media.mxcUrl,
+                useThumbnail ? options.width : undefined,
+                useThumbnail ? options.height : undefined,
+                useThumbnail ? (options.resizeMethod ?? "scale") : undefined,
+                false,
+                true,
+                true,
+            );
+
+            if (!authenticatedUrl) {
+                throw new Error("The homeserver returned an invalid media address.");
+            }
+
+            const token = client.getAccessToken();
             let response = await fetch(authenticatedUrl, {
                 headers: mediaAuthorizationHeaders(
                     authenticatedUrl,
@@ -1175,6 +2460,8 @@ export class MatrixService {
                 cache: "no-store",
                 signal: deadlineController.signal,
             });
+
+            this.assertMediaOperationActive(client, operationGeneration, operationLease);
 
             if (shouldTryLegacyMedia(response.status)) {
                 const legacyUrl = client.mxcUrlToHttp(
@@ -1189,10 +2476,17 @@ export class MatrixService {
 
                 if (legacyUrl && legacyUrl !== authenticatedUrl) {
                     await response.body?.cancel().catch(() => undefined);
+                    this.assertMediaOperationActive(client, operationGeneration, operationLease);
                     response = await fetch(legacyUrl, {
+                        headers: mediaAuthorizationHeaders(
+                            legacyUrl,
+                            client.getHomeserverUrl(),
+                            token,
+                        ),
                         cache: "no-store",
                         signal: deadlineController.signal,
                     });
+                    this.assertMediaOperationActive(client, operationGeneration, operationLease);
                 }
             }
 
@@ -1200,35 +2494,57 @@ export class MatrixService {
                 throw new Error(`Media download failed (${response.status}).`);
             }
 
-            let bytes = await readBoundedResponse(response, MAX_MEDIA_BYTES, {
+            let bytes = await readBoundedResponse(response, maximumBytes, {
                 signal: deadlineController.signal,
+                deadlineAt,
+                idleTimeoutMs: MEDIA_IDLE_TIMEOUT_MS,
             });
+
+            this.assertMediaOperationActive(client, operationGeneration, operationLease);
+            this.assertMediaDeadline(deadlineAt);
 
             if (media.encryptedFile) {
                 bytes = await decryptAttachment(
                     bytes,
                     media.encryptedFile as unknown as IEncryptedFile,
                 );
+                this.assertMediaOperationActive(client, operationGeneration, operationLease);
             }
 
+            this.assertMediaDeadline(deadlineAt);
             deadlineController.signal.throwIfAborted();
-            assertMediaByteLength(bytes.byteLength, MAX_MEDIA_BYTES);
+            assertMediaByteLength(bytes.byteLength, maximumBytes);
             const byteView = new Uint8Array(bytes);
             const imageSafety =
                 options.expectedKind === "image" ? assertSafeImageBytes(byteView) : null;
-            const mimeType =
+
+            this.assertMediaDeadline(deadlineAt);
+            const mimeType = boundedMediaString(
                 imageSafety?.mimeType ??
-                media.mimeType ??
-                response.headers.get("content-type")?.split(";")[0] ??
-                "application/octet-stream";
+                    media.mimeType ??
+                    response.headers.get("content-type")?.split(";")[0] ??
+                    "application/octet-stream",
+                256,
+            );
             const blob = new Blob([bytes], { type: mimeType });
 
-            return {
-                url: URL.createObjectURL(blob),
-                blob,
-                mimeType,
-                animated: imageSafety?.animated ?? false,
-            };
+            this.assertMediaDeadline(deadlineAt);
+            const url = URL.createObjectURL(blob);
+
+            try {
+                this.assertMediaDeadline(deadlineAt);
+
+                return {
+                    url,
+                    blob,
+                    mimeType,
+                    animated: imageSafety?.animated ?? false,
+                };
+            } catch (error) {
+                URL.revokeObjectURL(url);
+
+                throw error;
+            }
         } catch (error) {
             if (
                 deadlineController.signal.aborted &&
@@ -1241,43 +2557,7 @@ export class MatrixService {
         } finally {
             clearTimeout(deadline);
             signal?.removeEventListener("abort", onAbort);
-        }
-    }
-
-    private async withMediaLoadSlot<T>(
-        operation: () => Promise<T>,
-        signal: AbortSignal,
-    ): Promise<T> {
-        if (this.activeMediaLoads >= MAX_CONCURRENT_MEDIA_LOADS) {
-            await new Promise<void>((resolve, reject) => {
-                const resume = () => {
-                    signal.removeEventListener("abort", abort);
-                    resolve();
-                };
-
-                const abort = () => {
-                    const index = this.mediaLoadWaiters.indexOf(resume);
-
-                    if (index >= 0) {
-                        this.mediaLoadWaiters.splice(index, 1);
-                    }
-
-                    reject(signal.reason);
-                };
-
-                signal.addEventListener("abort", abort, { once: true });
-                this.mediaLoadWaiters.push(resume);
-            });
-        }
-
-        signal.throwIfAborted();
-        this.activeMediaLoads += 1;
-
-        try {
-            return await operation();
-        } finally {
-            this.activeMediaLoads -= 1;
-            this.mediaLoadWaiters.shift()?.();
+            gateSignal?.removeEventListener("abort", onGateAbort);
         }
     }
 
@@ -1319,6 +2599,10 @@ export class MatrixService {
         let candidate: { kind: "media" | "poster"; key: string; lastUsed: number } | null = null;
 
         for (const [key, entry] of this.mediaAssets) {
+            if (!entry.settled || entry.released) {
+                continue;
+            }
+
             if (protectedKind === "media" && protectedKey === key) {
                 continue;
             }
@@ -1329,6 +2613,10 @@ export class MatrixService {
         }
 
         for (const [key, entry] of this.gifPosters) {
+            if (!entry.settled || entry.released) {
+                continue;
+            }
+
             if (protectedKind === "poster" && protectedKey === key) {
                 continue;
             }
@@ -1350,6 +2638,11 @@ export class MatrixService {
             }
 
             this.mediaAssets.delete(candidate.key);
+
+            if (entry.alias) {
+                this.removeMediaAlias(entry.alias, candidate.key);
+            }
+
             this.releaseMediaEntry(entry);
         } else {
             const entry = this.gifPosters.get(candidate.key);
@@ -1377,7 +2670,13 @@ export class MatrixService {
             this.mediaCacheBytes = Math.max(0, this.mediaCacheBytes - entry.byteLength);
         }
 
-        void entry.promise.then((asset) => URL.revokeObjectURL(asset.url)).catch(() => undefined);
+        if (entry.value) {
+            URL.revokeObjectURL(entry.value.url);
+        } else {
+            void entry.promise
+                .then((asset) => URL.revokeObjectURL(asset.url))
+                .catch(() => undefined);
+        }
     }
 
     private releasePosterEntry(entry: MediaCacheEntry<PosterAsset | null>): void {
@@ -1392,13 +2691,17 @@ export class MatrixService {
             this.mediaCacheBytes = Math.max(0, this.mediaCacheBytes - entry.byteLength);
         }
 
-        void entry.promise
-            .then((poster) => {
-                if (poster) {
-                    URL.revokeObjectURL(poster.url);
-                }
-            })
-            .catch(() => undefined);
+        if (entry.value) {
+            URL.revokeObjectURL(entry.value.url);
+        } else {
+            void entry.promise
+                .then((poster) => {
+                    if (poster) {
+                        URL.revokeObjectURL(poster.url);
+                    }
+                })
+                .catch(() => undefined);
+        }
     }
 
     async toggleReaction(eventId: string, key: string): Promise<void> {
@@ -1624,33 +2927,86 @@ export class MatrixService {
 
     async updateProfile(displayName: string, avatar?: File): Promise<void> {
         const client = this.requireClient();
+        const generation = this.lifecycleGeneration;
+        const abortController = avatar ? new AbortController() : null;
+        let lease: MediaOperationLease | null = null;
+        let unlinkGateAbort: () => void = () => undefined;
 
-        if (displayName.trim()) {
-            await client.setDisplayName(displayName.trim());
+        if (avatar && abortController) {
+            assertMediaByteLength(avatar.size, MAX_AVATAR_BYTES);
+            this.activeUploadControllers.add(abortController);
         }
 
-        if (avatar) {
-            const upload = await client.uploadContent(avatar, {
-                name: avatar.name,
-                type: avatar.type,
-            });
+        try {
+            let prepared: PreparedImageFile | null = null;
 
-            await client.setAvatarUrl(upload.content_uri);
+            if (avatar && abortController) {
+                lease = await this.mediaGate.acquire(avatar.size, abortController.signal);
+                unlinkGateAbort = this.linkGateAbort(lease, abortController);
+                this.assertMediaOperationActive(client, generation, lease);
+                const limit = await this.effectiveUploadLimit(
+                    client,
+                    generation,
+                    MAX_AVATAR_BYTES,
+                    lease.signal,
+                );
+
+                this.assertMediaOperationActive(client, generation, lease);
+                prepared = await this.prepareImageFile(avatar, limit);
+                this.assertMediaOperationActive(client, generation, lease);
+            }
+
+            this.assertUploadActive(client, generation);
+
+            if (displayName.trim()) {
+                await client.setDisplayName(boundedMediaString(displayName.trim(), 255));
+                this.assertUploadActive(client, generation);
+            }
+
+            if (avatar && prepared && lease && abortController) {
+                const upload = await this.uploadMedia(
+                    client,
+                    generation,
+                    lease,
+                    abortController,
+                    prepared.file,
+                    {
+                        name: prepared.file.name,
+                        type: prepared.file.type,
+                    },
+                );
+
+                this.assertMediaOperationActive(client, generation, lease);
+                await client.setAvatarUrl(upload.content_uri);
+                this.assertMediaOperationActive(client, generation, lease);
+            } else {
+                this.assertUploadActive(client, generation);
+            }
+        } finally {
+            unlinkGateAbort();
+
+            if (abortController) {
+                this.activeUploadControllers.delete(abortController);
+            }
+
+            lease?.release();
         }
 
+        this.assertUploadActive(client, generation);
         this.refreshDerivedState(true);
         await this.refreshOwnProfile();
     }
 
     async getDevices(): Promise<DeviceSummary[]> {
         const client = this.requireClient();
+        const session = this.requireLease().session;
         const cryptoApi = client.getCrypto();
         const response = await client.getDevices();
 
         return Promise.all(
             response.devices.map(async (device) => {
                 const trust = await cryptoApi
-                    ?.getDeviceVerificationStatus(this.session.userId, device.device_id)
+                    ?.getDeviceVerificationStatus(session.userId, device.device_id)
                     .catch(() => null);
 
                 return {
@@ -1658,7 +3014,7 @@ export class MatrixService {
                     displayName: device.display_name || "Unnamed device",
                     lastSeenTs: device.last_seen_ts,
                     lastSeenIp: device.last_seen_ip,
-                    current: device.device_id === this.session.deviceId,
+                    current: device.device_id === session.deviceId,
                     verified: trust?.isVerified() ?? false,
                 };
             }),
@@ -1689,7 +3045,9 @@ export class MatrixService {
     }
 
     async setupRecovery(passphrase?: string): Promise<string> {
-        const cryptoApi = this.requireClient().getCrypto();
+        const client = this.requireClient();
+        const generation = this.lifecycleGeneration;
+        const cryptoApi = client.getCrypto();
 
         if (!cryptoApi) {
             throw new Error("Encryption is not available on this device.");
@@ -1698,20 +3056,38 @@ export class MatrixService {
         const generated = await cryptoApi.createRecoveryKeyFromPassphrase(
             passphrase?.trim() || undefined,
         );
+        const material = { generated };
 
-        await cryptoApi.bootstrapSecretStorage({
-            createSecretStorageKey: async () => generated,
-            setupNewKeyBackup: true,
-        });
+        this.transientRecoverySetups.add(material);
 
-        return (
-            generated.encodedPrivateKey ??
-            "Recovery storage was configured with the supplied passphrase."
-        );
+        try {
+            this.assertClientLifecycleActive(client, generation);
+            await cryptoApi.bootstrapSecretStorage({
+                createSecretStorageKey: async () => {
+                    this.assertClientLifecycleActive(client, generation);
+
+                    return generated;
+                },
+                setupNewKeyBackup: true,
+            });
+            this.assertClientLifecycleActive(client, generation);
+
+            const encodedPrivateKey = generated.encodedPrivateKey;
+
+            this.clearTransientRecoverySetup(material);
+
+            return (
+                encodedPrivateKey ?? "Recovery storage was configured with the supplied passphrase."
+            );
+        } finally {
+            this.clearTransientRecoverySetup(material);
+        }
     }
 
     async unlockRecovery(secret: string): Promise<void> {
-        const cryptoApi = this.requireClient().getCrypto();
+        const client = this.requireClient();
+        const generation = this.lifecycleGeneration;
+        const cryptoApi = client.getCrypto();
 
         if (!cryptoApi) {
             throw new Error("Encryption is not available on this device.");
@@ -1719,34 +3095,60 @@ export class MatrixService {
 
         const status = await cryptoApi.getSecretStorageStatus();
 
+        this.assertClientLifecycleActive(client, generation);
+
         if (!status.defaultKeyId) {
             throw new Error("This account does not have a recovery key configured.");
         }
 
         const keyInfo = status.secretStorageKeyValidityMap;
-        const keyTuple = await this.requireClient().secretStorage.getKey(status.defaultKeyId);
+        const keyTuple = await client.secretStorage.getKey(status.defaultKeyId);
+
+        this.assertClientLifecycleActive(client, generation);
         const keyDescription = keyTuple?.[1];
-        let key: Uint8Array<ArrayBuffer>;
+        let key: Uint8Array<ArrayBuffer> | null = null;
 
-        if (keyDescription?.passphrase) {
-            key = await deriveRecoveryKeyFromPassphrase(
-                secret,
-                keyDescription.passphrase.salt,
-                keyDescription.passphrase.iterations,
-                keyDescription.passphrase.bits,
-            );
-        } else {
-            key = decodeRecoveryKey(secret);
+        try {
+            if (keyDescription?.passphrase) {
+                key = await deriveRecoveryKeyFromPassphrase(
+                    secret,
+                    keyDescription.passphrase.salt,
+                    keyDescription.passphrase.iterations,
+                    keyDescription.passphrase.bits,
+                );
+            } else {
+                key = decodeRecoveryKey(secret);
+            }
+
+            this.assertClientLifecycleActive(client, generation);
+            void keyInfo;
+            this.cacheSecretStorageKey(client, generation, status.defaultKeyId, key);
+            key.fill(0);
+            key = null;
+            await cryptoApi.loadSessionBackupPrivateKeyFromSecretStorage();
+            this.assertClientLifecycleActive(client, generation);
+            await cryptoApi.checkKeyBackupAndEnable();
+            this.assertClientLifecycleActive(client, generation);
+        } finally {
+            key?.fill(0);
         }
+    }
 
-        void keyInfo;
-        this.secretStorageKey = [status.defaultKeyId, key];
-        await cryptoApi.loadSessionBackupPrivateKeyFromSecretStorage();
-        await cryptoApi.checkKeyBackupAndEnable();
+    private async cancelLateVerificationRequest(request: VerificationRequest): Promise<void> {
+        try {
+            if (request.pending) {
+                await request.cancel();
+            }
+        } catch {
+            /* the local verification context was never attached */
+        }
     }
 
     async startDeviceVerification(deviceId?: string): Promise<void> {
-        const cryptoApi = this.requireClient().getCrypto();
+        const client = this.requireClient();
+        const generation = this.lifecycleGeneration;
+        const session = this.requireLease().session;
+        const cryptoApi = client.getCrypto();
 
         if (!cryptoApi) {
             throw new Error("Encryption is not available on this device.");
@@ -1757,8 +3159,14 @@ export class MatrixService {
         }
 
         const request = deviceId
-            ? await cryptoApi.requestDeviceVerification(this.session.userId, deviceId)
+            ? await cryptoApi.requestDeviceVerification(session.userId, deviceId)
             : await cryptoApi.requestOwnUserVerification();
+
+        if (!this.isClientLifecycleActive(client, generation)) {
+            await this.cancelLateVerificationRequest(request);
+            this.assertClientLifecycleActive(client, generation);
+        }
+
         const direction = request.initiatedByMe ? "outgoing" : "incoming";
         const context = this.bindVerification(request, direction);
 
@@ -1868,54 +3276,376 @@ export class MatrixService {
         await this.requireClient().setPusher(request);
     }
 
-    async logout(): Promise<void> {
+    logout(): Promise<MatrixLogoutResult> {
+        if (this.logoutTask) {
+            return this.logoutTask;
+        }
+
+        let lease: SessionLease;
+
+        try {
+            lease = this.requireLease();
+        } catch (error) {
+            return Promise.reject(error);
+        }
+
+        const pendingStart = this.startTask;
+        const pendingRefresh = this.refreshTask;
+
+        this.shutdownMode = "logout";
         this.stopped = true;
+        this.lifecycleGeneration += 1;
+        this.scrubSnapshot(null);
+        this.logoutTask = this.performLogout(lease, pendingStart, pendingRefresh);
+
+        return this.logoutTask;
+    }
+
+    private async performLogout(
+        lease: SessionLease,
+        pendingStart: Promise<void> | null,
+        pendingRefresh: Promise<unknown> | null,
+    ): Promise<MatrixLogoutResult> {
+        const cleanupErrors: unknown[] = [];
+        let cleanup: SessionCleanupDescriptor;
+        let finalSession: Readonly<PersistedMatrixSession>;
 
         try {
-            await this.client?.logout();
-        } catch {
-            /* local cleanup still proceeds */
+            // Local logout intent is the security boundary: close the current runtime and
+            // durably replace its authenticated vault record before waiting on any network
+            // work. SessionLease serializes this behind an already-committing reseal and then
+            // disposes its key, so a delayed refresh can never recreate the locked record.
+            this.closeRuntime();
+            const deletion = await this.deleteCurrentSession(lease);
+
+            cleanup = deletion.cleanup;
+            finalSession = deletion.session;
+        } catch (error) {
+            await Promise.allSettled(
+                [pendingStart, pendingRefresh].filter(
+                    (operation): operation is Promise<unknown> => operation !== null,
+                ),
+            );
+            this.closeRuntime();
+            this.disposeLeaseAndReleaseLock();
+
+            throw error;
         }
 
-        this.releaseClientListeners();
-        this.client?.stopClient();
-        window.removeEventListener("storage", this.handleTakeoverRequest);
+        let remoteSessionEnded = false;
 
         try {
-            await this.client?.clearStores({
-                cryptoDatabasePrefix: `sub-etha-crypto-${stableStoreName(this.session)}`,
-            });
-        } catch {
-            /* best effort */
+            const remoteLogout = this.endRemoteSessionWithinDeadline(finalSession);
+            const [, refreshSettlement] = await Promise.allSettled([
+                pendingStart ?? Promise.resolve(),
+                pendingRefresh ?? Promise.resolve(),
+            ]);
+
+            // Startup may have published a partial runtime before observing the generation
+            // fence. Close it again before removing the exact Rust databases.
+            this.closeRuntime();
+            const finalSessionRevocation = await remoteLogout;
+            const refreshSessionAccountedFor =
+                refreshSettlement.status === "fulfilled" ||
+                refreshSettlement.reason instanceof CommittedRefreshDuringShutdownError ||
+                (refreshSettlement.reason instanceof DiscardedRefreshSessionError &&
+                    refreshSettlement.reason.revocationConfirmed);
+
+            remoteSessionEnded =
+                finalSessionRevocation.confirmed &&
+                refreshSessionAccountedFor &&
+                !this.refreshSessionEndUncertain;
+            await this.cleanupCurrentSessionDatabases(cleanup);
+            await this.completeCurrentSessionCleanup(cleanup);
+        } catch (error) {
+            cleanupErrors.push(error);
+        } finally {
+            this.closeRuntime();
+            this.disposeLeaseAndReleaseLock();
         }
 
-        await clearSession();
-        this.releaseMediaAssets();
-        this.releaseVerificationContext();
-        this.releaseLock?.();
-        this.releaseLock = null;
-        this.paginationRequestId += 1;
-        this.paginatingRoomId = null;
-        this.emit({
-            connection: "idle",
-            rooms: [],
-            timeline: [],
-            timelineStartIndex: INITIAL_TIMELINE_ITEM_INDEX,
-            activeRoomId: null,
-            loadingHistory: false,
-            hasMoreHistory: false,
-        });
+        if (cleanupErrors.length === 1) {
+            throw cleanupErrors[0];
+        }
+
+        if (cleanupErrors.length > 1) {
+            throw new AggregateError(
+                cleanupErrors,
+                "The local Matrix session could not be fully removed.",
+            );
+        }
+
+        return { remoteSessionEnded };
+    }
+
+    private endRemoteSessionWithinDeadline(
+        session: Readonly<PersistedMatrixSession>,
+    ): Promise<PendingMatrixSessionRevocationResult> {
+        return boundedMatrixSessionRevocation(
+            () => this.endRemoteSession(session),
+            this.remoteLogoutTimeoutMs,
+        );
+    }
+
+    private async endRemoteSession(session: Readonly<PersistedMatrixSession>): Promise<boolean> {
+        return performMatrixSessionRevocation(session);
+    }
+
+    private deleteCurrentSession(lease: SessionLease): Promise<SessionDeletionResult> {
+        return deleteSessionRecord(lease);
+    }
+
+    private cleanupCurrentSessionDatabases(cleanup: SessionCleanupDescriptor): Promise<void> {
+        if (cleanup.scope === "exact" && this.releaseVaultLock) {
+            return cleanupExactSessionDatabasesWhileHoldingVaultLock(cleanup);
+        }
+
+        return cleanupSessionDatabases(cleanup);
+    }
+
+    private completeCurrentSessionCleanup(cleanup: SessionCleanupDescriptor): Promise<void> {
+        return completeLocalSessionCleanup(cleanup);
     }
 
     stop(): void {
+        this.stopWithError(null);
+    }
+
+    shutdownForPageHide(): MatrixPageHideShutdownResult {
+        this.pageHideRefreshInFlight ||= this.refreshTask !== null;
+        const result = { refreshInFlight: this.pageHideRefreshInFlight };
+
+        if (this.shutdownMode === "pagehide") {
+            return result;
+        }
+
+        const pendingOperations: Promise<unknown>[] = [];
+
+        if (this.startTask) {
+            pendingOperations.push(this.startTask);
+        }
+
+        if (this.refreshTask) {
+            pendingOperations.push(this.refreshTask);
+        }
+
+        if (this.logoutTask) {
+            pendingOperations.push(this.logoutTask);
+        }
+
+        this.shutdownMode = "pagehide";
         this.stopped = true;
+        this.lifecycleGeneration += 1;
+        this.scrubSnapshot(null);
+        this.closeRuntime();
+        this.disposeLeaseOnly();
+
+        if (pendingOperations.length === 0) {
+            this.releaseOwnershipLocks();
+
+            return result;
+        }
+
+        const releaseTask = Promise.allSettled(pendingOperations).then(() => {
+            this.closeRuntime();
+            this.releaseOwnershipLocks();
+        });
+        const tracked = releaseTask.finally(() => {
+            if (this.pageHideReleaseTask === tracked) {
+                this.pageHideReleaseTask = null;
+            }
+        });
+
+        this.pageHideReleaseTask = tracked;
+        void tracked.catch(() => undefined);
+
+        return result;
+    }
+
+    private stopWithError(error: string | null): void {
+        if (this.shutdownMode === "pagehide") {
+            this.scrubSnapshot(error);
+
+            return;
+        }
+
+        if (this.shutdownMode === "logout") {
+            this.scrubSnapshot(error);
+
+            return;
+        }
+
+        this.shutdownMode = "stop";
+        this.stopped = true;
+        this.lifecycleGeneration += 1;
+        this.scrubSnapshot(error);
+        const pendingStart = this.startTask;
+        const pendingRefresh = this.refreshTask;
+
+        this.closeRuntime();
+
+        if (this.pendingStopReleaseTask) {
+            return;
+        }
+
+        const pendingOperations: Promise<unknown>[] = [];
+
+        if (pendingStart) {
+            pendingOperations.push(pendingStart);
+        }
+
+        if (pendingRefresh) {
+            pendingOperations.push(pendingRefresh);
+        }
+
+        if (pendingOperations.length > 0) {
+            const refreshSettlement = pendingRefresh
+                ? pendingRefresh.then(
+                      () => ({ status: "fulfilled" as const }),
+                      (reason: unknown) => ({ status: "rejected" as const, reason }),
+                  )
+                : null;
+            const releaseTask = Promise.allSettled(pendingOperations).then(async () => {
+                const settlement = await refreshSettlement;
+
+                if (
+                    settlement?.status === "rejected" &&
+                    (settlement.reason instanceof MatrixSessionRevocationUnconfirmedError ||
+                        (settlement.reason instanceof DiscardedRefreshSessionError &&
+                            !settlement.reason.revocationConfirmed))
+                ) {
+                    this.reportRevocationUncertainty(settlement.reason);
+                } else if (this.refreshSessionEndUncertain) {
+                    this.reportRevocationUncertainty(new MatrixRefreshTimeoutError());
+                }
+
+                if (this.shutdownMode === "stop") {
+                    this.closeRuntime();
+                    this.disposeLeaseAndReleaseLock();
+                }
+            });
+            const tracked = releaseTask.finally(() => {
+                if (this.pendingStopReleaseTask === tracked) {
+                    this.pendingStopReleaseTask = null;
+                }
+            });
+
+            this.pendingStopReleaseTask = tracked;
+            void tracked.catch(() => undefined);
+
+            return;
+        }
+
+        this.disposeLeaseAndReleaseLock();
+    }
+
+    private scrubSnapshot(error: string | null): void {
+        this.emit(
+            {
+                connection: "idle",
+                rooms: [],
+                activeRoomId: null,
+                timeline: [],
+                timelineStartIndex: INITIAL_TIMELINE_ITEM_INDEX,
+                typingNames: [],
+                loadingHistory: false,
+                hasMoreHistory: false,
+                error,
+                userId: "",
+                displayName: "",
+                avatarMxcUrl: null,
+                deviceId: "",
+                verification: null,
+            },
+            true,
+        );
+        this.listeners.clear();
+    }
+
+    private closeRuntime(): void {
+        this.clearTransientRecoverySetups();
+        this.secretStorageKey?.[1].fill(0);
+        this.secretStorageKey = null;
+        this.clearRustCryptoStorageKey();
+
+        for (const controller of this.activeUploadControllers) {
+            controller.abort();
+        }
+
+        this.activeUploadControllers.clear();
+        this.mediaGate.close(
+            new DOMException("The Matrix media service was stopped.", "AbortError"),
+        );
+        this.mediaConfigState = null;
+        this.mediaConfigTask = null;
+        this.mediaConfigTaskClient = null;
+        this.mediaConfigTaskGeneration = -1;
         this.releaseClientListeners();
         this.client?.stopClient();
-        window.removeEventListener("storage", this.handleTakeoverRequest);
+
+        if (typeof window !== "undefined") {
+            window.removeEventListener("storage", this.handleTakeoverRequest);
+        }
+
+        void this.store?.deleteAllData();
         this.releaseMediaAssets();
-        this.releaseVerificationContext();
-        this.releaseLock?.();
+        this.releaseVerificationContext(true);
+        this.client = null;
+        this.store = null;
+        this.started = false;
+        this.paginationRequestId += 1;
+        this.paginatingRoomId = null;
+    }
+
+    private clearRustCryptoStorageKey(
+        expected: Uint8Array<ArrayBuffer> | null = this.rustCryptoStorageKey,
+    ): void {
+        if (!expected) {
+            return;
+        }
+
+        try {
+            expected.fill(0);
+        } catch {
+            /* a consumer may already have detached the transient buffer */
+        }
+
+        if (this.rustCryptoStorageKey === expected) {
+            this.rustCryptoStorageKey = null;
+        }
+    }
+
+    private disposeLeaseAndReleaseLock(): void {
+        const lease = this.lease;
+
+        this.lease = null;
+
+        try {
+            lease?.dispose();
+        } finally {
+            this.releaseOwnershipLocks();
+        }
+    }
+
+    private disposeLeaseOnly(): void {
+        const lease = this.lease;
+
+        this.lease = null;
+        lease?.dispose();
+    }
+
+    private releaseOwnershipLocks(): void {
+        const releaseLock = this.releaseLock;
+        const releaseVaultLock = this.releaseVaultLock;
+
         this.releaseLock = null;
+        this.releaseVaultLock = null;
+
+        try {
+            releaseLock?.();
+        } finally {
+            releaseVaultLock?.();
+        }
     }
 
     private releaseClientListeners(): void {
@@ -1955,6 +3685,7 @@ export class MatrixService {
 
         this.mediaAssets.clear();
         this.gifPosters.clear();
+        this.mediaAliases.clear();
         this.mediaCacheBytes = 0;
     }
 }

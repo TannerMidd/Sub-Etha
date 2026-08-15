@@ -78,10 +78,15 @@ test("mobile theme styles keep quick actions directly reachable", async () => {
         /\.message-actions\s*\{[^}]*grid-column\s*:\s*2[^}]*display\s*:\s*flex[^}]*opacity\s*:\s*1[^}]*pointer-events\s*:\s*auto/,
         "The mobile quick-action strip must stay visible and interactive.",
     );
+    assert.doesNotMatch(
+        css,
+        /\.message-actions-(?:toggle|overflow)/,
+        "Mobile actions must stay direct instead of returning to a hidden overflow menu.",
+    );
     assert.match(
         css,
-        /\.message-row\.is-actions-open \.message-actions-overflow\s*\{[^}]*display\s*:\s*flex/,
-        "The explicit mobile overflow state must reveal secondary actions.",
+        /\.message-actions > button\s*\{[^}]*width\s*:\s*44px[^}]*height\s*:\s*44px/,
+        "Every direct mobile action must retain a full touch target.",
     );
 });
 

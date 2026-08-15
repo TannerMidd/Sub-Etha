@@ -1065,16 +1065,19 @@
 }
 
 /*
- * The Zen shell sits on a single plane, so raised and deep surfaces collapse
- * into the page, the strong rule matches the ordinary one, and the accent does
- * not brighten on its own. These are stated as references rather than literals
- * so the whole shell follows the active theme — literals here previously pinned
- * the app to the dark palette no matter what `data-theme` said.
+ * The Zen shell takes its planes from the theme rather than deciding for
+ * itself. On an unlit ground `--plane-*` and `--rule-strong` all read back to
+ * the single page, which is what the shell has always done; on paper they
+ * resolve to the sheet's own raised edge, well, and heavier rule. The accent
+ * still does not brighten on its own in either. These are stated as references
+ * rather than literals so the whole shell follows the active theme — literals
+ * here previously pinned the app to the dark palette no matter what
+ * `data-theme` said.
  */
 .app-shell {
-    --paper-raised: var(--paper);
-    --paper-deep: var(--paper);
-    --line-strong: var(--line);
+    --paper-raised: var(--plane-raised);
+    --paper-deep: var(--plane-deep);
+    --line-strong: var(--rule-strong);
     --signal-dark: var(--signal);
     --teal: var(--shell-accent);
     --teal-strong: var(--shell-accent);
@@ -1084,10 +1087,31 @@
     --font-label: "Commissioner", system-ui, sans-serif;
     --font-mono: "Commissioner", system-ui, sans-serif;
 
+    position: relative;
     grid-template-columns: 340px minmax(0, 1fr);
     background: var(--paper);
     font-family: var(--font-ui);
     letter-spacing: 0;
+}
+
+/*
+ * Fibre over the whole sheet, multiplied so it darkens the ground it crosses
+ * instead of lying on top of it as a grey film. It sits above the shell's own
+ * chrome but below every overlay — dialogs, the lightbox, popovers and toasts
+ * all outrank it, because grain belongs to the page, not to what is held in
+ * front of it. Inert on any theme that sets `--grain-op` to zero: a fully
+ * transparent layer is not painted.
+ */
+.app-shell::after {
+    content: "";
+    position: absolute;
+    z-index: 9;
+    inset: 0;
+    background-image: var(--grain);
+    background-repeat: repeat;
+    opacity: var(--grain-op);
+    mix-blend-mode: multiply;
+    pointer-events: none;
 }
 
 .app-shell button:focus-visible,
@@ -1095,9 +1119,16 @@
     outline-color: var(--focus);
 }
 
+/*
+ * The index is the one surface that is not the reading sheet, so it takes the
+ * raised plane and the pressed edge. Both are inert on the dark theme, where
+ * `--paper-raised` reads back to the page and `--edge-shadow` is `none`, and
+ * the border alone goes on doing the separating.
+ */
 .room-sidebar {
     border-right-color: var(--line);
-    background: var(--paper);
+    background: var(--paper-raised);
+    box-shadow: var(--edge-shadow);
 }
 
 .room-sidebar__header {
@@ -1235,15 +1266,25 @@
     gap: 16px;
 }
 
+/*
+ * The rail is always present and always the accent; what changes is how much of
+ * it there is. Growing it from the centre rather than switching a colour on
+ * makes the selection move between rooms instead of blinking between them.
+ */
 .room-list-item::before {
     top: 0;
     bottom: 0;
     left: 0;
     width: 1px;
+    background: var(--signal-line);
+    transform: scaleY(0);
+    transform-origin: center;
+    transition: transform var(--motion-standard) var(--motion-ease);
 }
 
 .room-list-item.is-active::before {
     background: var(--signal-line);
+    transform: scaleY(1);
 }
 
 .room-list-item__copy {
@@ -1316,6 +1357,35 @@
     font: 300 12px/1.5 var(--font-ui);
 }
 
+/*
+ * The index placeholder mirrors the row it stands in for exactly — same 76px
+ * height, same 40px inset, same two lines of copy against a right-aligned
+ * timestamp — so the list does not resize under the reader when the real rooms
+ * arrive. That is the whole reason to draw shapes rather than centre a spinner.
+ */
+.room-list-skeleton__row {
+    height: 76px;
+    padding: 0 40px;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 16px;
+}
+
+.room-list-skeleton__copy {
+    display: flex;
+    flex-direction: column;
+    gap: 9px;
+}
+
+.conversation-header-skeleton {
+    min-width: 0;
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    gap: 9px;
+}
+
 .profile-strip {
     min-height: 104px;
     flex: 0 0 104px;
@@ -1381,18 +1451,41 @@
     background: var(--paper);
 }
 
+/* A crease rather than a rule: the hairline stays, and paper adds the light
+   catching one side of it and the shadow falling from the other. */
 .conversation-header {
     min-height: 96px;
     flex-basis: 96px;
     padding: 0 56px;
     gap: 32px;
     border-bottom-color: var(--line);
+    box-shadow: var(--sheet-shadow);
+}
+
+/*
+ * The title settles in when the conversation changes. `.conversation-main` is
+ * keyed on the room, so the subtree remounts and the animation replays on every
+ * switch without any state to track — the header resolves a beat after the
+ * timeline has been replaced, which is what stops a switch reading as a jump
+ * cut.
+ */
+@keyframes title-settle {
+    from {
+        opacity: 0;
+        transform: translateY(6px);
+    }
+
+    to {
+        opacity: 1;
+        transform: none;
+    }
 }
 
 .conversation-header__title {
     display: flex;
     flex-direction: column;
     gap: 7px;
+    animation: title-settle var(--motion-slow) var(--motion-ease) both;
 }
 
 .conversation-header__title h1 {

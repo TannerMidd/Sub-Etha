@@ -7,6 +7,63 @@ import { assertAllowedHomeserverUrl } from "./url-policy";
 const PENDING_AUTH_KEY = "sub-etha-pending-auth";
 const OAUTH_CLIENT_PREFIX = "sub-etha-oauth-client:";
 const LEGACY_SSO_MAX_AGE_MS = 10 * 60 * 1_000;
+const ISSUED_TOKEN_REVOCATION_TIMEOUT_MS = 10_000;
+
+export class OAuthPostGrantRevocationUnconfirmedError extends Error {
+    readonly remoteSessionEnded = false;
+
+    constructor(cause: Error) {
+        super(
+            `${cause.message} The newly issued OAuth credentials could not be confirmed revoked.`,
+            { cause },
+        );
+        this.name = "OAuthPostGrantRevocationUnconfirmedError";
+    }
+}
+
+interface OAuthTokenRevoker {
+    revokeToken(token: string, tokenType?: "access_token" | "refresh_token"): Promise<void>;
+}
+
+interface IssuedOAuthTokens {
+    access_token: string;
+    refresh_token?: string;
+}
+
+/** @internal Exported so the bounded all-token finality contract can be tested directly. */
+export async function revokeIssuedOAuthTokensWithinDeadline(
+    oauth: OAuthTokenRevoker,
+    tokens: IssuedOAuthTokens,
+    timeoutMs = ISSUED_TOKEN_REVOCATION_TIMEOUT_MS,
+): Promise<boolean> {
+    const revocations: Promise<void>[] = [];
+
+    if (tokens.refresh_token) {
+        revocations.push(
+            Promise.resolve().then(() => oauth.revokeToken(tokens.refresh_token!, "refresh_token")),
+        );
+    }
+
+    revocations.push(
+        Promise.resolve().then(() => oauth.revokeToken(tokens.access_token, "access_token")),
+    );
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+
+    try {
+        return await Promise.race([
+            Promise.allSettled(revocations).then((results) =>
+                results.every((result) => result.status === "fulfilled"),
+            ),
+            new Promise<boolean>((resolve) => {
+                timeout = setTimeout(() => resolve(false), timeoutMs);
+            }),
+        ]);
+    } finally {
+        if (timeout !== undefined) {
+            clearTimeout(timeout);
+        }
+    }
+}
 
 export const LEGACY_SSO_STATE_PARAM = "subetha_sso_state";
 const OAUTH_URL_FIELDS = [
@@ -215,8 +272,13 @@ export async function discoverHomeserver(
 
 export async function inspectLoginCapabilities(raw: string): Promise<LoginCapabilities> {
     const { baseUrl, serverName } = await discoverHomeserver(raw);
-    const { createClient } = await import("matrix-js-sdk");
-    const client = createClient({ baseUrl, localTimeoutMs: 10_000, disableVoip: true });
+    const { createClient, MemoryStore } = await import("matrix-js-sdk");
+    const client = createClient({
+        baseUrl,
+        localTimeoutMs: 10_000,
+        disableVoip: true,
+        store: new MemoryStore(),
+    });
     const [legacy, oauth] = await Promise.allSettled([
         client.loginFlows(),
         client.getAuthMetadata().then(assertSafeOAuthMetadata),
@@ -265,11 +327,12 @@ export async function loginWithPassword(
     password: string,
 ): Promise<PersistedMatrixSession> {
     baseUrl = assertAllowedHomeserverUrl(baseUrl);
-    const { createClient } = await import("matrix-js-sdk");
+    const { createClient, MemoryStore } = await import("matrix-js-sdk");
     const response = await createClient({
         baseUrl,
         localTimeoutMs: 15_000,
         disableVoip: true,
+        store: new MemoryStore(),
     }).loginRequest({
         type: "m.login.password",
         identifier: { type: "m.id.user", user },
@@ -286,12 +349,13 @@ export async function loginWithAccessToken(
     accessToken: string,
 ): Promise<PersistedMatrixSession> {
     baseUrl = assertAllowedHomeserverUrl(baseUrl);
-    const { createClient } = await import("matrix-js-sdk");
+    const { createClient, MemoryStore } = await import("matrix-js-sdk");
     const client = createClient({
         baseUrl,
         accessToken,
         localTimeoutMs: 15_000,
         disableVoip: true,
+        store: new MemoryStore(),
     });
     const identity = await client.whoami();
 
@@ -334,10 +398,10 @@ export function validateLegacySsoCallback(
 
 export async function beginSso(baseUrl: string, providerId?: string): Promise<void> {
     baseUrl = assertAllowedHomeserverUrl(baseUrl);
-    const { createClient } = await import("matrix-js-sdk");
+    const { createClient, MemoryStore } = await import("matrix-js-sdk");
     const state = randomBase64Url(24);
     const redirectUrl = legacySsoRedirectUrl(window.location.origin, state);
-    const client = createClient({ baseUrl, disableVoip: true });
+    const client = createClient({ baseUrl, disableVoip: true, store: new MemoryStore() });
     const pending: PendingSso = { kind: "sso", baseUrl, state, createdAt: Date.now() };
 
     sessionStorage.setItem(PENDING_AUTH_KEY, JSON.stringify(pending));
@@ -355,12 +419,12 @@ export async function beginOAuth(baseUrl: string): Promise<void> {
         );
     }
 
-    const [{ createClient }, { OAuth2 }] = await Promise.all([
+    const [{ createClient, MemoryStore }, { OAuth2 }] = await Promise.all([
         import("matrix-js-sdk"),
         import("matrix-js-sdk/lib/oauth"),
     ]);
     const redirectUri = `${window.location.origin}/`;
-    const client = createClient({ baseUrl, disableVoip: true });
+    const client = createClient({ baseUrl, disableVoip: true, store: new MemoryStore() });
     const metadata = assertSafeOAuthMetadata(await client.getAuthMetadata());
     const storageKey = `${OAUTH_CLIENT_PREFIX}${baseUrl}`;
     let clientId = localStorage.getItem(storageKey);
@@ -394,11 +458,9 @@ export async function beginOAuth(baseUrl: string): Promise<void> {
     window.location.assign(authorizationUrl);
 }
 
-function readCallbackParameters(): URLSearchParams {
-    const query = new URLSearchParams(window.location.search);
-    const fragment = new URLSearchParams(
-        window.location.hash.startsWith("#") ? window.location.hash.slice(1) : "",
-    );
+export function parseRedirectLoginParameters(search: string, hash: string): URLSearchParams {
+    const query = new URLSearchParams(search);
+    const fragment = new URLSearchParams(hash.startsWith("#") ? hash.slice(1) : "");
 
     for (const [key, value] of fragment) {
         if (!query.has(key)) {
@@ -409,12 +471,19 @@ function readCallbackParameters(): URLSearchParams {
     return query;
 }
 
+export function hasRedirectLoginParameters(search: string, hash: string): boolean {
+    const params = parseRedirectLoginParameters(search, hash);
+    const loginToken = params.get("loginToken") ?? params.get("login_token");
+
+    return Boolean(loginToken || params.get("code") || params.get("error"));
+}
+
 export function sanitizedCallbackPath(pathname: string, hash: string): string {
     return `${pathname}${hash.startsWith("#/room/") ? hash : ""}`;
 }
 
 export async function completeRedirectLogin(): Promise<PersistedMatrixSession | null> {
-    const params = readCallbackParameters();
+    const params = parseRedirectLoginParameters(window.location.search, window.location.hash);
     const loginToken = params.get("loginToken") ?? params.get("login_token");
     const code = params.get("code");
 
@@ -462,10 +531,11 @@ export async function completeRedirectLogin(): Promise<PersistedMatrixSession | 
             throw new Error("The homeserver returned an unexpected SSO response.");
         }
 
-        const { createClient } = await import("matrix-js-sdk");
+        const { createClient, MemoryStore } = await import("matrix-js-sdk");
         const response = await createClient({
             baseUrl: pending.baseUrl,
             disableVoip: true,
+            store: new MemoryStore(),
         }).loginRequest({
             type: "m.login.token",
             token: loginToken,
@@ -488,34 +558,50 @@ export async function completeRedirectLogin(): Promise<PersistedMatrixSession | 
 
     if (code) {
         pending.metadata = assertSafeOAuthMetadata(pending.metadata);
-        const [{ createClient }, { OAuth2 }] = await Promise.all([
+        const [{ createClient, MemoryStore }, { OAuth2 }] = await Promise.all([
             import("matrix-js-sdk"),
             import("matrix-js-sdk/lib/oauth"),
         ]);
         const oauth = new OAuth2(pending.metadata, pending.context);
         const tokens = await oauth.completeAuthorizationCodeGrant(code);
-        const client = createClient({
-            baseUrl: pending.baseUrl,
-            accessToken: tokens.access_token,
-            disableVoip: true,
-        });
-        const identity = await client.whoami();
 
-        return createSession({
-            baseUrl: pending.baseUrl,
-            userId: identity.user_id,
-            deviceId: identity.device_id ?? pending.context.deviceId,
-            accessToken: tokens.access_token,
-            refreshToken: tokens.refresh_token,
-            expiresAt: tokens.expires_in ? Date.now() + tokens.expires_in * 1000 : undefined,
-            authKind: "oauth",
-            oauth: {
-                clientId: pending.context.clientId,
-                deviceId: pending.context.deviceId,
-                redirectUri: pending.context.redirectUri,
-                metadata: pending.metadata,
-            },
-        });
+        try {
+            const client = createClient({
+                baseUrl: pending.baseUrl,
+                accessToken: tokens.access_token,
+                disableVoip: true,
+                store: new MemoryStore(),
+            });
+            const identity = await client.whoami();
+
+            return createSession({
+                baseUrl: pending.baseUrl,
+                userId: identity.user_id,
+                deviceId: identity.device_id ?? pending.context.deviceId,
+                accessToken: tokens.access_token,
+                refreshToken: tokens.refresh_token,
+                expiresAt: tokens.expires_in ? Date.now() + tokens.expires_in * 1000 : undefined,
+                authKind: "oauth",
+                oauth: {
+                    clientId: pending.context.clientId,
+                    deviceId: pending.context.deviceId,
+                    redirectUri: pending.context.redirectUri,
+                    metadata: pending.metadata,
+                },
+            });
+        } catch (error) {
+            const cause =
+                error instanceof Error
+                    ? error
+                    : new Error("OAuth post-grant session setup failed.");
+            const revoked = await revokeIssuedOAuthTokensWithinDeadline(oauth, tokens);
+
+            if (!revoked) {
+                throw new OAuthPostGrantRevocationUnconfirmedError(cause);
+            }
+
+            throw error;
+        }
     }
 
     throw new Error("The homeserver returned an unexpected login response.");

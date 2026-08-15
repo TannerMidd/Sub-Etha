@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { MatrixClient } from "matrix-js-sdk";
+import { OAuth2 } from "matrix-js-sdk/lib/oauth";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { Avatar } from "../app/components/BrandMark";
@@ -7,17 +9,25 @@ import {
     assertDeclaredMediaLimits,
     assertMediaByteLength,
     assertSafeImageBytes,
+    encryptedMediaDigest,
     isMxcUri,
+    MAX_MEDIA_OPERATION_CAPACITY,
+    MAX_QUEUED_MEDIA_BYTES,
     MAX_MEDIA_CACHE_BYTES,
     MAX_MEDIA_BYTES,
+    MediaOperationGate,
     MediaLimitError,
     readBoundedResponse,
 } from "../lib/matrix/media";
 import {
     LEGACY_SSO_STATE_PARAM,
+    OAuthPostGrantRevocationUnconfirmedError,
     completeRedirectLogin,
+    hasRedirectLoginParameters,
     legacySsoRedirectUrl,
     normalizeHomeserverInput,
+    parseRedirectLoginParameters,
+    revokeIssuedOAuthTokensWithinDeadline,
     validateLegacySsoCallback,
 } from "../lib/matrix/auth";
 import { MatrixService } from "../lib/matrix/client";
@@ -193,6 +203,29 @@ test("legacy SSO callbacks are bound to a fresh initiating transaction", () => {
     assert.equal(redirect.searchParams.get(LEGACY_SSO_STATE_PARAM), pending.state);
 });
 
+test("redirect callback parsing preserves query precedence and ignores ordinary room hashes", () => {
+    const parsed = parseRedirectLoginParameters(
+        "?code=query-code&state=query-state",
+        "#code=fragment-code&state=fragment-state&loginToken=fragment-token",
+    );
+
+    assert.equal(parsed.get("code"), "query-code");
+    assert.equal(parsed.get("state"), "query-state");
+    assert.equal(parsed.get("loginToken"), "fragment-token");
+
+    assert.equal(hasRedirectLoginParameters("", "#code=fragment-code"), true);
+    assert.equal(hasRedirectLoginParameters("", "#loginToken=fragment-token"), true);
+    assert.equal(hasRedirectLoginParameters("", "#error=access_denied"), true);
+    assert.equal(hasRedirectLoginParameters("?code=query-code", "#code=fragment-code"), true);
+    assert.equal(hasRedirectLoginParameters("?code=", "#code=fragment-code"), false);
+    assert.equal(hasRedirectLoginParameters("?loginToken=", "#loginToken=fragment-token"), false);
+    assert.equal(hasRedirectLoginParameters("?loginToken=&login_token=snake-token", ""), false);
+    assert.equal(hasRedirectLoginParameters("?code=", ""), false);
+    assert.equal(hasRedirectLoginParameters("?state=state-only", ""), false);
+    assert.equal(hasRedirectLoginParameters("", "#/room/%21safe%3Aexample"), false);
+    assert.equal(hasRedirectLoginParameters("", "#/room/%21safe%3Aexample?code=room-code"), false);
+});
+
 test("invalid and crossed auth callbacks clear state and URL data before token exchange", async () => {
     const originalWindow = globalThis.window;
     const originalSessionStorage = globalThis.sessionStorage;
@@ -281,6 +314,215 @@ test("invalid and crossed auth callbacks clear state and URL data before token e
             Reflect.deleteProperty(globalThis, "sessionStorage");
         }
     }
+});
+
+test("an OAuth callback revokes issued tokens when post-grant identity lookup fails", async (t) => {
+    const originalWindow = globalThis.window;
+    const originalSessionStorage = globalThis.sessionStorage;
+    const hadWindow = "window" in globalThis;
+    const hadSessionStorage = "sessionStorage" in globalThis;
+    const values = new Map<string, string>();
+    const storage: Storage = {
+        get length() {
+            return values.size;
+        },
+        clear: () => values.clear(),
+        getItem: (key) => values.get(key) ?? null,
+        key: (index) => [...values.keys()][index] ?? null,
+        removeItem: (key) => void values.delete(key),
+        setItem: (key, value) => void values.set(key, value),
+    };
+    const revoked: string[] = [];
+
+    values.set(
+        "sub-etha-pending-auth",
+        JSON.stringify({
+            kind: "oauth",
+            baseUrl: "https://matrix.example",
+            state: "expected-state",
+            metadata: {
+                authorization_endpoint: "https://issuer.example/authorize",
+                code_challenge_methods_supported: ["S256"],
+                grant_types_supported: ["authorization_code", "refresh_token"],
+                issuer: "https://issuer.example/",
+                registration_endpoint: "https://issuer.example/register",
+                response_modes_supported: ["query", "fragment"],
+                response_types_supported: ["code"],
+                revocation_endpoint: "https://issuer.example/revoke",
+                token_endpoint: "https://issuer.example/token",
+            },
+            context: {
+                clientId: "client-id",
+                deviceId: "DEVICE",
+                codeVerifier: "code-verifier",
+                redirectUri: "https://sub-etha.example/",
+            },
+        }),
+    );
+    Object.defineProperty(globalThis, "window", {
+        configurable: true,
+        value: {
+            location: {
+                search: "?code=authorization-code&state=expected-state",
+                hash: "",
+                pathname: "/",
+            },
+            history: { replaceState: () => undefined },
+        },
+    });
+    Object.defineProperty(globalThis, "sessionStorage", {
+        configurable: true,
+        value: storage,
+    });
+    t.mock.method(OAuth2.prototype, "completeAuthorizationCodeGrant", async () => ({
+        access_token: "issued-access",
+        refresh_token: "issued-refresh",
+        expires_in: 60,
+        token_type: "Bearer",
+    }));
+    t.mock.method(MatrixClient.prototype, "whoami", async () => {
+        throw new Error("identity lookup failed");
+    });
+    t.mock.method(
+        OAuth2.prototype,
+        "revokeToken",
+        async (token: string, type?: "access_token" | "refresh_token") => {
+            revoked.push(`${type}:${token}`);
+        },
+    );
+
+    try {
+        await assert.rejects(completeRedirectLogin(), /identity lookup failed/);
+        assert.deepEqual(revoked, ["refresh_token:issued-refresh", "access_token:issued-access"]);
+    } finally {
+        if (hadWindow) {
+            Object.defineProperty(globalThis, "window", {
+                configurable: true,
+                value: originalWindow,
+            });
+        } else {
+            Reflect.deleteProperty(globalThis, "window");
+        }
+
+        if (hadSessionStorage) {
+            Object.defineProperty(globalThis, "sessionStorage", {
+                configurable: true,
+                value: originalSessionStorage,
+            });
+        } else {
+            Reflect.deleteProperty(globalThis, "sessionStorage");
+        }
+    }
+});
+
+test("an OAuth callback surfaces typed uncertainty when post-grant revocation fails", async (t) => {
+    const originalWindow = globalThis.window;
+    const originalSessionStorage = globalThis.sessionStorage;
+    const hadWindow = "window" in globalThis;
+    const hadSessionStorage = "sessionStorage" in globalThis;
+    const values = new Map<string, string>();
+    const storage: Storage = {
+        get length() {
+            return values.size;
+        },
+        clear: () => values.clear(),
+        getItem: (key) => values.get(key) ?? null,
+        key: (index) => [...values.keys()][index] ?? null,
+        removeItem: (key) => void values.delete(key),
+        setItem: (key, value) => void values.set(key, value),
+    };
+
+    values.set(
+        "sub-etha-pending-auth",
+        JSON.stringify({
+            kind: "oauth",
+            baseUrl: "https://matrix.example",
+            state: "expected-state",
+            metadata: {
+                authorization_endpoint: "https://issuer.example/authorize",
+                code_challenge_methods_supported: ["S256"],
+                grant_types_supported: ["authorization_code", "refresh_token"],
+                issuer: "https://issuer.example/",
+                registration_endpoint: "https://issuer.example/register",
+                response_modes_supported: ["query", "fragment"],
+                response_types_supported: ["code"],
+                revocation_endpoint: "https://issuer.example/revoke",
+                token_endpoint: "https://issuer.example/token",
+            },
+            context: {
+                clientId: "client-id",
+                deviceId: "DEVICE",
+                codeVerifier: "code-verifier",
+                redirectUri: "https://sub-etha.example/",
+            },
+        }),
+    );
+    Object.defineProperty(globalThis, "window", {
+        configurable: true,
+        value: {
+            location: {
+                search: "?code=authorization-code&state=expected-state",
+                hash: "",
+                pathname: "/",
+            },
+            history: { replaceState: () => undefined },
+        },
+    });
+    Object.defineProperty(globalThis, "sessionStorage", {
+        configurable: true,
+        value: storage,
+    });
+    t.mock.method(OAuth2.prototype, "completeAuthorizationCodeGrant", async () => ({
+        access_token: "issued-access-unconfirmed",
+        refresh_token: "issued-refresh-unconfirmed",
+        expires_in: 60,
+        token_type: "Bearer",
+    }));
+    t.mock.method(MatrixClient.prototype, "whoami", async () => {
+        throw new Error("post-grant identity failed");
+    });
+    t.mock.method(OAuth2.prototype, "revokeToken", async () => {
+        throw new Error("revocation endpoint unavailable");
+    });
+
+    try {
+        await assert.rejects(
+            completeRedirectLogin(),
+            (error: unknown) =>
+                error instanceof OAuthPostGrantRevocationUnconfirmedError &&
+                error.remoteSessionEnded === false &&
+                error.cause instanceof Error &&
+                error.cause.message === "post-grant identity failed",
+        );
+    } finally {
+        if (hadWindow) {
+            Object.defineProperty(globalThis, "window", {
+                configurable: true,
+                value: originalWindow,
+            });
+        } else {
+            Reflect.deleteProperty(globalThis, "window");
+        }
+
+        if (hadSessionStorage) {
+            Object.defineProperty(globalThis, "sessionStorage", {
+                configurable: true,
+                value: originalSessionStorage,
+            });
+        } else {
+            Reflect.deleteProperty(globalThis, "sessionStorage");
+        }
+    }
+});
+
+test("issued OAuth token revocation treats a deadline as unconfirmed", async () => {
+    const result = await revokeIssuedOAuthTokensWithinDeadline(
+        { revokeToken: () => new Promise<void>(() => undefined) },
+        { access_token: "stalled-access", refresh_token: "stalled-refresh" },
+        1,
+    );
+
+    assert.equal(result, false);
 });
 
 test("OAuth metadata and authorization navigation reject unsafe URL schemes", async () => {
@@ -384,6 +626,22 @@ test("media downloads enforce declared, header, and streamed byte limits", async
         readBoundedResponse(new Response("safe", { headers: { "Content-Length": "5" } }), 4),
         MediaLimitError,
     );
+
+    let malformedCancelled = false;
+    const malformedBody = new ReadableStream<Uint8Array>({
+        cancel() {
+            malformedCancelled = true;
+        },
+    });
+
+    await assert.rejects(
+        readBoundedResponse(
+            new Response(malformedBody, { headers: { "Content-Length": "01" } }),
+            4,
+        ),
+        MediaLimitError,
+    );
+    assert.equal(malformedCancelled, true);
 
     let cancelled = false;
     const body = new ReadableStream<Uint8Array>({
@@ -490,6 +748,40 @@ test("image previews bound decoded bytes and cumulative animation work", () => {
     ]);
 
     assert.throws(() => assertSafeImageBytes(animatedGif), MediaLimitError);
+
+    const oversizedGifFrame = Uint8Array.from([
+        71, 73, 70, 56, 57, 97, 32, 0, 32, 0, 0, 0, 0, 44, 0, 0, 0, 0, 64, 0, 1, 0, 0, 2, 0, 59,
+    ]);
+
+    assert.throws(() => assertSafeImageBytes(oversizedGifFrame), MediaLimitError);
+
+    const oversizedApngFrame = new Uint8Array(33 + 12 + 26);
+
+    oversizedApngFrame.set([137, 80, 78, 71, 13, 10, 26, 10], 0);
+    oversizedApngFrame.set([0, 0, 0, 13, 73, 72, 68, 82], 8);
+    const apngView = new DataView(oversizedApngFrame.buffer);
+
+    apngView.setUint32(16, 32);
+    apngView.setUint32(20, 32);
+    apngView.setUint32(33, 26);
+    oversizedApngFrame.set(new TextEncoder().encode("fcTL"), 37);
+    apngView.setUint32(45, 64);
+    apngView.setUint32(49, 1);
+    assert.throws(() => assertSafeImageBytes(oversizedApngFrame), MediaLimitError);
+
+    const oversizedWebpFrame = new Uint8Array(58);
+    const webpView = new DataView(oversizedWebpFrame.buffer);
+
+    oversizedWebpFrame.set(new TextEncoder().encode("RIFF"), 0);
+    webpView.setUint32(4, 50, true);
+    oversizedWebpFrame.set(new TextEncoder().encode("WEBPVP8X"), 8);
+    webpView.setUint32(16, 10, true);
+    oversizedWebpFrame[24] = 31;
+    oversizedWebpFrame[27] = 31;
+    oversizedWebpFrame.set(new TextEncoder().encode("ANMF"), 30);
+    webpView.setUint32(34, 16, true);
+    oversizedWebpFrame[44] = 63;
+    assert.throws(() => assertSafeImageBytes(oversizedWebpFrame), MediaLimitError);
 });
 
 test("forged image MIME metadata cannot bypass byte inspection", async () => {
@@ -554,18 +846,28 @@ const SESSION: PersistedMatrixSession = {
     accessToken: "token",
     authKind: "token",
     baseUrl: "https://matrix.example",
+    cryptoDatabasePrefix: "sub-etha-crypto-record-1",
     cryptoStorageKey: "AQID",
     deviceId: "DEVICE",
     userId: "@arthur:matrix.example",
 };
 
 function mediaService(): MatrixService {
-    const service = new MatrixService(SESSION);
+    const service = new MatrixService({
+        session: SESSION,
+        recordId: "record-1",
+        revision: 1,
+        cryptoDatabasePrefix: "sub-etha-crypto-record-1",
+        reseal: async () => undefined,
+        dispose: () => undefined,
+    } as never);
     const client = {
         getAccessToken: () => "token",
         getHomeserverUrl: () => "https://matrix.example",
         mxcUrlToHttp: (mxcUrl: string) =>
             `https://matrix.example/media/${encodeURIComponent(mxcUrl)}`,
+        stopClient: () => undefined,
+        off: () => undefined,
     };
 
     (service as unknown as { client: typeof client }).client = client;
@@ -573,7 +875,7 @@ function mediaService(): MatrixService {
     return service;
 }
 
-test("automatic Matrix media loading never exceeds three concurrent fetches", async () => {
+test("automatic Matrix media loading has exactly one active fetch and a bounded FIFO queue", async () => {
     const originalFetch = globalThis.fetch;
     const pending: Array<() => void> = [];
     let active = 0;
@@ -597,13 +899,9 @@ test("automatic Matrix media loading never exceeds three concurrent fetches", as
             ),
         );
 
-        await new Promise((resolve) => setTimeout(resolve, 0));
-        assert.equal(maximum, 3);
-        pending.shift()?.();
-        await new Promise((resolve) => setTimeout(resolve, 0));
-        assert.equal(maximum, 3);
-
-        while (pending.length) {
+        for (let index = 0; index < loads.length; index += 1) {
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            assert.equal(maximum, 1);
             pending.shift()?.();
         }
 
@@ -612,6 +910,165 @@ test("automatic Matrix media loading never exceeds three concurrent fetches", as
         (service as unknown as { releaseMediaAssets: () => void }).releaseMediaAssets();
         globalThis.fetch = originalFetch;
     }
+});
+
+test("media operation gate enforces FIFO capacity, queued bytes, abort, and close", async () => {
+    const gate = new MediaOperationGate();
+    const active = await gate.acquire(1);
+    const order: number[] = [];
+    const queued = [1, 2, 3].map((value) =>
+        gate.acquire(1).then((lease) => {
+            order.push(value);
+
+            return lease;
+        }),
+    );
+
+    assert.equal(MAX_MEDIA_OPERATION_CAPACITY, 4);
+    await assert.rejects(gate.acquire(1), /busy/i);
+    active.release();
+
+    for (const leasePromise of queued) {
+        const lease = await leasePromise;
+
+        lease.release();
+    }
+
+    assert.deepEqual(order, [1, 2, 3]);
+
+    const bytesGate = new MediaOperationGate();
+    const bytesActive = await bytesGate.acquire(1);
+    const first = bytesGate.acquire(MAX_QUEUED_MEDIA_BYTES / 2);
+    const second = bytesGate.acquire(MAX_QUEUED_MEDIA_BYTES / 2);
+
+    await assert.rejects(bytesGate.acquire(1), /busy/i);
+    bytesActive.release();
+    (await first).release();
+    (await second).release();
+
+    const abortGate = new MediaOperationGate();
+    const abortActive = await abortGate.acquire(1);
+    const abortController = new AbortController();
+    const aborted = abortGate.acquire(1, abortController.signal);
+
+    abortController.abort();
+    await assert.rejects(aborted, { name: "AbortError" });
+    abortActive.release();
+
+    const closeGate = new MediaOperationGate();
+    const closeActive = await closeGate.acquire(1);
+    const closeQueued = closeGate.acquire(1);
+
+    closeGate.close();
+    assert.equal(closeActive.signal.aborted, true);
+    await assert.rejects(closeQueued);
+    closeActive.release();
+});
+
+test("encrypted media fingerprints cover every decryption field without retaining the key", async () => {
+    const base = {
+        v: "v2",
+        url: "mxc://matrix.example/encrypted",
+        key: {
+            alg: "A256CTR",
+            ext: true,
+            key_ops: ["encrypt", "decrypt"],
+            kty: "oct",
+            k: "super-secret-media-key",
+        },
+        iv: "initialization-vector",
+        hashes: { sha256: "ciphertext-hash" },
+    };
+    const digest = await encryptedMediaDigest(base);
+    const mutations = [
+        { ...base, v: "v3" },
+        { ...base, url: "mxc://matrix.example/other" },
+        { ...base, key: { ...base.key, alg: "A128CTR" } },
+        { ...base, key: { ...base.key, ext: false } },
+        { ...base, key: { ...base.key, key_ops: ["decrypt"] } },
+        { ...base, key: { ...base.key, kty: "other" } },
+        { ...base, key: { ...base.key, k: "different-key" } },
+        { ...base, iv: "different-vector" },
+        { ...base, hashes: { sha256: "different-hash" } },
+    ];
+
+    assert.equal(digest.includes(base.key.k), false);
+
+    for (const mutation of mutations) {
+        assert.notEqual(await encryptedMediaDigest(mutation), digest);
+    }
+});
+
+test("media upload config is authenticated, falls back once, and is identity-cached", async () => {
+    const originalFetch = globalThis.fetch;
+    const service = mediaService();
+    const calls: Array<{ url: string; authorization: string | null }> = [];
+    let requestCount = 0;
+
+    type ConfigClient = {
+        getHomeserverUrl: () => string;
+        getAccessToken: () => string;
+    };
+    const client: ConfigClient = {
+        getHomeserverUrl: () => "https://matrix.example",
+        getAccessToken: () => "token",
+    };
+    const internals = service as unknown as {
+        client: ConfigClient;
+        getMediaUploadConfig: (client: ConfigClient, generation: number) => Promise<number | null>;
+    };
+
+    internals.client = client;
+    globalThis.fetch = (async (input, init) => {
+        const url = String(input);
+
+        calls.push({
+            url,
+            authorization: new Headers(init?.headers).get("Authorization"),
+        });
+        requestCount += 1;
+
+        return requestCount === 1
+            ? new Response("", { status: 404 })
+            : new Response(JSON.stringify({ "m.upload.size": 123_456 }), {
+                  status: 200,
+                  headers: { "Content-Length": "26" },
+              });
+    }) as typeof fetch;
+
+    try {
+        const [first, second] = await Promise.all([
+            internals.getMediaUploadConfig(client, 0),
+            internals.getMediaUploadConfig(client, 0),
+        ]);
+
+        assert.equal(first, 123_456);
+        assert.equal(second, 123_456);
+        assert.equal(requestCount, 2);
+        assert.equal(calls[0].url, "https://matrix.example/_matrix/client/v1/media/config");
+        assert.equal(calls[1].url, "https://matrix.example/_matrix/media/v3/config");
+        assert.equal(calls[0].authorization, "Bearer token");
+        assert.equal(calls[1].authorization, "Bearer token");
+        assert.equal(await internals.getMediaUploadConfig(client, 0), 123_456);
+        assert.equal(requestCount, 2);
+    } finally {
+        globalThis.fetch = originalFetch;
+    }
+});
+
+test("only exact upload 413 M_TOO_LARGE shapes map to the local media-limit error", () => {
+    const internals = mediaService() as unknown as {
+        isUploadTooLarge: (error: unknown) => boolean;
+    };
+
+    assert.equal(internals.isUploadTooLarge({ httpStatus: 413, errcode: "M_TOO_LARGE" }), true);
+    assert.equal(
+        internals.isUploadTooLarge({ httpStatus: 413, data: { errcode: "M_TOO_LARGE" } }),
+        true,
+    );
+    assert.equal(internals.isUploadTooLarge({ httpStatus: 400, errcode: "M_TOO_LARGE" }), false);
+    assert.equal(internals.isUploadTooLarge({ httpStatus: 413, message: "M_TOO_LARGE" }), false);
+    assert.equal(internals.isUploadTooLarge("M_TOO_LARGE"), false);
 });
 
 test("Matrix media cache uses LRU order and revokes every object URL", async () => {
@@ -702,8 +1159,8 @@ test("media cache byte cap evicts the least-recently-used asset", async () => {
         internal.evictMediaCache("media", "asset-4");
         await Promise.resolve();
         assert.equal(internal.mediaCacheBytes, MAX_MEDIA_CACHE_BYTES);
-        assert.equal(internal.mediaAssets.size, 4);
-        assert.deepEqual(revoked, ["blob:large-0"]);
+        assert.equal(internal.mediaAssets.size, 2);
+        assert.deepEqual(revoked, ["blob:large-0", "blob:large-1", "blob:large-2"]);
     } finally {
         internal.mediaAssets.clear();
         URL.revokeObjectURL = originalRevoke;
@@ -730,7 +1187,7 @@ test("evicting or shutting down media work aborts pending downloads", async () =
     const service = mediaService();
 
     try {
-        const loads = Array.from({ length: 97 }, (_, index) =>
+        const loads = Array.from({ length: 4 }, (_, index) =>
             service.getMediaAsset(
                 { mxcUrl: `mxc://matrix.example/pending-${index}` },
                 { cacheKey: `pending-${index}`, expectedKind: "file" },
@@ -739,10 +1196,10 @@ test("evicting or shutting down media work aborts pending downloads", async () =
         const settled = Promise.allSettled(loads);
 
         await new Promise((resolve) => setTimeout(resolve, 0));
-        assert.ok(aborted >= 1);
-        (service as unknown as { releaseMediaAssets: () => void }).releaseMediaAssets();
+        assert.equal(aborted, 0);
+        service.stop();
         await settled;
-        assert.ok(aborted >= 3);
+        assert.equal(aborted, 1);
     } finally {
         (service as unknown as { releaseMediaAssets: () => void }).releaseMediaAssets();
         globalThis.fetch = originalFetch;

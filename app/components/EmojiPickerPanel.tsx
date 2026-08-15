@@ -2,6 +2,16 @@
 
 import EmojiPicker, { EmojiStyle, Theme, type EmojiClickData } from "emoji-picker-react";
 
+function readDocumentNonce(): string | undefined {
+    if (typeof document === "undefined") {
+        return undefined;
+    }
+
+    return document.querySelector<HTMLScriptElement | HTMLStyleElement>(
+        "script[nonce], style[nonce]",
+    )?.nonce;
+}
+
 export function EmojiPickerPanel({
     onSelect,
     compact = false,
@@ -9,8 +19,11 @@ export function EmojiPickerPanel({
     onSelect: (emoji: string) => void;
     compact?: boolean;
 }) {
+    const nonce = readDocumentNonce();
+
     return (
         <EmojiPicker
+            nonce={nonce}
             emojiStyle={EmojiStyle.NATIVE}
             theme={Theme.AUTO}
             lazyLoadEmojis

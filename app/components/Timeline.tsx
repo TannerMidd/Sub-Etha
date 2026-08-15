@@ -23,7 +23,6 @@ import {
     FileText,
     LoaderCircle,
     Maximize2,
-    MoreHorizontal,
     Pencil,
     Play,
     RefreshCw,
@@ -41,10 +40,18 @@ import {
     containImageSize,
     MAX_VIEWER_ZOOM,
     MIN_VIEWER_ZOOM,
+    pinchViewerZoom,
     preserveScrollCenter,
     stepViewerZoom,
     type ViewerSize,
 } from "@/lib/image-viewer";
+import {
+    isTimelineYouTubePreviewEligible,
+    timelineYouTubePreviews,
+    youtubePreviewLayout,
+    youtubeThumbnailFailureStore,
+    type YouTubePreview,
+} from "@/lib/youtube-preview";
 import { messageTextSegments } from "@/lib/matrix/message-text";
 import type { MediaAsset, TimelineItem } from "@/lib/matrix/types";
 import {
@@ -55,20 +62,51 @@ import {
     type TimelineScrollEvent,
     type TimelineScrollMode,
 } from "@/lib/timeline-scroll";
+import { SkeletonBar, SkeletonGroup } from "./Skeleton";
 import { classes } from "../styles/appStyles";
 
 const EmojiPickerPanel = lazy(() =>
     import("./EmojiPickerPanel").then((module) => ({ default: module.EmojiPickerPanel })),
 );
 const QUICK_REACTIONS = ["👍", "❤️", "😂", "😮", "😢", "🎉"];
+/*
+ * How long a row carries its entrance marker. Slightly longer than the
+ * animation itself so the last frame is never cut off on a busy commit.
+ */
+const ENTER_ANIMATION_MS = 520;
+const REACTION_POP_MS = 700;
+/*
+ * Entrance tracking remembers which events it has already shown. The timeline
+ * is windowed, so the ids outlive the rows; past this many the set is rebuilt
+ * from what is actually in the window.
+ */
+const KNOWN_ITEM_ID_LIMIT = 2_000;
+const NO_ENTERING_ITEMS: ReadonlySet<string> = new Set<string>();
+
+function timelineEntranceIdentity(item: TimelineItem): string {
+    const transactionId =
+        item.event && typeof item.event.getTxnId === "function" ? item.event.getTxnId() : null;
+
+    return transactionId ? `txn:${transactionId}` : `event:${item.id}`;
+}
+
 const TIMELINE_VIEWPORT_PADDING = { top: 0, bottom: 300 };
 const TIMELINE_COMPACT_BREAKPOINT_PX = 720;
 const TIMELINE_ESTIMATED_MEDIA_GUTTER_PX = 70;
 const TIMELINE_MAX_ESTIMATED_MEDIA_WIDTH_PX = 520;
+const TIMELINE_MOBILE_ACTION_ROW_HEIGHT_PX = 44;
 const HISTORY_ANCHOR_MIN_SETTLE_MS = 120;
-const HISTORY_ANCHOR_MAX_SETTLE_MS = 600;
+// Slow devices can continue delivering Virtuoso height corrections well after
+// the first stable frames. Keep the anchor live long enough to absorb those
+// late measurements; any real user gesture still cancels or defers restoration.
+const HISTORY_ANCHOR_MAX_SETTLE_MS = 1_500;
 const HISTORY_ANCHOR_STABLE_FRAMES = 4;
-const USER_SCROLL_END_DELAY_MS = 160;
+const HISTORY_COMMIT_GRACE_FRAMES = 4;
+const HISTORY_COMMIT_GRACE_MAX_MS = 250;
+// Trackpad and wheel bursts can arrive farther apart on a busy or low-power
+// device. Do not hand geometry correction back to the list between events that
+// still belong to the same gesture.
+const USER_SCROLL_END_DELAY_MS = 600;
 const TIMELINE_BOTTOM_TOLERANCE_PX = 2;
 const NEWEST_MESSAGE_MIN_SETTLE_MS = 200;
 const NEWEST_MESSAGE_MAX_SETTLE_MS = 2_000;
@@ -128,6 +166,15 @@ function getAuthorAccentStyle(item: TimelineItem, replyItem?: TimelineItem): Aut
     return style;
 }
 
+function timelineItemHasActions(item: TimelineItem): boolean {
+    return (
+        item.type !== "system" &&
+        item.decryptionState === "ready" &&
+        !item.redacted &&
+        !item.sendingStatus
+    );
+}
+
 function estimateTimelineItemHeight(item: TimelineItem, viewportWidth: number): number {
     const compact = viewportWidth <= TIMELINE_COMPACT_BREAKPOINT_PX;
     const availableTextWidth = compact
@@ -151,6 +198,11 @@ function estimateTimelineItemHeight(item: TimelineItem, viewportWidth: number): 
     /* The constant covers the row's fixed chrome: the rule above the block, its
        padding, the sender line, and the gap below. */
     const textHeight = (compact ? 68 : 80) + estimatedTextLines * (compact ? 25.2 : 27.52);
+    const youtubePreviews = timelineYouTubePreviews(item);
+    const youtubeHeight = youtubePreviewLayout(
+        availableTextWidth,
+        youtubePreviews.length,
+    ).totalHeight;
     let estimate = textHeight;
 
     if (!item.redacted && (item.type === "image" || item.type === "video")) {
@@ -185,6 +237,12 @@ function estimateTimelineItemHeight(item: TimelineItem, viewportWidth: number): 
         estimate = compact ? 92 : 68;
     }
 
+    estimate += youtubeHeight;
+
+    if (compact && timelineItemHasActions(item)) {
+        estimate += TIMELINE_MOBILE_ACTION_ROW_HEIGHT_PX;
+    }
+
     if (item.replyTo) {
         estimate += compact ? 30 : 34;
     }
@@ -208,6 +266,68 @@ interface TimelineHistoryAnchor {
     index: number;
     target: "event" | "item";
     top: number;
+}
+
+/*
+ * The rhythm of the placeholder rows. Uneven line lengths, and rows that vary
+ * between one body line and two, read as a conversation rather than as a table;
+ * an even stack of identical bars reads as a loading widget, which is the thing
+ * a skeleton exists to avoid.
+ */
+const TIMELINE_SKELETON_ROWS: Array<{ body: string; second: string | null }> = [
+    { body: "88%", second: "54%" },
+    { body: "62%", second: null },
+    { body: "94%", second: "71%" },
+    { body: "48%", second: null },
+    { body: "80%", second: "44%" },
+];
+
+function TimelineSkeletonRow({
+    author,
+    body,
+    second = null,
+}: {
+    author: string;
+    body: string;
+    second?: string | null;
+}) {
+    return (
+        <div className={classes("timeline-skeleton__row")}>
+            <SkeletonBar width="32px" height={10} style={{ marginTop: 20 }} />
+            <div className={classes("timeline-skeleton__main")}>
+                <span className={classes("timeline-skeleton__marker")} />
+                <SkeletonBar width={author} height={11} />
+                <SkeletonBar width={body} height={12} style={{ marginTop: 15 }} />
+                {second ? (
+                    <SkeletonBar width={second} height={12} style={{ marginTop: 10 }} />
+                ) : null}
+            </div>
+        </div>
+    );
+}
+
+/*
+ * Rendered inside `.timeline` so the placeholder inherits the frame's lane
+ * widths and its vertical axis. The rows then occupy the geometry the real
+ * messages will, which is what lets the conversation resolve without the page
+ * relaying out around it. Exported because the shell shows the same shape
+ * before a room has been chosen at all.
+ */
+export function TimelineSkeleton() {
+    return (
+        <div className={classes("timeline")} aria-label="Room messages" aria-busy="true">
+            <SkeletonGroup label="Loading messages…" className="timeline-skeleton">
+                {TIMELINE_SKELETON_ROWS.map((row) => (
+                    <TimelineSkeletonRow
+                        key={row.body}
+                        author="78px"
+                        body={row.body}
+                        second={row.second}
+                    />
+                ))}
+            </SkeletonGroup>
+        </div>
+    );
 }
 
 function TimelineHistoryHeader({ context }: { context: TimelineVirtuosoContext }) {
@@ -236,6 +356,15 @@ function TimelineHistoryHeader({ context }: { context: TimelineVirtuosoContext }
         </div>
     );
 
+    /*
+     * The reference draws placeholder rows here while earlier history loads.
+     * This timeline cannot: prepending must not move the reader (see the
+     * windowing rule in docs/architecture.md), and rows added to the header
+     * grow it by their own height at exactly the moment the anchor is holding
+     * the viewport still — which pushes the reader down instead. The control
+     * below already reports the request without changing any geometry, so the
+     * placeholder is deliberately omitted rather than fought into place.
+     */
     return (
         <>
             {historyControl}
@@ -552,15 +681,26 @@ function MediaAttachment({
     }
 
     if (!asset) {
+        /*
+         * The frame already reserves the picture's real dimensions, so the
+         * placeholder fills it rather than centring a spinner inside it: the
+         * image lands in exactly the space its skeleton held, and the timeline
+         * never reflows around it.
+         */
         if (visual) {
             return (
                 <div
                     className={classes(`${visualFrameClass} media-frame--reserved`)}
                     style={visualFrameStyle}
                 >
-                    <div className={classes("media-loading media-loading--visual")}>
-                        <LoaderCircle className={classes("spin")} aria-hidden="true" /> Decrypting
-                        attachment…
+                    <div
+                        className={classes(
+                            "media-loading media-loading--visual media-loading--skeleton",
+                        )}
+                        role="status"
+                    >
+                        <i className={classes("skeleton")} aria-hidden="true" />
+                        <span className={classes("sr-only")}>Decrypting attachment…</span>
                     </div>
                 </div>
             );
@@ -723,6 +863,23 @@ interface ViewerDragState {
     scrollTop: number;
 }
 
+interface ViewerPointerState {
+    pointerId: number;
+    clientX: number;
+    clientY: number;
+    startX: number;
+    startY: number;
+}
+
+interface ViewerPinchState {
+    startDistance: number;
+    startZoom: number;
+}
+
+function viewerPointerDistance(first: ViewerPointerState, second: ViewerPointerState): number {
+    return Math.hypot(second.clientX - first.clientX, second.clientY - first.clientY);
+}
+
 function readViewerScrollMetrics(stage: HTMLDivElement): ViewerScrollMetrics {
     return {
         left: stage.scrollLeft,
@@ -770,6 +927,9 @@ function Lightbox({
     const closeButton = useRef<HTMLButtonElement>(null);
     const pendingCenter = useRef<ViewerScrollMetrics | null>(null);
     const dragState = useRef<ViewerDragState | null>(null);
+    const activePointers = useRef<Map<number, ViewerPointerState>>(new Map());
+    const pinchState = useRef<ViewerPinchState | null>(null);
+    const zoomRef = useRef(zoom);
     const titleId = useId();
     const metadataId = useId();
     const fittedSize = useMemo(
@@ -783,22 +943,21 @@ function Lightbox({
     const canPan = zoom > MIN_VIEWER_ZOOM;
     const zoomPercent = Math.round(zoom * 100);
 
-    const updateZoom = useCallback(
-        (nextZoom: number) => {
-            const clamped = clampViewerZoom(nextZoom);
+    const updateZoom = useCallback((nextZoom: number) => {
+        const clamped = clampViewerZoom(nextZoom);
+        const currentZoom = zoomRef.current;
 
-            if (clamped === zoom) {
-                return;
-            }
+        if (clamped === currentZoom) {
+            return;
+        }
 
-            if (stage.current) {
-                pendingCenter.current = readViewerScrollMetrics(stage.current);
-            }
+        if (stage.current) {
+            pendingCenter.current = readViewerScrollMetrics(stage.current);
+        }
 
-            setZoom(clamped);
-        },
-        [zoom],
-    );
+        zoomRef.current = clamped;
+        setZoom(clamped);
+    }, []);
 
     const finishPan = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
         if (dragState.current?.pointerId !== event.pointerId) {
@@ -812,6 +971,27 @@ function Lightbox({
         dragState.current = null;
         setDragging(false);
     }, []);
+
+    const clearViewerGesture = useCallback(() => {
+        const currentStage = stage.current;
+
+        if (currentStage) {
+            for (const pointerId of activePointers.current.keys()) {
+                if (currentStage.hasPointerCapture(pointerId)) {
+                    currentStage.releasePointerCapture(pointerId);
+                }
+            }
+        }
+
+        activePointers.current.clear();
+        pinchState.current = null;
+        dragState.current = null;
+    }, []);
+
+    const resetViewerGesture = useCallback(() => {
+        clearViewerGesture();
+        setDragging(false);
+    }, [clearViewerGesture]);
 
     const move = (direction: number) => {
         if (items.length < 2) {
@@ -831,6 +1011,16 @@ function Lightbox({
             document.body.style.overflow = previousOverflow;
         };
     }, []);
+
+    useEffect(() => {
+        zoomRef.current = zoom;
+    }, [zoom]);
+
+    useEffect(() => {
+        clearViewerGesture();
+
+        return clearViewerGesture;
+    }, [clearViewerGesture, selectedId]);
 
     useLayoutEffect(() => {
         const currentStage = stage.current;
@@ -1055,10 +1245,41 @@ function Lightbox({
                     )}
                     onPointerDown={(event) => {
                         if (
-                            !canPan ||
                             event.button !== 0 ||
                             (event.target as HTMLElement).closest("button, a")
                         ) {
+                            return;
+                        }
+
+                        if (event.pointerType === "touch") {
+                            const pointer = {
+                                pointerId: event.pointerId,
+                                clientX: event.clientX,
+                                clientY: event.clientY,
+                                startX: event.clientX,
+                                startY: event.clientY,
+                            };
+
+                            activePointers.current.set(event.pointerId, pointer);
+                            event.currentTarget.setPointerCapture(event.pointerId);
+
+                            if (activePointers.current.size === 2) {
+                                const [first, second] = [...activePointers.current.values()];
+
+                                dragState.current = null;
+                                pinchState.current = {
+                                    startDistance: viewerPointerDistance(first, second),
+                                    startZoom: zoomRef.current,
+                                };
+                                setDragging(false);
+                            }
+
+                            event.preventDefault();
+
+                            return;
+                        }
+
+                        if (!canPan) {
                             return;
                         }
 
@@ -1074,6 +1295,47 @@ function Lightbox({
                         event.preventDefault();
                     }}
                     onPointerMove={(event) => {
+                        if (event.pointerType === "touch") {
+                            const pointer = activePointers.current.get(event.pointerId);
+
+                            if (!pointer) {
+                                return;
+                            }
+
+                            pointer.clientX = event.clientX;
+                            pointer.clientY = event.clientY;
+
+                            if (activePointers.current.size >= 2) {
+                                const [first, second] = [...activePointers.current.values()];
+                                const pinch = pinchState.current;
+
+                                if (pinch) {
+                                    updateZoom(
+                                        pinchViewerZoom(
+                                            pinch.startZoom,
+                                            pinch.startDistance,
+                                            viewerPointerDistance(first, second),
+                                        ),
+                                    );
+                                }
+
+                                event.preventDefault();
+
+                                return;
+                            }
+
+                            if (canPan && !dragState.current) {
+                                dragState.current = {
+                                    pointerId: event.pointerId,
+                                    startX: pointer.startX,
+                                    startY: pointer.startY,
+                                    scrollLeft: event.currentTarget.scrollLeft,
+                                    scrollTop: event.currentTarget.scrollTop,
+                                };
+                                setDragging(true);
+                            }
+                        }
+
                         const drag = dragState.current;
 
                         if (!drag || drag.pointerId !== event.pointerId) {
@@ -1085,12 +1347,38 @@ function Lightbox({
                         event.currentTarget.scrollTop =
                             drag.scrollTop - (event.clientY - drag.startY);
                     }}
-                    onPointerUp={finishPan}
-                    onPointerCancel={finishPan}
-                    onLostPointerCapture={() => {
-                        dragState.current = null;
-                        setDragging(false);
+                    onPointerUp={(event) => {
+                        if (event.pointerType === "touch") {
+                            activePointers.current.delete(event.pointerId);
+                            pinchState.current = null;
+
+                            if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+                                event.currentTarget.releasePointerCapture(event.pointerId);
+                            }
+
+                            if (activePointers.current.size === 0) {
+                                dragState.current = null;
+                                setDragging(false);
+                            } else if (dragState.current?.pointerId === event.pointerId) {
+                                dragState.current = null;
+                                setDragging(false);
+                            }
+
+                            return;
+                        }
+
+                        finishPan(event);
                     }}
+                    onPointerCancel={(event) => {
+                        if (event.pointerType === "touch") {
+                            resetViewerGesture();
+
+                            return;
+                        }
+
+                        finishPan(event);
+                    }}
+                    onLostPointerCapture={resetViewerGesture}
                 >
                     {error ? (
                         <div className={classes("lightbox__error")}>
@@ -1199,7 +1487,7 @@ function PlainMessageBody({ body }: { body: string }) {
     );
 }
 
-function FormattedMessageBody({ html }: { html: string }) {
+function FormattedMessageBody({ html }: { html: NonNullable<TimelineItem["formattedBody"]> }) {
     const bodyRef = useRef<HTMLDivElement>(null);
 
     useEffect(() => {
@@ -1290,6 +1578,66 @@ function FormattedMessageBody({ html }: { html: string }) {
     );
 }
 
+function YouTubePreviewCard({ preview }: { preview: YouTubePreview }) {
+    const [failed, setFailed] = useState(() => youtubeThumbnailFailureStore.has(preview.id));
+
+    const markFailed = () => {
+        youtubeThumbnailFailureStore.markFailed(preview.id);
+        setFailed(true);
+    };
+
+    const contents = (
+        <>
+            <span className={classes("youtube-preview__media")} aria-hidden="true">
+                {failed ? null : (
+                    // YouTube must receive the browser-direct public thumbnail URL.
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <img
+                        src={preview.src}
+                        alt=""
+                        loading="lazy"
+                        referrerPolicy="no-referrer"
+                        onError={markFailed}
+                    />
+                )}
+            </span>
+            <span className={classes("youtube-preview__metadata")}>
+                {failed ? "YouTube preview unavailable" : "Watch on YouTube"}
+            </span>
+        </>
+    );
+
+    return failed ? (
+        <div className={classes("youtube-preview")} aria-label="YouTube preview unavailable">
+            {contents}
+        </div>
+    ) : (
+        <a
+            className={classes("youtube-preview")}
+            href={preview.href}
+            target="_blank"
+            rel="noopener noreferrer"
+            aria-label="Watch video on YouTube"
+        >
+            {contents}
+        </a>
+    );
+}
+
+function YouTubePreviewCards({ previews }: { previews: YouTubePreview[] }) {
+    if (!previews.length) {
+        return null;
+    }
+
+    return (
+        <div className={classes("youtube-preview-list")} aria-label="YouTube previews">
+            {previews.map((preview) => (
+                <YouTubePreviewCard key={preview.id} preview={preview} />
+            ))}
+        </div>
+    );
+}
+
 function replyExcerpt(item: TimelineItem): string {
     const firstLine = item.body.split("\n", 1)[0] ?? item.body;
 
@@ -1300,6 +1648,7 @@ function MessageRow({
     item,
     next,
     replyItem,
+    entering,
     service,
     onReply,
     onEdit,
@@ -1308,47 +1657,35 @@ function MessageRow({
     item: TimelineItem;
     next?: TimelineItem;
     replyItem?: TimelineItem;
+    entering: boolean;
     service: MatrixService;
     onReply: (item: TimelineItem) => void;
     onEdit: (item: TimelineItem) => void;
     onOpenMedia: (item: TimelineItem, opener: HTMLElement) => void;
 }) {
     const [reactionOpen, setReactionOpen] = useState(false);
-    const [actionsOpen, setActionsOpen] = useState(false);
+    /*
+     * Which reaction is mid-pop. Set on the click rather than on the round
+     * trip, because the pop acknowledges the tap; whether the homeserver
+     * accepts it is what the count itself reports a moment later.
+     */
+    const [poppedReaction, setPoppedReaction] = useState<string | null>(null);
+    const popTimer = useRef<number | null>(null);
     const rowRef = useRef<HTMLElement>(null);
+
+    useEffect(
+        () => () => {
+            if (popTimer.current !== null) {
+                window.clearTimeout(popTimer.current);
+            }
+        },
+        [],
+    );
     const nextDay =
         next && new Date(next.timestamp).toDateString() !== new Date(item.timestamp).toDateString();
-    const actionable = item.decryptionState === "ready" && !item.redacted && !item.sendingStatus;
+    const actionable = timelineItemHasActions(item);
     const editable = actionable && item.own && item.type === "message" && !item.media;
-    const hasSecondaryActions = editable || item.own;
-
-    useEffect(() => {
-        if (!actionsOpen) {
-            return;
-        }
-
-        const dismiss = (event: PointerEvent) => {
-            if (!rowRef.current?.contains(event.target as Node)) {
-                setActionsOpen(false);
-                setReactionOpen(false);
-            }
-        };
-
-        const escape = (event: KeyboardEvent) => {
-            if (event.key === "Escape") {
-                setActionsOpen(false);
-                setReactionOpen(false);
-            }
-        };
-
-        document.addEventListener("pointerdown", dismiss);
-        window.addEventListener("keydown", escape);
-
-        return () => {
-            document.removeEventListener("pointerdown", dismiss);
-            window.removeEventListener("keydown", escape);
-        };
-    }, [actionsOpen]);
+    const youtubePreviews = useMemo(() => timelineYouTubePreviews(item), [item]);
 
     if (item.type === "system") {
         return (
@@ -1367,11 +1704,12 @@ function MessageRow({
             <article
                 ref={rowRef}
                 className={classes(
-                    `message-row${item.own ? " message-row--own" : ""}${item.type === "notice" ? " message-row--notice" : ""}${next ? "" : " message-row--last"}${actionsOpen ? " is-actions-open" : ""}`,
+                    `message-row${item.own ? " message-row--own" : ""}${item.type === "notice" ? " message-row--notice" : ""}${next ? "" : " message-row--last"}`,
                 )}
                 style={getAuthorAccentStyle(item, replyItem)}
                 data-ui="message-row"
-                data-actions-state={actionsOpen ? "open" : "closed"}
+                data-enter={entering ? "in" : undefined}
+                data-send-state={item.sendingStatus ?? undefined}
                 data-event-id={item.id}
                 aria-label={`Message from ${item.senderName}`}
             >
@@ -1427,6 +1765,7 @@ function MessageRow({
                     ) : item.type === "file" ? null : (
                         <PlainMessageBody body={item.body} />
                     )}
+                    <YouTubePreviewCards previews={youtubePreviews} />
                     {item.media ? (
                         <MediaAttachment item={item} service={service} onOpen={onOpenMedia} />
                     ) : null}
@@ -1437,10 +1776,22 @@ function MessageRow({
                                     key={reaction.key}
                                     type="button"
                                     className={classes(reaction.mine ? "is-mine" : "")}
+                                    data-pop={reaction.key === poppedReaction ? "true" : undefined}
                                     aria-pressed={reaction.mine}
-                                    onClick={() =>
-                                        void service.toggleReaction(item.id, reaction.key)
-                                    }
+                                    onClick={() => {
+                                        setPoppedReaction(reaction.key);
+
+                                        if (popTimer.current !== null) {
+                                            window.clearTimeout(popTimer.current);
+                                        }
+
+                                        popTimer.current = window.setTimeout(() => {
+                                            popTimer.current = null;
+                                            setPoppedReaction(null);
+                                        }, REACTION_POP_MS);
+
+                                        void service.toggleReaction(item.id, reaction.key);
+                                    }}
                                 >
                                     <span>{reaction.key}</span>
                                     <span>{reaction.count}</span>
@@ -1479,7 +1830,6 @@ function MessageRow({
                             title="Reply"
                             aria-label="Reply"
                             onClick={() => {
-                                setActionsOpen(false);
                                 setReactionOpen(false);
                                 onReply(item);
                             }}
@@ -1493,61 +1843,30 @@ function MessageRow({
                             aria-expanded={reactionOpen}
                             onPointerDown={(event) => event.stopPropagation()}
                             onClick={() => {
-                                setActionsOpen(false);
                                 setReactionOpen((open) => !open);
                             }}
                         >
                             <SmilePlus />
                         </button>
-                        {hasSecondaryActions ? (
-                            <>
-                                <button
-                                    type="button"
-                                    className={classes("message-actions-toggle")}
-                                    data-ui="message-actions-toggle"
-                                    title="More actions"
-                                    aria-label={`More actions for message from ${item.senderName}`}
-                                    aria-expanded={actionsOpen}
-                                    onClick={() => {
-                                        setReactionOpen(false);
-                                        setActionsOpen((open) => !open);
-                                    }}
-                                >
-                                    <MoreHorizontal />
-                                </button>
-                                <div
-                                    className={classes("message-actions-overflow")}
-                                    data-ui="message-actions-overflow"
-                                    aria-label={`More actions for message from ${item.senderName}`}
-                                >
-                                    {editable ? (
-                                        <button
-                                            type="button"
-                                            title="Edit"
-                                            aria-label="Edit"
-                                            onClick={() => {
-                                                setActionsOpen(false);
-                                                onEdit(item);
-                                            }}
-                                        >
-                                            <Pencil />
-                                        </button>
-                                    ) : null}
-                                    {item.own ? (
-                                        <button
-                                            type="button"
-                                            title="Remove"
-                                            aria-label="Remove"
-                                            onClick={() => {
-                                                setActionsOpen(false);
-                                                void service.redact(item.id);
-                                            }}
-                                        >
-                                            <Trash2 />
-                                        </button>
-                                    ) : null}
-                                </div>
-                            </>
+                        {editable ? (
+                            <button
+                                type="button"
+                                title="Edit"
+                                aria-label="Edit"
+                                onClick={() => onEdit(item)}
+                            >
+                                <Pencil />
+                            </button>
+                        ) : null}
+                        {item.own ? (
+                            <button
+                                type="button"
+                                title="Remove"
+                                aria-label="Remove"
+                                onClick={() => void service.redact(item.id)}
+                            >
+                                <Trash2 />
+                            </button>
                         ) : null}
                         {reactionOpen ? (
                             <ReactionPicker
@@ -1590,6 +1909,10 @@ export function Timeline({
     const [unreadBoundaryId, setUnreadBoundaryId] = useState<string | null>(() =>
         initialUnreadBoundaryId(items, unreadCount),
     );
+    const [enteringIds, setEnteringIds] = useState<ReadonlySet<string>>(NO_ENTERING_ITEMS);
+    const knownItemIds = useRef<Set<string>>(new Set());
+    const enterTrackingReady = useRef(false);
+    const enterTimers = useRef<Map<string, number>>(new Map());
     const lightboxOpener = useRef<HTMLElement | null>(null);
     const scroller = useRef<HTMLElement | null>(null);
     const removeScrollerListeners = useRef<(() => void) | null>(null);
@@ -1618,6 +1941,10 @@ export function Timeline({
     const finishUserScrollRef = useRef<() => void>(() => undefined);
     const userScrollDirection = useRef<UserScrollDirection>(0);
     const olderIntentLatched = useRef(false);
+    // Virtuoso can report `startReached` while it is still resolving the
+    // initial align-to-bottom layout. Keep that notification inert until a
+    // real upward gesture has handed history pagination to the user.
+    const historyPaginationIntent = useRef(false);
     const unreadBoundaryInitialized = useRef(items.length > 0 || !initializing);
     const transitionScrollMode = useCallback((event: TimelineScrollEvent) => {
         const nextMode = transitionTimelineScrollMode(scrollModeRef.current, event);
@@ -1786,10 +2113,12 @@ export function Timeline({
     const estimateLayoutSignature = useMemo(
         () =>
             items
-                .map(
-                    (item) =>
-                        `${item.id}:${item.type}:${item.media ? `${item.media.width ?? "?"}x${item.media.height ?? "?"}` : "none"}`,
-                )
+                .map((item) => {
+                    const youtubePreviews = timelineYouTubePreviews(item);
+                    const youtubeEligible = isTimelineYouTubePreviewEligible(item);
+
+                    return `${item.id}:${item.type}:${item.media ? `${item.media.width ?? "?"}x${item.media.height ?? "?"}` : "none"}:youtube=${youtubeEligible ? "eligible" : "ineligible"}:${youtubePreviews.length}:${youtubePreviews.map((preview) => preview.id).join(",")}`;
+                })
                 .join("|"),
         [items],
     );
@@ -1807,72 +2136,100 @@ export function Timeline({
             setEstimateLayoutRevision((revision) => revision + 1);
         }
     }, [estimateLayoutSignature]);
-    const loadEarlierHistory = useCallback(() => {
-        if (
-            scrollModeRef.current === "initializing" ||
-            !hasMoreHistory ||
-            loadingHistory ||
-            historyRequestInFlight.current
-        ) {
-            return;
-        }
-
-        cancelHistoryRestoration();
-        detachedViewportAnchor.current = null;
-        const element = scroller.current;
-        const scrollerBounds = element?.getBoundingClientRect();
-        const visibleEvent =
-            element && scrollerBounds
-                ? [...element.querySelectorAll<HTMLElement>("[data-event-id]")]
-                      .filter((candidate) => {
-                          const bounds = candidate.getBoundingClientRect();
-
-                          return (
-                              bounds.bottom > scrollerBounds.top &&
-                              bounds.top < scrollerBounds.bottom
-                          );
-                      })
-                      .sort(
-                          (left, right) =>
-                              left.getBoundingClientRect().top - right.getBoundingClientRect().top,
-                      )[0]
-                : null;
-        const firstRenderedItem = element?.querySelector<HTMLElement>("[data-index]") ?? null;
-
-        historyAnchor.current = visibleEvent?.dataset.eventId
-            ? {
-                  id: visibleEvent.dataset.eventId,
-                  index: Number.parseInt(
-                      visibleEvent.closest<HTMLElement>("[data-index]")?.dataset.index ??
-                          `${firstItemIndex}`,
-                      10,
-                  ),
-                  target: "event",
-                  top: visibleEvent.getBoundingClientRect().top,
-              }
-            : firstRenderedItem
-              ? {
-                    id: items[0]?.id ?? "",
-                    index: Number.parseInt(
-                        firstRenderedItem.dataset.index ?? `${firstItemIndex}`,
-                        10,
-                    ),
-                    target: "item",
-                    top: firstRenderedItem.getBoundingClientRect().top,
-                }
-              : null;
-        historyRequestInFlight.current = true;
-        const requestGeneration = ++historyRequestGeneration.current;
-        const requestedFirstItemIndex = firstItemIndex;
-
-        void service.paginate().finally(() => {
-            if (historyRequestGeneration.current !== requestGeneration) {
+    const loadEarlierHistory = useCallback(
+        (fromUserGesture = false) => {
+            if (
+                scrollModeRef.current === "initializing" ||
+                !hasMoreHistory ||
+                loadingHistory ||
+                historyRequestInFlight.current
+            ) {
                 return;
             }
 
-            historyRequestInFlight.current = false;
-            window.requestAnimationFrame(() => {
-                if (previousFirstItemIndex.current === requestedFirstItemIndex) {
+            if (!fromUserGesture && !historyPaginationIntent.current) {
+                return;
+            }
+
+            historyPaginationIntent.current = false;
+
+            cancelHistoryRestoration();
+            detachedViewportAnchor.current = null;
+            const element = scroller.current;
+            const scrollerBounds = element?.getBoundingClientRect();
+            const visibleEvent =
+                element && scrollerBounds
+                    ? [...element.querySelectorAll<HTMLElement>("[data-event-id]")]
+                          .filter((candidate) => {
+                              const bounds = candidate.getBoundingClientRect();
+
+                              return (
+                                  bounds.bottom > scrollerBounds.top &&
+                                  bounds.top < scrollerBounds.bottom
+                              );
+                          })
+                          .sort(
+                              (left, right) =>
+                                  left.getBoundingClientRect().top -
+                                  right.getBoundingClientRect().top,
+                          )[0]
+                    : null;
+            const firstRenderedItem = element?.querySelector<HTMLElement>("[data-index]") ?? null;
+
+            historyAnchor.current = visibleEvent?.dataset.eventId
+                ? {
+                      id: visibleEvent.dataset.eventId,
+                      index: Number.parseInt(
+                          visibleEvent.closest<HTMLElement>("[data-index]")?.dataset.index ??
+                              `${firstItemIndex}`,
+                          10,
+                      ),
+                      target: "event",
+                      top: visibleEvent.getBoundingClientRect().top,
+                  }
+                : firstRenderedItem
+                  ? {
+                        id: items[0]?.id ?? "",
+                        index: Number.parseInt(
+                            firstRenderedItem.dataset.index ?? `${firstItemIndex}`,
+                            10,
+                        ),
+                        target: "item",
+                        top: firstRenderedItem.getBoundingClientRect().top,
+                    }
+                  : null;
+            historyRequestInFlight.current = true;
+            const requestGeneration = ++historyRequestGeneration.current;
+            const requestedFirstItemIndex = firstItemIndex;
+
+            void service.paginate().finally(() => {
+                if (historyRequestGeneration.current !== requestGeneration) {
+                    return;
+                }
+
+                historyRequestInFlight.current = false;
+                const resolvedAt = window.performance.now();
+                let graceFramesRemaining = HISTORY_COMMIT_GRACE_FRAMES;
+
+                const reconcileCommittedHistory = () => {
+                    if (historyRequestGeneration.current !== requestGeneration) {
+                        return;
+                    }
+
+                    if (previousFirstItemIndex.current !== requestedFirstItemIndex) {
+                        return;
+                    }
+
+                    if (
+                        graceFramesRemaining > 0 &&
+                        window.performance.now() - resolvedAt < HISTORY_COMMIT_GRACE_MAX_MS
+                    ) {
+                        graceFramesRemaining -= 1;
+                        window.requestAnimationFrame(reconcileCommittedHistory);
+
+                        return;
+                    }
+
                     historyAnchor.current = null;
                     historyRestoreDeferred.current = false;
 
@@ -1883,19 +2240,22 @@ export function Timeline({
                     if (scrollModeRef.current !== "attached" && !userScrollActive.current) {
                         captureDetachedAnchor();
                     }
-                }
+                };
+
+                window.requestAnimationFrame(reconcileCommittedHistory);
             });
-        });
-    }, [
-        cancelHistoryRestoration,
-        captureDetachedAnchor,
-        firstItemIndex,
-        hasMoreHistory,
-        items,
-        loadingHistory,
-        service,
-        transitionScrollMode,
-    ]);
+        },
+        [
+            cancelHistoryRestoration,
+            captureDetachedAnchor,
+            firstItemIndex,
+            hasMoreHistory,
+            items,
+            loadingHistory,
+            service,
+            transitionScrollMode,
+        ],
+    );
 
     const firstTimestamp = items[0]?.timestamp ?? null;
     const virtuosoContext = useMemo(
@@ -1903,7 +2263,7 @@ export function Timeline({
             loadingHistory,
             hasMoreHistory,
             firstTimestamp,
-            requestEarlierHistory: loadEarlierHistory,
+            requestEarlierHistory: () => loadEarlierHistory(true),
         }),
         [firstTimestamp, hasMoreHistory, loadEarlierHistory, loadingHistory],
     );
@@ -2069,6 +2429,10 @@ export function Timeline({
             userScrollDirection.current = 0;
             olderIntentLatched.current = false;
 
+            if (direction > 0) {
+                historyPaginationIntent.current = false;
+            }
+
             if (restoreDeferredHistory) {
                 historyRestoreDeferred.current = false;
                 restoreHistoryAnchor();
@@ -2138,6 +2502,7 @@ export function Timeline({
 
     const detachFromBottom = useCallback(() => {
         beginUserScroll(-1);
+        historyPaginationIntent.current = true;
 
         if (bottomFrame.current !== null) {
             window.cancelAnimationFrame(bottomFrame.current);
@@ -2296,10 +2661,32 @@ export function Timeline({
     }, [scheduleBottomPosition, scheduleDetachedAnchorRestore]);
 
     const preserveAttachedBottomAfterTimelineHeightChange = useCallback(() => {
-        if (!userScrollActive.current && scrollModeRef.current === "attached") {
-            scheduleBottomPosition();
+        if (userScrollActive.current) {
+            return;
         }
-    }, [scheduleBottomPosition]);
+
+        if (scrollModeRef.current === "attached") {
+            scheduleBottomPosition();
+
+            return;
+        }
+
+        if (scrollModeRef.current === "initializing") {
+            // Virtuoso may recalculate the virtual list after the initial
+            // settle loop has observed a provisional height. Re-assert the
+            // newest edge for every such geometry change while attachment is
+            // still withheld; otherwise the first attached frame can be tens
+            // of thousands of pixels above the live edge.
+            const element = scroller.current;
+
+            if (element) {
+                programmaticScroll.current = true;
+                element.scrollTo({ top: element.scrollHeight, behavior: "auto" });
+            }
+
+            settleAtNewestMessage();
+        }
+    }, [scheduleBottomPosition, settleAtNewestMessage]);
 
     const setScroller = useCallback(
         (value: HTMLElement | Window | null) => {
@@ -2321,6 +2708,7 @@ export function Timeline({
                 const atBottom =
                     element.scrollHeight - element.clientHeight - element.scrollTop <=
                     TIMELINE_BOTTOM_TOLERANCE_PX;
+                const atTop = element.scrollTop <= TIMELINE_BOTTOM_TOLERANCE_PX;
 
                 if (
                     userScrollActive.current &&
@@ -2357,6 +2745,19 @@ export function Timeline({
                     ) {
                         transitionScrollMode({ type: "bottom-state", atBottom: true });
                     }
+                }
+
+                // `startReached` is debounced by Virtuoso and may have
+                // already emitted (and been intentionally ignored) during
+                // the initial layout. A real upward gesture that reaches the
+                // top must still paginate even when the stream has no new
+                // value to publish.
+                if (
+                    atTop &&
+                    scrollModeRef.current === "detached" &&
+                    historyPaginationIntent.current
+                ) {
+                    loadEarlierHistory();
                 }
             };
 
@@ -2484,6 +2885,7 @@ export function Timeline({
             armUserScrollEnd,
             beginUserScroll,
             detachFromBottom,
+            loadEarlierHistory,
             preservePositionAfterGeometryChange,
             refreshHistoryAnchorPosition,
             transitionScrollMode,
@@ -2529,6 +2931,128 @@ export function Timeline({
         setUnreadBoundaryId(initialUnreadBoundaryId(items, unreadCount));
     }, [initializing, items, unreadCount]);
 
+    /*
+     * Only genuinely new events animate. Virtuoso mounts and unmounts rows as
+     * the reader scrolls, so a plain mount animation would replay all the way
+     * up a conversation; an event is instead marked as entering once, on the
+     * commit that first carries it, and the marker is dropped again when the
+     * animation is over. Backfilled history is included deliberately — it is
+     * new to the reader too — and the animation moves only opacity and
+     * transform, so it cannot disturb the geometry the history anchor restores.
+     */
+    useEffect(() => {
+        const known = knownItemIds.current;
+        const currentIds = new Set(items.map((item) => item.id));
+
+        if (initializing) {
+            return;
+        }
+
+        // The first commit after initialization is the room as it was found, not
+        // an arrival. This also arms an empty room so its first later message
+        // can animate normally.
+        if (!enterTrackingReady.current) {
+            for (const item of items) {
+                known.add(timelineEntranceIdentity(item));
+            }
+
+            enterTrackingReady.current = true;
+
+            return;
+        }
+
+        const arrivedItems = items.filter((item) => !known.has(timelineEntranceIdentity(item)));
+        const arrived = arrivedItems.map((item) => item.id);
+
+        const pruneEnteringIds = (previous: ReadonlySet<string>): ReadonlySet<string> => {
+            const next = new Set([...previous].filter((id) => currentIds.has(id)));
+
+            return next.size === previous.size && [...previous].every((id) => currentIds.has(id))
+                ? previous
+                : next.size
+                  ? next
+                  : NO_ENTERING_ITEMS;
+        };
+
+        if (arrived.length === 0) {
+            setEnteringIds(pruneEnteringIds);
+
+            return;
+        }
+
+        for (const item of arrivedItems) {
+            known.add(timelineEntranceIdentity(item));
+        }
+
+        if (known.size > KNOWN_ITEM_ID_LIMIT) {
+            knownItemIds.current = new Set(items.map(timelineEntranceIdentity));
+        }
+
+        /*
+         * Only the live edge animates. Backfilled history is new to the reader
+         * too, but `getBoundingClientRect` reports a transformed element where
+         * the transform has put it, and the history anchor restores the reader
+         * by comparing exactly those tops — so a row sliding into place while
+         * the anchor measures it moves the reader instead of the row. History
+         * is meant to appear without motion here anyway; that is the promise
+         * the anchor exists to keep.
+         */
+        const suffixStart = items.length - arrived.length;
+        const appended = arrived.every((id, offset) => items[suffixStart + offset]?.id === id);
+
+        if (!appended) {
+            setEnteringIds(pruneEnteringIds);
+
+            return;
+        }
+
+        setEnteringIds((previous) => {
+            const next = new Set(pruneEnteringIds(previous));
+
+            for (const id of arrived) {
+                next.add(id);
+            }
+
+            return next;
+        });
+
+        for (const id of arrived) {
+            const previousTimer = enterTimers.current.get(id);
+
+            if (previousTimer !== undefined) {
+                window.clearTimeout(previousTimer);
+            }
+
+            const timer = window.setTimeout(() => {
+                enterTimers.current.delete(id);
+                setEnteringIds((previous) => {
+                    if (!previous.has(id)) {
+                        return previous;
+                    }
+
+                    const next = new Set(previous);
+
+                    next.delete(id);
+
+                    return next.size ? next : NO_ENTERING_ITEMS;
+                });
+            }, ENTER_ANIMATION_MS);
+
+            enterTimers.current.set(id, timer);
+        }
+    }, [initializing, items]);
+
+    useEffect(
+        () => () => {
+            for (const timer of enterTimers.current.values()) {
+                window.clearTimeout(timer);
+            }
+
+            enterTimers.current.clear();
+        },
+        [],
+    );
+
     useLayoutEffect(() => {
         const nextItems = items.map((item) => ({
             id: item.id,
@@ -2546,7 +3070,16 @@ export function Timeline({
         previousFirstItemIndex.current = firstItemIndex;
 
         if (firstItemIndex < previousStartIndex) {
+            const latestReadingAnchor = detachedViewportAnchor.current;
+
             detachedViewportAnchor.current = null;
+
+            // A user can continue moving after startReached begins the request.
+            // Prefer the last anchor captured when that gesture settled over
+            // the earlier request-time position.
+            if (historyAnchor.current && latestReadingAnchor) {
+                historyAnchor.current = { ...latestReadingAnchor };
+            }
 
             if (scrollModeRef.current === "attached") {
                 cancelHistoryRestoration();
@@ -2581,6 +3114,7 @@ export function Timeline({
 
         if (change.appendedLocalItem) {
             cancelHistoryRestoration();
+            historyPaginationIntent.current = false;
             transitionScrollMode({ type: "local-append" });
         } else if (wasAttachedRemoteAppend) {
             transitionScrollMode({ type: "bottom-state", atBottom: true });
@@ -2655,19 +3189,7 @@ export function Timeline({
     const paginationState = loadingHistory ? "loading" : hasMoreHistory ? "idle" : "exhausted";
 
     if (initializing) {
-        return (
-            <div
-                className={classes("timeline-empty timeline-loading")}
-                role="status"
-                aria-live="polite"
-                aria-busy="true"
-            >
-                <LoaderCircle className={classes("spin")} aria-hidden="true" />
-                <p className={classes("eyebrow")}>TUNING ROOM HISTORY</p>
-                <h3>Resolving local signals.</h3>
-                <p>Loading messages and the encryption keys needed to read them…</p>
-            </div>
-        );
+        return <TimelineSkeleton />;
     }
 
     if (!items.length) {
@@ -2705,7 +3227,7 @@ export function Timeline({
                 heightEstimates={itemHeightEstimates}
                 computeItemKey={(_index, item) => item.id}
                 followOutput={false}
-                startReached={loadEarlierHistory}
+                startReached={() => loadEarlierHistory()}
                 scrollerRef={setScroller}
                 itemsRendered={onItemsRendered}
                 totalListHeightChanged={preserveAttachedBottomAfterTimelineHeightChange}
@@ -2718,7 +3240,17 @@ export function Timeline({
                     return (
                         <>
                             {item.id === unreadBoundaryId ? (
-                                <div className={classes("unread-divider")} role="separator">
+                                /*
+                                 * The divider marks where the reader left off,
+                                 * so it stays put once the room is read — but
+                                 * it stops claiming the accent, which is
+                                 * reserved for what still wants attention.
+                                 */
+                                <div
+                                    className={classes("unread-divider")}
+                                    data-unread-state={unreadCount > 0 ? "new" : "read"}
+                                    role="separator"
+                                >
                                     <span>New</span>
                                 </div>
                             ) : null}
@@ -2726,6 +3258,7 @@ export function Timeline({
                                 item={item}
                                 next={items[itemIndex + 1]}
                                 replyItem={item.replyTo ? itemsById.get(item.replyTo) : undefined}
+                                entering={enteringIds.has(item.id)}
                                 service={service}
                                 onReply={onReply}
                                 onEdit={onEdit}

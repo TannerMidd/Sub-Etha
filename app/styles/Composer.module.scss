@@ -385,7 +385,7 @@
     max-height: 160px;
     padding: 0;
     color: var(--ink);
-    font: 300 16px/1.6 var(--font-display);
+    font: var(--body-weight) 16px/1.6 var(--font-display);
     letter-spacing: 0;
 }
 
@@ -541,7 +541,7 @@
         min-height: 44px;
         max-height: min(144px, 32dvh);
         padding: 10px 0;
-        font: 300 16px/1.5 var(--font-display);
+        font: var(--body-weight) 16px/1.5 var(--font-display);
     }
 
     .composer textarea[data-compose-mode="message"]::placeholder {
@@ -557,7 +557,7 @@
         display: flex;
         align-items: center;
         color: var(--ink-muted, var(--ink-soft));
-        font: 300 16px/1.5 var(--font-display);
+        font: var(--body-weight) 16px/1.5 var(--font-display);
         pointer-events: none;
     }
 

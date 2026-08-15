@@ -1,5 +1,7 @@
 import { expect, test, type Locator, type Page } from "@playwright/test";
 
+test.use({ serviceWorkers: "block" });
+
 const PREVIEW_URL = "/?design-preview#/room/signal-watch";
 const STRESS_PREVIEW_URL = "/?design-preview&ux-preview=timeline-stress#/room/signal-watch";
 const FAILURE_PREVIEW_URL =
@@ -154,15 +156,17 @@ async function wheelTimeline(scroller: Locator, deltaY: number): Promise<void> {
 
 async function scrollTimelineTo(scroller: Locator, position: "top" | "bottom"): Promise<void> {
     const direction = position === "top" ? -1 : 1;
+    const threshold = position === "top" ? 2 : SUBPIXEL_TOLERANCE_PX;
 
     for (let attempt = 0; attempt < 60; attempt += 1) {
-        const reached = await scroller.evaluate((element, nextPosition) => {
-            const threshold = 2;
-
-            return nextPosition === "top"
-                ? element.scrollTop <= threshold
-                : element.scrollHeight - element.clientHeight - element.scrollTop <= threshold;
-        }, position);
+        const reached = await scroller.evaluate(
+            (element, options) =>
+                options.position === "top"
+                    ? element.scrollTop <= options.threshold
+                    : element.scrollHeight - element.clientHeight - element.scrollTop <=
+                      options.threshold,
+            { position, threshold },
+        );
 
         if (reached) {
             return;
@@ -174,13 +178,14 @@ async function scrollTimelineTo(scroller: Locator, position: "top" | "bottom"): 
 
     await expect
         .poll(() =>
-            scroller.evaluate((element, nextPosition) => {
-                const threshold = 2;
-
-                return nextPosition === "top"
-                    ? element.scrollTop <= threshold
-                    : element.scrollHeight - element.clientHeight - element.scrollTop <= threshold;
-            }, position),
+            scroller.evaluate(
+                (element, options) =>
+                    options.position === "top"
+                        ? element.scrollTop <= options.threshold
+                        : element.scrollHeight - element.clientHeight - element.scrollTop <=
+                          options.threshold,
+                { position, threshold },
+            ),
         )
         .toBe(true);
 }
@@ -254,17 +259,7 @@ async function openMessageActions(row: Locator, actionName = "Reply"): Promise<v
     });
 
     if (!reachable) {
-        const toggle = row.locator('[data-ui="message-actions-toggle"]');
-        const usesToggle =
-            (await toggle.count()) > 0 &&
-            (await toggle.evaluate((button) => getComputedStyle(button).display !== "none"));
-
-        if (usesToggle) {
-            await toggle.click();
-            await expect(row).toHaveAttribute("data-actions-state", "open");
-        } else {
-            await row.hover();
-        }
+        await row.hover();
     }
 
     try {
@@ -323,13 +318,14 @@ async function waitForMessageTop(page: Page, eventId: string): Promise<number> {
                 (candidate) => candidate.dataset.eventId === nextEventId,
             );
 
-            return element ? element.getBoundingClientRect().y : false;
+            return element ? { top: element.getBoundingClientRect().y } : null;
         },
         eventId,
         { polling: "raf", timeout: 8_000 },
     );
+    const result = (await handle.jsonValue()) as { top: number };
 
-    return Number(await handle.jsonValue());
+    return result.top;
 }
 
 test.describe("composer regression coverage", () => {
@@ -471,7 +467,6 @@ test.describe("composer regression coverage", () => {
 
             await expect(reply).toBeVisible();
             await expect(reaction).toBeVisible();
-            await expect(remoteRow.locator('[data-ui="message-actions-toggle"]')).toHaveCount(0);
 
             const [contentBox, actionsBox, replyBox, reactionBox] = await Promise.all([
                 content.boundingBox(),
@@ -515,8 +510,6 @@ test.describe("composer regression coverage", () => {
             const ownRow = page.locator('[data-event-id="m9"]');
 
             await ownRow.scrollIntoViewIfNeeded();
-            await ownRow.locator('[data-ui="message-actions-toggle"]').click();
-            await expect(ownRow).toHaveAttribute("data-actions-state", "open");
 
             const edit = ownRow.getByRole("button", { name: "Edit" });
             const remove = ownRow.getByRole("button", { name: "Remove" });
@@ -530,10 +523,23 @@ test.describe("composer regression coverage", () => {
                 expect(bounds?.width ?? 0).toBeGreaterThanOrEqual(44);
                 expect(bounds?.height ?? 0).toBeGreaterThanOrEqual(44);
             }
-
-            await page.keyboard.press("Escape");
-            await expect(ownRow).toHaveAttribute("data-actions-state", "closed");
         }
+    });
+
+    test("message actions never render an overflow ellipsis", async ({ page }) => {
+        await openPreview(page);
+
+        const ownRow = page.locator('[data-event-id="m9"]');
+
+        await ownRow.scrollIntoViewIfNeeded();
+        await ownRow.hover();
+        await expect(page.getByRole("button", { name: /More actions/ })).toHaveCount(0);
+        await expect(page.locator('[data-ui="message-actions-toggle"]')).toHaveCount(0);
+        await expect(page.locator('[data-ui="message-actions-overflow"]')).toHaveCount(0);
+        await expect(ownRow.getByRole("button", { name: "Reply" })).toHaveCount(1);
+        await expect(ownRow.getByRole("button", { name: "Add reaction" })).toHaveCount(1);
+        await expect(ownRow.getByRole("button", { name: "Edit" })).toHaveCount(1);
+        await expect(ownRow.getByRole("button", { name: "Remove" })).toHaveCount(1);
     });
 
     test("typing presence fades without moving the timeline", async ({ page }) => {
@@ -952,7 +958,7 @@ test("a planted touch keeps older-message intent until the contact ends", async 
 
     expect(plantedIdleMs).toBeGreaterThanOrEqual(240);
 
-    for (const y of [startY + 90, startY + 30, startY - 50]) {
+    for (const y of [startY + 90, startY + 30, startY - 50, startY - 140, startY - 230]) {
         await session.send("Input.dispatchTouchEvent", {
             type: "touchMove",
             touchPoints: [{ x, y }],
@@ -1134,6 +1140,7 @@ test("failed history loading exposes retry without concurrent pagination", async
     const timeline = page.locator('[data-ui="timeline"]');
     const scroller = page.locator('[data-virtuoso-scroller="true"]');
 
+    await expect(timeline).toHaveAttribute("data-scroll-mode", "attached");
     await scrollTimelineTo(scroller, "top");
     await expect(page.getByRole("alert")).toContainText(
         "The earlier transmission index could not be reached",
@@ -1179,6 +1186,7 @@ test("failed history loading exposes retry without concurrent pagination", async
 test("top pagination preserves the reading anchor, exhausts history, and keeps the newest message reachable", async ({
     page,
 }) => {
+    test.slow();
     await openPreview(page, STRESS_PREVIEW_URL);
 
     const timeline = page.locator('[data-ui="timeline"]');
@@ -1189,6 +1197,10 @@ test("top pagination preserves the reading anchor, exhausts history, and keeps t
     await expect(timeline).toHaveAttribute("data-first-item-index", "1000000");
     await expect(page.getByRole("button", { name: "Load earlier transmissions" })).toBeAttached();
     await scrollTimelineTo(scroller, "top");
+    await expect(timeline).toHaveAttribute("data-pagination-state", "loading");
+    // Let the synthetic wheel gesture hand control back before sampling the
+    // anchor that the completed history request must preserve.
+    await page.waitForTimeout(300);
     const anchorBefore = await waitForMessageTop(page, "stress-80");
 
     await expect(timeline).toHaveAttribute("data-first-item-index", "999960");
@@ -1226,6 +1238,7 @@ test("a local send stays attached while an earlier-history request completes", a
     const timeline = page.locator('[data-ui="timeline"]');
     const textarea = page.locator("#message-composer");
 
+    await expect(timeline).toHaveAttribute("data-scroll-mode", "attached");
     await page.getByRole("button", { name: "Load earlier transmissions" }).click();
     await expect(timeline).toHaveAttribute("data-pagination-state", "loading");
     await textarea.fill("Keep this transmission at the live edge.");

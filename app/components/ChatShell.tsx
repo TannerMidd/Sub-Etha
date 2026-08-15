@@ -48,7 +48,8 @@ import {
     SettingsDialog,
     VerificationDialog,
 } from "./Panels";
-import { Timeline } from "./Timeline";
+import { SkeletonBar, SkeletonGroup } from "./Skeleton";
+import { Timeline, TimelineSkeleton } from "./Timeline";
 import { classes } from "../styles/appStyles";
 
 type OpenDialog = "new" | "search" | "settings" | "details" | null;
@@ -225,6 +226,45 @@ function RoomListItem({
     );
 }
 
+/*
+ * The index placeholder's proportions. Names and previews are given separate
+ * widths per row so the column reads as a list of different conversations
+ * rather than as a repeating pattern.
+ */
+const ROOM_LIST_SKELETON_ROWS: Array<[name: string, preview: string]> = [
+    ["62%", "84%"],
+    ["48%", "70%"],
+    ["74%", "56%"],
+    ["54%", "80%"],
+    ["66%", "62%"],
+    ["44%", "72%"],
+];
+
+function RoomListSkeleton() {
+    return (
+        <SkeletonGroup label="Loading rooms…">
+            {ROOM_LIST_SKELETON_ROWS.map(([name, preview]) => (
+                <div key={`${name}:${preview}`} className={classes("room-list-skeleton__row")}>
+                    <span className={classes("room-list-skeleton__copy")}>
+                        <SkeletonBar width={name} height={11} />
+                        <SkeletonBar width={preview} height={9} />
+                    </span>
+                    <SkeletonBar width="26px" height={9} />
+                </div>
+            ))}
+        </SkeletonGroup>
+    );
+}
+
+function ConversationHeaderSkeleton() {
+    return (
+        <SkeletonGroup label="Loading conversation…" className="conversation-header-skeleton">
+            <SkeletonBar width="172px" height={14} />
+            <SkeletonBar width="104px" height={9} />
+        </SkeletonGroup>
+    );
+}
+
 function inviteSenderName(room: RoomSummary, ownUserId: string): string | null {
     const inviterId = room.room?.getMember?.(ownUserId)?.events.member?.getSender();
 
@@ -365,6 +405,13 @@ export function ChatShell({
         return matching;
     }, [deferredFilter, roomScope, snapshot.rooms]);
 
+    /*
+     * A first sync that has produced no rooms yet is not an empty account. Both
+     * the index and the conversation used to state the empty case immediately,
+     * so a cold start read as "no rooms" and then jumped to a full list; the
+     * placeholder holds that moment open instead.
+     */
+    const roomsLoading = snapshot.connection === "starting" && snapshot.rooms.length === 0;
     const invitations = filteredRooms.filter((room) => room.membership === "invite");
     const joinedRooms = filteredRooms.filter(
         (room) => room.membership !== "invite" && room.memberCount > 2,
@@ -780,20 +827,28 @@ export function ChatShell({
                             ))}
                         </nav>
                         <nav className={classes("room-list")} aria-label="Your Matrix rooms">
-                            {roomGroup("Invitations", invitations)}
-                            {roomGroup(
-                                "Rooms",
-                                joinedRooms,
-                                `${joinedRooms.length + directMessages.length} tuned`,
+                            {roomsLoading ? (
+                                <RoomListSkeleton />
+                            ) : (
+                                <>
+                                    {roomGroup("Invitations", invitations)}
+                                    {roomGroup(
+                                        "Rooms",
+                                        joinedRooms,
+                                        `${joinedRooms.length + directMessages.length} tuned`,
+                                    )}
+                                    {roomGroup("Direct", directMessages, "")}
+                                    {!filteredRooms.length ? (
+                                        <div className={classes("room-list-empty")}>
+                                            <Search />
+                                            <strong>No rooms found</strong>
+                                            <span>
+                                                The index is being uncharacteristically decisive.
+                                            </span>
+                                        </div>
+                                    ) : null}
+                                </>
                             )}
-                            {roomGroup("Direct", directMessages, "")}
-                            {!filteredRooms.length ? (
-                                <div className={classes("room-list-empty")}>
-                                    <Search />
-                                    <strong>No rooms found</strong>
-                                    <span>The index is being uncharacteristically decisive.</span>
-                                </div>
-                            ) : null}
                         </nav>
                         <footer className={classes("profile-strip")}>
                             <Avatar
@@ -1062,6 +1117,18 @@ export function ChatShell({
                             )}
                         </div>
                     </>
+                ) : roomsLoading ? (
+                    <div className={classes("conversation-main")}>
+                        <header
+                            className={classes("conversation-header")}
+                            data-ui="conversation-header"
+                        >
+                            <ConversationHeaderSkeleton />
+                        </header>
+                        <div className={classes("conversation-stage")} data-ui="conversation-stage">
+                            <TimelineSkeleton />
+                        </div>
+                    </div>
                 ) : (
                     <div className={classes("no-room-view")}>
                         <div className={classes("guide-card")}>

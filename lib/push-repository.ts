@@ -12,15 +12,22 @@ export interface ManagedPushSubscription extends StoredPushSubscription {
     deliveryKeyHash: string;
 }
 
+export interface PushSubscriptionSnapshot extends StoredPushSubscription {
+    deliveryKeyHash: string;
+}
+
+export type PushDeletionOutcome = "removed" | "not_found" | "capacity_exceeded";
+
 export type PushRegistrationOutcome = "created" | "refreshed" | "reassigned" | "capacity_exceeded";
 export type PushRegistrationStartOutcome =
     | "active"
     | "challenge_required"
     | "capacity_exceeded"
     | "pending_capacity_exceeded"
-    | "management_conflict";
+    | "management_conflict"
+    | "revoked";
 export type PushConfirmationOutcome =
-    PushRegistrationOutcome | "invalid_challenge" | "expired_challenge";
+    PushRegistrationOutcome | "invalid_challenge" | "expired_challenge" | "revoked";
 
 export interface PushRepository {
     beginSubscriptionRegistration(
@@ -39,9 +46,14 @@ export interface PushRepository {
         maximumSubscriptions: number,
     ): Promise<PushConfirmationOutcome>;
     cancelPendingRegistration(challengeHash: string): Promise<void>;
-    deleteSubscription(managementKeyHash: string): Promise<boolean>;
-    deleteSubscriptionByDeliveryKey(deliveryKeyHash: string): Promise<void>;
+    deleteSubscription(
+        managementKeyHash: string,
+        now: number,
+        maximumRevokedManagementKeys: number,
+    ): Promise<PushDeletionOutcome>;
+    deleteSubscriptionByDeliveryKeyIfCurrent(snapshot: PushSubscriptionSnapshot): Promise<boolean>;
     getSubscription(deliveryKeyHash: string): Promise<StoredPushSubscription | null>;
+    getSubscriptions(deliveryKeyHashes: string[]): Promise<PushSubscriptionSnapshot[]>;
     getManagedSubscription(managementKeyHash: string): Promise<ManagedPushSubscription | null>;
     consumeRateLimit(
         pushKeyHash: string,
@@ -61,7 +73,11 @@ export interface PushRepository {
         now: number,
         staleAfterSeconds: number,
     ): Promise<boolean>;
-    markDelivered(pushKeyHash: string, eventId: string | null, now: number): Promise<void>;
+    markDelivered(
+        snapshot: PushSubscriptionSnapshot,
+        eventId: string | null,
+        now: number,
+    ): Promise<boolean>;
     releaseDelivery(pushKeyHash: string, eventId: string): Promise<void>;
     cleanupSubscriptions(cutoff: number, limit: number): Promise<number>;
     cleanupDeliveries(cutoff: number): Promise<void>;
@@ -115,39 +131,29 @@ export const neonPushRepository: PushRepository = {
     `);
     },
 
-    async deleteSubscription(managementKeyHash) {
-        const db = getDb();
-        const [subscription] = await db
-            .select({
-                deliveryKeyHash: pushSubscriptions.pushKeyHash,
-            })
-            .from(pushSubscriptions)
-            .where(eq(pushSubscriptions.managementKeyHash, managementKeyHash))
-            .limit(1);
+    async deleteSubscription(managementKeyHash, now, maximumRevokedManagementKeys) {
+        const result = await getDb().execute<{ outcome: PushDeletionOutcome }>(sql`
+      SELECT subetha_delete_push_subscription(
+        ${managementKeyHash},
+        ${now},
+        ${maximumRevokedManagementKeys}
+      ) AS outcome
+    `);
 
-        if (!subscription) {
-            return false;
-        }
-
-        await db.batch([
-            db
-                .delete(pushDeliveries)
-                .where(eq(pushDeliveries.pushKeyHash, subscription.deliveryKeyHash)),
-            db
-                .delete(pushSubscriptions)
-                .where(eq(pushSubscriptions.managementKeyHash, managementKeyHash)),
-        ]);
-
-        return true;
+        return result.rows[0]?.outcome ?? "not_found";
     },
 
-    async deleteSubscriptionByDeliveryKey(deliveryKeyHash) {
-        const db = getDb();
+    async deleteSubscriptionByDeliveryKeyIfCurrent(snapshot) {
+        const result = await getDb().execute<{ removed: boolean }>(sql`
+      SELECT subetha_delete_push_subscription_if_current(
+        ${snapshot.deliveryKeyHash},
+        ${snapshot.endpoint},
+        ${snapshot.p256dh},
+        ${snapshot.auth}
+      ) AS removed
+    `);
 
-        await db.batch([
-            db.delete(pushDeliveries).where(eq(pushDeliveries.pushKeyHash, deliveryKeyHash)),
-            db.delete(pushSubscriptions).where(eq(pushSubscriptions.pushKeyHash, deliveryKeyHash)),
-        ]);
+        return result.rows[0]?.removed === true;
     },
 
     async getSubscription(pushKeyHash) {
@@ -162,6 +168,37 @@ export const neonPushRepository: PushRepository = {
             .limit(1);
 
         return subscription ?? null;
+    },
+
+    async getSubscriptions(pushKeyHashes) {
+        if (pushKeyHashes.length === 0) {
+            return [];
+        }
+
+        const rows = await getDb().execute<{
+            push_key_hash: string;
+            endpoint: string;
+            p256dh: string;
+            auth: string;
+        }>(sql`
+      SELECT
+        "push_key_hash",
+        "endpoint",
+        "p256dh",
+        "auth"
+      FROM "push_subscriptions"
+      WHERE "push_key_hash" IN ${sql.join(
+          pushKeyHashes.map((pushKeyHash) => sql`${pushKeyHash}`),
+          sql`, `,
+      )}
+    `);
+
+        return rows.rows.map((row) => ({
+            deliveryKeyHash: row.push_key_hash,
+            endpoint: row.endpoint,
+            p256dh: row.p256dh,
+            auth: row.auth,
+        }));
     },
 
     async getManagedSubscription(managementKeyHash) {
@@ -255,33 +292,19 @@ export const neonPushRepository: PushRepository = {
         return reclaimed.length > 0;
     },
 
-    async markDelivered(pushKeyHash, eventId, now) {
-        const db = getDb();
-        const updates = [
-            db
-                .update(pushSubscriptions)
-                .set({ lastSuccessAt: now, updatedAt: now })
-                .where(eq(pushSubscriptions.pushKeyHash, pushKeyHash)),
-        ] as const;
+    async markDelivered(snapshot, eventId, now) {
+        const result = await getDb().execute<{ marked: boolean }>(sql`
+      SELECT subetha_mark_push_delivery_if_current(
+        ${snapshot.deliveryKeyHash},
+        ${snapshot.endpoint},
+        ${snapshot.p256dh},
+        ${snapshot.auth},
+        ${eventId},
+        ${now}
+      ) AS marked
+    `);
 
-        if (!eventId) {
-            await updates[0];
-
-            return;
-        }
-
-        await db.batch([
-            updates[0],
-            db
-                .update(pushDeliveries)
-                .set({ status: "sent", updatedAt: now })
-                .where(
-                    and(
-                        eq(pushDeliveries.pushKeyHash, pushKeyHash),
-                        eq(pushDeliveries.eventId, eventId),
-                    ),
-                ),
-        ]);
+        return result.rows[0]?.marked === true;
     },
 
     async releaseDelivery(pushKeyHash, eventId) {

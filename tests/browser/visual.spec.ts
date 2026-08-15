@@ -1,5 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 
+test.use({ serviceWorkers: "block" });
+
 const PREVIEW_URL = "/?design-preview#/room/signal-watch";
 const LIGHT_PREVIEW_URL = "/?design-preview&theme=light#/room/signal-watch";
 const LOGIN_PREVIEW_URL = "/?design-preview&surface-preview=login";
@@ -9,6 +11,15 @@ const LIGHT_SETTINGS_PREVIEW_URL =
 const ROOMS_PREVIEW_URL = "/?design-preview&surface-preview=rooms";
 const EMPTY_PREVIEW_URL = "/?design-preview&surface-preview=empty";
 const INVITE_PREVIEW_URL = "/?design-preview&surface-preview=invite#/room/observatory-invite";
+
+async function openFreshPreviewDocument(page: Page, url: string): Promise<void> {
+    // The app deliberately scrubs the current history entry during pagehide. Leave that document
+    // first so a test that needs another preview surface does not mistake the safe login route for
+    // its requested fresh-document state.
+    await page.goto("/manifest.webmanifest");
+    await page.evaluate(() => sessionStorage.removeItem("sub-etha-route-scrub-v1"));
+    await page.goto(url);
+}
 
 function captureRuntimeProblems(page: Page): string[] {
     const problems: string[] = [];
@@ -124,7 +135,9 @@ test("settings preview keeps its URL theme, selector, and palette synchronized",
     await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
     expect(await page.evaluate(() => localStorage.getItem("sub-etha-theme"))).toBe("system");
 
-    await page.reload();
+    const selectedThemeUrl = page.url();
+
+    await openFreshPreviewDocument(page, selectedThemeUrl);
     await expect(themeGroup.getByRole("button", { name: "Dark" })).toHaveAttribute(
         "aria-pressed",
         "true",

@@ -1,18 +1,17 @@
-const CACHE_NAME = "sub-etha-shell-v7";
-const SHELL = [
-    "/",
-    "/manifest.webmanifest",
-    "/icon-192.png",
-    "/icon-512.png",
-    "/fonts/commissioner-variable.ttf",
-    "/fonts/literata-variable.ttf",
-    "/fonts/literata-variable-italic.ttf",
-];
+const CACHE_PREFIX = "sub-etha-";
+const OFFLINE_CSP =
+    "default-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'; object-src 'none'";
 const PUSH_DB = "sub-etha-push";
 const PUSH_STORE = "settings";
 const ROOM_NOTIFICATION_PREFIX = "sub-etha-room:";
 const GENERIC_NOTIFICATION_TAG = "sub-etha-generic";
 const TEST_NOTIFICATION_TAG = "sub-etha-test";
+const PUSH_PROTOCOL_VERSION = 2;
+// Push configuration, badges, and stale-push compensation all share one queue.
+// A badge API call cannot be cancelled once it has started, so configuration
+// changes must wait for an in-flight call and then reconcile the badge before a
+// newer generation can proceed.
+let pushConfigMutation = Promise.resolve();
 
 function notificationTag(roomId) {
     return roomId ? `${ROOM_NOTIFICATION_PREFIX}${roomId}` : GENERIC_NOTIFICATION_TAG;
@@ -49,6 +48,24 @@ async function dismissRoomNotification(roomId) {
 
     for (const notification of notifications) {
         notification.close();
+    }
+}
+
+async function dismissAllNotifications() {
+    const notifications = await self.registration.getNotifications({});
+
+    for (const notification of notifications) {
+        notification.close();
+    }
+}
+
+async function dismissNotificationTag(tag, generation) {
+    const notifications = await self.registration.getNotifications({ tag });
+
+    for (const notification of notifications) {
+        if (notification.data?.generation === generation) {
+            notification.close();
+        }
     }
 }
 
@@ -101,6 +118,41 @@ async function readPushConfig() {
     return value;
 }
 
+async function clearPushConfig(expectedGeneration, expectedDeliveryKey) {
+    const database = await openPushDatabase();
+    const cleared = await new Promise((resolve, reject) => {
+        const transaction = database.transaction(PUSH_STORE, "readwrite");
+        const store = transaction.objectStore(PUSH_STORE);
+        const request = store.get("config");
+        let matched = false;
+
+        request.onsuccess = () => {
+            const current = request.result;
+            const generationMatches =
+                typeof expectedGeneration === "string" &&
+                current?.generation === expectedGeneration;
+            const legacyDeliveryMatches =
+                !current?.generation &&
+                typeof expectedDeliveryKey === "string" &&
+                current?.deliveryKey === expectedDeliveryKey;
+
+            matched = !current || generationMatches || legacyDeliveryMatches;
+
+            if (matched && current) {
+                store.delete("config");
+            }
+        };
+
+        request.onerror = () => reject(request.error);
+        transaction.oncomplete = () => resolve(matched);
+        transaction.onerror = () => reject(transaction.error);
+    });
+
+    database.close();
+
+    return cleared;
+}
+
 function decodeApplicationServerKey(value) {
     const normalized = value.replace(/-/g, "+").replace(/_/g, "/");
     const padded = normalized + "=".repeat((4 - (normalized.length % 4)) % 4);
@@ -108,8 +160,179 @@ function decodeApplicationServerKey(value) {
     return Uint8Array.from(atob(padded), (character) => character.charCodeAt(0));
 }
 
-self.addEventListener("install", (event) => {
-    event.waitUntil(caches.open(CACHE_NAME).then((cache) => cache.addAll(SHELL)));
+function samePushConfig(left, right) {
+    return Boolean(
+        left &&
+        right &&
+        left.generation === right.generation &&
+        left.deliveryKey === right.deliveryKey &&
+        left.managementKey === right.managementKey,
+    );
+}
+
+function queuePushConfigMutation(operation) {
+    const queued = pushConfigMutation.catch(() => undefined).then(operation);
+
+    pushConfigMutation = queued;
+
+    return queued;
+}
+
+function setPushConfig(config) {
+    return queuePushConfigMutation(async () => {
+        const previous = await readPushConfig();
+
+        await writePushConfig(config);
+
+        // A replacement generation must never inherit the preceding account's
+        // unread count. The next push for this generation will set its own value.
+        if (previous && !samePushConfig(previous, config)) {
+            await dismissNotificationsForGeneration(previous.generation);
+            await syncBadge(0);
+        }
+    });
+}
+
+async function dismissNotificationsForGeneration(generation) {
+    if (typeof generation !== "string") {
+        return;
+    }
+
+    const notifications = await self.registration.getNotifications({});
+
+    for (const notification of notifications) {
+        if (notification.data?.generation === generation) {
+            notification.close();
+        }
+    }
+}
+
+async function canonicalGeneration(managementKey) {
+    const digest = await self.crypto.subtle.digest(
+        "SHA-256",
+        new TextEncoder().encode(managementKey),
+    );
+
+    return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join(
+        "",
+    );
+}
+
+async function migratePushConfigInQueue(generation, managementKey) {
+    const current = await readPushConfig();
+
+    if (!current || current.managementKey !== managementKey) {
+        throw new Error("The legacy push configuration no longer matches this account.");
+    }
+
+    if (
+        typeof current.generation === "string" &&
+        current.generation !== current.managementKey &&
+        current.legacyGeneration !== true
+    ) {
+        return current;
+    }
+
+    if (generation !== (await canonicalGeneration(managementKey))) {
+        throw new Error("The legacy push configuration generation is invalid.");
+    }
+
+    if (current.generation === generation && current.legacyGeneration === true) {
+        return current;
+    }
+
+    const migrated = {
+        ...current,
+        generation,
+        legacyGeneration: true,
+    };
+
+    await writePushConfig(migrated);
+
+    return migrated;
+}
+
+function migratePushConfig(generation, managementKey) {
+    return queuePushConfigMutation(() => migratePushConfigInQueue(generation, managementKey));
+}
+
+function clearPushConfigForGeneration(expectedGeneration, expectedDeliveryKey) {
+    return queuePushConfigMutation(async () => {
+        const cleared = await clearPushConfig(expectedGeneration, expectedDeliveryKey);
+
+        if (cleared) {
+            await dismissAllNotifications();
+
+            // This is ordered after every badge write owned by the cleared
+            // generation, and before a later generation can set its badge.
+            await syncBadge(0);
+        }
+
+        return cleared;
+    });
+}
+
+function syncBadgeForGeneration(config, unread) {
+    return queuePushConfigMutation(async () => {
+        const current = await readPushConfig();
+
+        if (!samePushConfig(config, current)) {
+            return;
+        }
+
+        await syncBadge(unread);
+
+        // The queue prevents this worker's configuration mutations from
+        // interleaving with the badge call. Recheck nevertheless so an
+        // externally-observed config removal is compensated safely.
+        const finalConfig = await readPushConfig();
+
+        if (!samePushConfig(config, finalConfig) && !finalConfig) {
+            await syncBadge(0);
+        }
+    });
+}
+
+function showNotificationForGeneration(config, title, options) {
+    return queuePushConfigMutation(async () => {
+        const current = await readPushConfig();
+
+        if (!samePushConfig(config, current)) {
+            return;
+        }
+
+        await self.registration.showNotification(title, options);
+    });
+}
+
+function dismissStaleNotification(config, tag) {
+    return queuePushConfigMutation(async () => {
+        const current = await readPushConfig();
+
+        if (!samePushConfig(config, current)) {
+            await dismissNotificationTag(tag, config.generation);
+        }
+    });
+}
+
+function offlineNavigationResponse() {
+    return new Response(
+        '<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Offline</title></head><body><p>Sub-Etha is unavailable while offline.</p></body></html>',
+        {
+            status: 503,
+            headers: {
+                "Cache-Control": "no-store",
+                "Content-Security-Policy": OFFLINE_CSP,
+                "Content-Type": "text/html; charset=utf-8",
+                "X-Content-Type-Options": "nosniff",
+            },
+        },
+    );
+}
+
+self.addEventListener("install", () => {
+    // Installation is deliberately cache-free. Updates remain waiting until the connected app
+    // explicitly accepts them, so a background update cannot interrupt an active session.
 });
 
 self.addEventListener("message", (event) => {
@@ -119,20 +342,100 @@ self.addEventListener("message", (event) => {
 
     if (event.data?.type === "SET_PUSH_CONFIG") {
         event.waitUntil(
-            writePushConfig({
+            setPushConfig({
                 deliveryKey: event.data.deliveryKey,
                 managementKey: event.data.managementKey,
                 publicKey: event.data.publicKey,
-            }),
+                ...(typeof event.data.generation === "string"
+                    ? { generation: event.data.generation }
+                    : { legacyGeneration: true }),
+            })
+                .then(() =>
+                    event.ports?.[0]?.postMessage({
+                        ok: true,
+                        protocolVersion: PUSH_PROTOCOL_VERSION,
+                    }),
+                )
+                .catch(() =>
+                    event.ports?.[0]?.postMessage({
+                        ok: false,
+                        protocolVersion: PUSH_PROTOCOL_VERSION,
+                    }),
+                ),
+        );
+    }
+
+    if (event.data?.type === "READ_PUSH_CONFIG") {
+        event.waitUntil(
+            readPushConfig()
+                .then((config) =>
+                    event.ports?.[0]?.postMessage({
+                        ok: true,
+                        protocolVersion: PUSH_PROTOCOL_VERSION,
+                        config: config
+                            ? {
+                                  deliveryKey: config.deliveryKey,
+                                  managementKey: config.managementKey,
+                                  generation: config.generation ?? null,
+                                  legacyGeneration: config.legacyGeneration === true,
+                              }
+                            : null,
+                    }),
+                )
+                .catch(() =>
+                    event.ports?.[0]?.postMessage({
+                        ok: false,
+                        protocolVersion: PUSH_PROTOCOL_VERSION,
+                    }),
+                ),
+        );
+    }
+
+    if (event.data?.type === "MIGRATE_PUSH_CONFIG") {
+        event.waitUntil(
+            migratePushConfig(event.data.generation, event.data.managementKey)
+                .then((config) =>
+                    event.ports?.[0]?.postMessage({
+                        ok: true,
+                        protocolVersion: PUSH_PROTOCOL_VERSION,
+                        config: {
+                            deliveryKey: config.deliveryKey,
+                            managementKey: config.managementKey,
+                            generation: config.generation ?? null,
+                            legacyGeneration: config.legacyGeneration === true,
+                        },
+                    }),
+                )
+                .catch(() =>
+                    event.ports?.[0]?.postMessage({
+                        ok: false,
+                        protocolVersion: PUSH_PROTOCOL_VERSION,
+                    }),
+                ),
         );
     }
 
     if (event.data?.type === "CLEAR_PUSH_CONFIG") {
-        event.waitUntil(writePushConfig(null));
+        event.waitUntil(
+            clearPushConfigForGeneration(event.data.generation, event.data.deliveryKey)
+                .then((cleared) =>
+                    event.ports?.[0]?.postMessage({
+                        ok: true,
+                        protocolVersion: PUSH_PROTOCOL_VERSION,
+                        cleared,
+                    }),
+                )
+                .catch(() =>
+                    event.ports?.[0]?.postMessage({
+                        ok: false,
+                        protocolVersion: PUSH_PROTOCOL_VERSION,
+                    }),
+                ),
+        );
     }
 
     if (event.data?.type === "DISMISS_ROOM_NOTIFICATION") {
-        event.waitUntil(dismissRoomNotification(event.data.roomId));
+        event.waitUntil(queuePushConfigMutation(() => dismissRoomNotification(event.data.roomId)));
     }
 });
 
@@ -141,8 +444,10 @@ self.addEventListener("activate", (event) => {
         caches
             .keys()
             .then((keys) =>
-                Promise.all(
-                    keys.filter((key) => key !== CACHE_NAME).map((key) => caches.delete(key)),
+                Promise.allSettled(
+                    keys
+                        .filter((key) => key.startsWith(CACHE_PREFIX))
+                        .map((key) => caches.delete(key)),
                 ),
             )
             .then(() => self.clients.claim()),
@@ -152,44 +457,17 @@ self.addEventListener("activate", (event) => {
 self.addEventListener("fetch", (event) => {
     const url = new URL(event.request.url);
 
-    if (
-        event.request.method !== "GET" ||
-        url.origin !== self.location.origin ||
-        url.pathname.startsWith("/api/") ||
-        url.pathname.startsWith("/_matrix/") ||
-        url.pathname.startsWith("/_vinext/")
-    ) {
+    if (url.origin !== self.location.origin) {
         return;
     }
 
-    if (event.request.mode === "navigate") {
-        event.respondWith(
-            fetch(event.request).catch(async () => (await caches.match("/")) || Response.error()),
-        );
+    if (event.request.mode === "navigate" || event.request.destination === "document") {
+        event.respondWith(fetch(event.request).catch(() => offlineNavigationResponse()));
 
         return;
     }
 
-    event.respondWith(
-        caches.match(event.request).then((cached) => {
-            if (cached) {
-                return cached;
-            }
-
-            return fetch(event.request).then((response) => {
-                if (
-                    response.ok &&
-                    url.pathname.match(/\.(?:js|css|png|ico|webmanifest|woff2?|ttf)$/)
-                ) {
-                    const copy = response.clone();
-
-                    caches.open(CACHE_NAME).then((cache) => cache.put(event.request, copy));
-                }
-
-                return response;
-            });
-        }),
-    );
+    // Static assets use the browser's HTTP cache; the worker never stores or replays them.
 });
 
 self.addEventListener("push", (event) => {
@@ -205,8 +483,19 @@ self.addEventListener("push", (event) => {
         (async () => {
             if (
                 payload.kind === "subscription-challenge" &&
-                typeof payload.challenge === "string"
+                typeof payload.challenge === "string" &&
+                (typeof payload.generation === "string" || payload.generation === undefined)
             ) {
+                const config = await readPushConfig();
+                const generationMatches =
+                    typeof payload.generation === "string"
+                        ? config?.generation === payload.generation
+                        : config?.legacyGeneration === true;
+
+                if (!generationMatches) {
+                    return;
+                }
+
                 const response = await fetch("/api/push/subscriptions", {
                     method: "PATCH",
                     headers: { "Content-Type": "application/json" },
@@ -229,17 +518,29 @@ self.addEventListener("push", (event) => {
                 return;
             }
 
+            const config = await readPushConfig();
+
+            if (!config?.deliveryKey || !config?.managementKey || !config?.generation) {
+                return;
+            }
+
             const kind = payload.kind === "test" ? "test" : "matrix";
             const roomId = typeof payload.roomId === "string" ? payload.roomId : null;
             const eventId = typeof payload.eventId === "string" ? payload.eventId : null;
             const unread = Number(payload.unread || 0);
             const test = kind === "test";
             const visible = test ? false : await hasVisibleWindow();
+            const current = await readPushConfig();
+
+            if (!samePushConfig(config, current)) {
+                return;
+            }
+
             const operations = [];
 
             if (!visible) {
                 operations.push(
-                    self.registration.showNotification("Sub-Etha", {
+                    showNotificationForGeneration(config, "Sub-Etha", {
                         body: test
                             ? "The test transmission arrived successfully."
                             : "A new transmission has arrived.",
@@ -247,39 +548,65 @@ self.addEventListener("push", (event) => {
                         badge: "/icon-192.png",
                         tag: test ? TEST_NOTIFICATION_TAG : notificationTag(roomId),
                         renotify: test,
-                        data: { kind, roomId, eventId },
+                        data: { kind, roomId, eventId, generation: config.generation },
                     }),
                 );
             }
 
             if (!test) {
-                operations.push(syncBadge(unread));
+                operations.push(syncBadgeForGeneration(config, unread));
             }
 
             await Promise.all(operations);
+            const finalConfig = await readPushConfig();
+
+            if (!samePushConfig(config, finalConfig)) {
+                const tag = test ? TEST_NOTIFICATION_TAG : notificationTag(roomId);
+
+                await dismissStaleNotification(config, tag);
+            }
         })(),
     );
 });
 
 self.addEventListener("pushsubscriptionchange", (event) => {
     event.waitUntil(
-        (async () => {
+        queuePushConfigMutation(async () => {
             const config = await readPushConfig();
 
             if (!config?.deliveryKey || !config?.managementKey || !config?.publicKey) {
                 return;
             }
 
+            const current =
+                typeof config.generation === "string" &&
+                config.generation !== config.managementKey &&
+                config.legacyGeneration !== true
+                    ? config
+                    : await migratePushConfigInQueue(
+                          await canonicalGeneration(config.managementKey),
+                          config.managementKey,
+                      );
+
             const subscription = await self.registration.pushManager.subscribe({
                 userVisibleOnly: true,
-                applicationServerKey: decodeApplicationServerKey(config.publicKey),
+                applicationServerKey: decodeApplicationServerKey(current.publicKey),
             });
+            const confirmedConfig = await readPushConfig();
+
+            if (!samePushConfig(current, confirmedConfig)) {
+                await subscription.unsubscribe();
+
+                return;
+            }
+
             const response = await fetch("/api/push/subscriptions", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({
-                    deliveryKey: config.deliveryKey,
-                    managementKey: config.managementKey,
+                    deliveryKey: current.deliveryKey,
+                    managementKey: current.managementKey,
+                    generation: current.generation,
                     subscription: subscription.toJSON(),
                 }),
             });
@@ -287,7 +614,18 @@ self.addEventListener("pushsubscriptionchange", (event) => {
             if (!response.ok) {
                 throw new Error("Push subscription renewal failed.");
             }
-        })(),
+
+            const confirmed = await readPushConfig();
+
+            if (!samePushConfig(current, confirmed)) {
+                await subscription.unsubscribe();
+                await fetch("/api/push/subscriptions", {
+                    method: "DELETE",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ managementKey: current.managementKey }),
+                });
+            }
+        }),
     );
 });
 

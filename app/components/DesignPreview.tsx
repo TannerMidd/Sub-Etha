@@ -6,6 +6,7 @@ import type { MatrixMediaRef, MatrixSnapshot, RoomSummary, TimelineItem } from "
 import { INITIAL_TIMELINE_ITEM_INDEX } from "@/lib/timeline-window";
 import { ChatShell } from "./ChatShell";
 import { LoginScreen } from "./LoginScreen";
+import { SessionVaultScreen } from "./SessionVaultScreen";
 
 /*
  * The reference frames are all one day's conversation under a "Today" divider,
@@ -23,6 +24,11 @@ const at = (hour: number, minute: number) => {
 const STRESS_INITIAL_START = 80;
 const STRESS_INITIAL_COUNT = 120;
 const STRESS_PAGE_SIZE = 40;
+const STRESS_PAGINATION_DELAY_MS = 1_000;
+
+function previewTransactionEvent(transactionId: string): TimelineItem["event"] {
+    return { getTxnId: () => transactionId } as TimelineItem["event"];
+}
 
 function previewRoom(
     id: string,
@@ -134,10 +140,18 @@ function createPreviewService(): MatrixService {
     const surfacePreview = previewParams?.get("surface-preview") ?? null;
     const mobilePreview = typeof window !== "undefined" && window.innerWidth <= 720;
     const timelineStressPreview = uxPreview?.startsWith("timeline-stress") ?? false;
+    const timelineEntranceEmptyPreview = uxPreview === "timeline-entrance-empty";
+    const timelineEntranceReconciliationPreview = uxPreview === "timeline-entrance-reconciliation";
+    const timelineEntranceBurstPreview = uxPreview === "timeline-entrance-burst";
+    const timelineEntrancePreview =
+        timelineEntranceEmptyPreview ||
+        timelineEntranceReconciliationPreview ||
+        timelineEntranceBurstPreview;
     let failNextStressPagination = uxPreview === "timeline-stress-failure";
     let nextStressStart = STRESS_INITIAL_START;
     let localStressSequence = 0;
     let stopTimelineStress: (() => void) | null = null;
+    let stopTimelineEntrance: (() => void) | null = null;
     const solMessage = previewMessage(
         "m2",
         "Sol",
@@ -212,7 +226,7 @@ function createPreviewService(): MatrixService {
             : []),
     ];
     let snapshot: MatrixSnapshot = {
-        connection: uxPreview === "loading" ? "starting" : "ready",
+        connection: uxPreview === "loading" || timelineEntranceEmptyPreview ? "starting" : "ready",
         rooms: [
             previewRoom(
                 "signal-watch",
@@ -288,7 +302,7 @@ function createPreviewService(): MatrixService {
                   ? "observatory-invite"
                   : "signal-watch",
         timeline:
-            uxPreview === "loading"
+            uxPreview === "loading" || timelineEntranceEmptyPreview
                 ? []
                 : timelineStressPreview
                   ? stressTimeline(STRESS_INITIAL_START, STRESS_INITIAL_COUNT)
@@ -429,12 +443,82 @@ function createPreviewService(): MatrixService {
         };
     };
 
+    const startTimelineEntrance = () => {
+        if (!timelineEntrancePreview || stopTimelineEntrance) {
+            return;
+        }
+
+        const timers: number[] = [];
+
+        if (timelineEntranceEmptyPreview) {
+            timers.push(
+                window.setTimeout(() => {
+                    update({ connection: "ready" });
+                }, 160),
+            );
+            timers.push(
+                window.setTimeout(() => {
+                    update({
+                        timeline: [
+                            ...snapshot.timeline,
+                            previewMessage(
+                                "entrance-empty",
+                                "Vera",
+                                "First signal after initialization.",
+                                at(11, 2),
+                            ),
+                        ],
+                    });
+                }, 320),
+            );
+        }
+
+        if (timelineEntranceBurstPreview) {
+            timers.push(
+                window.setTimeout(() => {
+                    update({
+                        timeline: [
+                            ...snapshot.timeline,
+                            previewMessage(
+                                "entrance-burst-first",
+                                "Vera",
+                                "First rapid arrival.",
+                                at(11, 3),
+                            ),
+                        ],
+                    });
+                }, 100),
+            );
+            timers.push(
+                window.setTimeout(() => {
+                    update({
+                        timeline: [
+                            ...snapshot.timeline,
+                            previewMessage(
+                                "entrance-burst-second",
+                                "Sol",
+                                "Second rapid arrival.",
+                                at(11, 4),
+                            ),
+                        ],
+                    });
+                }, 240),
+            );
+        }
+
+        stopTimelineEntrance = () => {
+            timers.forEach((timer) => window.clearTimeout(timer));
+            stopTimelineEntrance = null;
+        };
+    };
+
     const service = {
         subscribe: (listener: () => void) => {
             listeners.add(listener);
 
             if (listeners.size === 1) {
                 startTimelineStress();
+                startTimelineEntrance();
             }
 
             return () => {
@@ -442,6 +526,7 @@ function createPreviewService(): MatrixService {
 
                 if (listeners.size === 0) {
                     stopTimelineStress?.();
+                    stopTimelineEntrance?.();
                 }
             };
         },
@@ -470,7 +555,7 @@ function createPreviewService(): MatrixService {
             previewWindow.__previewPaginationRequests =
                 (previewWindow.__previewPaginationRequests ?? 0) + 1;
             update({ loadingHistory: true });
-            await new Promise((resolve) => window.setTimeout(resolve, 250));
+            await new Promise((resolve) => window.setTimeout(resolve, STRESS_PAGINATION_DELAY_MS));
 
             if (failNextStressPagination) {
                 failNextStressPagination = false;
@@ -532,6 +617,38 @@ function createPreviewService(): MatrixService {
                     timeline: snapshot.timeline.map((item) =>
                         item.id === options.editEventId
                             ? { ...item, body, formattedBody: undefined, edited: true }
+                            : item,
+                    ),
+                });
+
+                return;
+            }
+
+            if (timelineEntranceReconciliationPreview) {
+                const pendingId = "entrance-pending";
+                const confirmedId = "entrance-confirmed";
+                const transactionId = "entrance-transaction";
+
+                update({
+                    timeline: [
+                        ...snapshot.timeline,
+                        previewMessage(pendingId, "Rayne", body, Date.now(), true, {
+                            event: previewTransactionEvent(transactionId),
+                            sendingStatus: "sending",
+                        }),
+                    ],
+                });
+
+                await new Promise((resolve) => window.setTimeout(resolve, 220));
+                update({
+                    timeline: snapshot.timeline.map((item) =>
+                        item.id === pendingId
+                            ? {
+                                  ...item,
+                                  id: confirmedId,
+                                  event: previewTransactionEvent(transactionId),
+                                  sendingStatus: null,
+                              }
                             : item,
                     ),
                 });
@@ -711,6 +828,35 @@ export function DesignPreview() {
 
     if (surfacePreview === "login") {
         return <LoginScreen onAuthenticated={async () => undefined} />;
+    }
+
+    if (surfacePreview === "vault-enrollment") {
+        return (
+            <SessionVaultScreen
+                mode="enrollment"
+                recoveryKey="subetha_preview_recovery_key_4R7W2N9K6Q8X3M5P"
+                deviceEnrollment="available"
+                busy={false}
+                error={null}
+                onBeginDeviceEnrollment={() => undefined}
+                onCompleteDeviceEnrollment={() => undefined}
+                onContinue={() => undefined}
+            />
+        );
+    }
+
+    if (surfacePreview === "vault-locked") {
+        return (
+            <SessionVaultScreen
+                mode="locked"
+                hasDeviceUnlock
+                busy={false}
+                error={null}
+                onDeviceUnlock={() => undefined}
+                onRecoveryUnlock={() => undefined}
+                onForget={() => undefined}
+            />
+        );
     }
 
     if (surfacePreview === "settings") {
