@@ -408,3 +408,20 @@ test("new-session enrollment exposes explicit bounded cancellation", () => {
     assert.match(markup, /session and device already exist on the homeserver/);
     assert.match(markup, /revoke the device from another trusted Matrix client/);
 });
+
+test("production updates have no manual service-worker gate", async () => {
+    const [appSource, notificationsSource] = await Promise.all([
+        readFile(APP_SOURCE, "utf8"),
+        readFile(new URL("../lib/matrix/notifications.ts", import.meta.url), "utf8"),
+    ]);
+
+    assert.doesNotMatch(appSource, /waitingWorker|applyUpdate|controllerchange|Update now/);
+    assert.match(
+        notificationsSource,
+        /const registration = await navigator\.serviceWorker\.register/,
+    );
+    assert.match(
+        notificationsSource,
+        /if \(registration\.active && typeof registration\.update === "function"\) \{[\s\S]*registration\.update\(\)/,
+    );
+});

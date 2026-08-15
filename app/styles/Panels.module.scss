@@ -50,59 +50,6 @@
     gap: 8px;
 }
 
-.update-toast {
-    position: fixed;
-    z-index: 60;
-    top: calc(18px + var(--safe-top));
-    right: calc(18px + var(--safe-right));
-    width: min(390px, calc(100vw - 36px - var(--safe-left) - var(--safe-right)));
-    padding: 12px;
-    display: flex;
-    align-items: center;
-    gap: 11px;
-    border: 1px solid var(--line-strong);
-    border-radius: 0;
-    background: var(--paper-raised);
-}
-
-.update-toast > svg {
-    width: 18px;
-    color: var(--teal);
-    stroke-width: 1.6;
-}
-
-.update-toast span {
-    flex: 1;
-    display: grid;
-    gap: 2px;
-}
-
-.update-toast strong {
-    font-size: 12px;
-    font-weight: 620;
-}
-
-.update-toast small {
-    color: var(--ink-soft);
-    font-size: 10px;
-}
-
-.update-toast button {
-    min-height: 34px;
-    padding: 6px 9px;
-    border: 1px solid var(--signal);
-    border-radius: 0;
-    background: transparent;
-    color: var(--signal);
-    font: 650 10px var(--font-ui);
-    white-space: nowrap;
-}
-
-.update-toast button:hover {
-    border-color: var(--signal-dark);
-    color: var(--signal-dark);
-}
-
 .dialog-backdrop {
     position: fixed;
     inset: 0;
@@ -1125,13 +1072,6 @@
         grid-template-columns: repeat(4, minmax(0, 1fr));
     }
 
-    .update-toast {
-        top: calc(12px + var(--safe-top));
-        right: calc(12px + var(--safe-right));
-        left: calc(12px + var(--safe-left));
-        width: auto;
-    }
-
     .lightbox {
         padding: 0;
     }
@@ -1218,19 +1158,6 @@
     }
 
     .invite-card > div:last-child > * {
-        width: 100%;
-    }
-
-    .update-toast {
-        align-items: flex-start;
-        flex-wrap: wrap;
-    }
-
-    .update-toast span {
-        min-width: calc(100% - 30px);
-    }
-
-    .update-toast button {
         width: 100%;
     }
 
