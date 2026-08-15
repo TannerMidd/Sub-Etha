@@ -853,6 +853,8 @@ export class MatrixService {
             client.on(RoomMemberEvent.Typing, this.handleTyping);
             client.on(CryptoEvent.VerificationRequestReceived, this.handleIncomingVerification);
             window.addEventListener("storage", this.handleTakeoverRequest);
+            await this.reconcileIncomingVerificationRequests(client, generation);
+            this.assertStartupActive(lease, generation);
 
             try {
                 await client.startClient({
@@ -905,6 +907,14 @@ export class MatrixService {
         }
 
         this.refreshDerivedState();
+
+        if (state === SyncState.Prepared || state === SyncState.Syncing) {
+            const client = this.client;
+
+            if (client) {
+                void this.reconcileIncomingVerificationRequests(client, this.lifecycleGeneration);
+            }
+        }
 
         if (
             (state === SyncState.Prepared || state === SyncState.Syncing) &&
@@ -1052,17 +1062,94 @@ export class MatrixService {
         };
     }
 
+    private acceptsIncomingVerificationRequest(request: VerificationRequest): boolean {
+        if (this.stopped) {
+            return false;
+        }
+
+        const userId = this.lease?.session.userId;
+
+        return Boolean(
+            userId &&
+            request.pending &&
+            !request.initiatedByMe &&
+            request.otherUserId === userId &&
+            request.roomId === undefined,
+        );
+    }
+
+    private verificationRequestKey(request: VerificationRequest): string | null {
+        const transactionId = request.transactionId;
+
+        if (transactionId === undefined) {
+            return null;
+        }
+
+        return JSON.stringify([transactionId, request.otherUserId, request.otherDeviceId ?? null]);
+    }
+
+    private isSameVerificationRequest(
+        left: VerificationRequest,
+        right: VerificationRequest,
+    ): boolean {
+        if (left === right) {
+            return true;
+        }
+
+        const leftKey = this.verificationRequestKey(left);
+        const rightKey = this.verificationRequestKey(right);
+
+        return leftKey !== null && leftKey === rightKey;
+    }
+
+    private async reconcileIncomingVerificationRequests(
+        client: MatrixClient,
+        generation: number,
+    ): Promise<void> {
+        if (!this.isClientLifecycleActive(client, generation)) {
+            return;
+        }
+
+        const userId = this.lease?.session.userId;
+
+        if (!userId) {
+            return;
+        }
+
+        try {
+            const cryptoApi = client.getCrypto();
+
+            if (!cryptoApi) {
+                return;
+            }
+
+            const requests = cryptoApi.getVerificationRequestsToDeviceInProgress(userId);
+
+            for (const request of requests) {
+                if (!this.isClientLifecycleActive(client, generation)) {
+                    return;
+                }
+
+                this.handleIncomingVerification(request);
+            }
+        } catch {
+            // Crypto storage can be torn down while a sync callback is reconciling requests.
+        }
+    }
+
     private handleIncomingVerification = (request: VerificationRequest): void => {
-        if (!request.isSelfVerification || !request.pending || this.stopped) {
+        if (!this.acceptsIncomingVerificationRequest(request)) {
             return;
         }
 
-        if (this.activeVerification?.request === request) {
+        const activeRequest = this.activeVerification?.request;
+
+        if (activeRequest && this.isSameVerificationRequest(activeRequest, request)) {
             return;
         }
 
-        if (this.activeVerification?.request.pending) {
-            void request.cancel();
+        if (activeRequest?.pending) {
+            void request.cancel().catch(() => undefined);
 
             return;
         }
