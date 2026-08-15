@@ -53,6 +53,61 @@ function createService(onSessionInvalidated?: (error: Error) => void): MatrixSer
     );
 }
 
+interface TestVerificationRequest {
+    transactionId?: string;
+    roomId?: string;
+    initiatedByMe: boolean;
+    otherUserId: string;
+    otherDeviceId?: string;
+    isSelfVerification: boolean;
+    pending: boolean;
+    phase: number;
+    cancelCalls: number;
+    cancel(): Promise<void>;
+    on(): void;
+    off(): void;
+}
+
+function createVerificationRequest(
+    overrides: Partial<TestVerificationRequest> = {},
+): TestVerificationRequest {
+    const request = {
+        transactionId: "$verification",
+        roomId: undefined,
+        initiatedByMe: false,
+        otherUserId: SESSION.userId,
+        otherDeviceId: "OTHER_DEVICE",
+        isSelfVerification: false,
+        pending: true,
+        phase: 2,
+        cancelCalls: 0,
+        cancel: async () => {
+            request.cancelCalls += 1;
+            request.pending = false;
+        },
+        on: () => undefined,
+        off: () => undefined,
+        ...overrides,
+    };
+
+    return request;
+}
+
+function verificationInternals(service: MatrixService) {
+    return service as unknown as {
+        client: MatrixClient | null;
+        lifecycleGeneration: number;
+        stopped: boolean;
+        activeVerification: { request: unknown } | null;
+        snapshot: MatrixSnapshot;
+        handleIncomingVerification: (request: unknown) => void;
+        reconcileIncomingVerificationRequests: (
+            client: MatrixClient,
+            generation: number,
+        ) => Promise<void>;
+    };
+}
+
 function timelineItem(id: string): TimelineItem {
     return {
         id,
@@ -2970,6 +3025,98 @@ test("a late secret-storage cache callback is rejected and zeroed", () => {
         true,
     );
     assert.equal(internals.secretStorageKey, null);
+});
+
+test("a live same-account to-device request is surfaced without the self-verification flag", () => {
+    const service = createService();
+    const internals = verificationInternals(service);
+    const client = {} as MatrixClient;
+    const request = createVerificationRequest();
+
+    internals.client = client;
+    internals.handleIncomingVerification(request as never);
+
+    assert.equal(internals.snapshot.verification?.direction, "incoming");
+    assert.equal(internals.snapshot.verification?.otherUserId, SESSION.userId);
+});
+
+test("a persisted incoming request is reconciled without a new crypto event", async () => {
+    const service = createService();
+    const request = createVerificationRequest({ transactionId: "$persisted" });
+    let requestedUserId: string | null = null;
+    const client = {
+        getCrypto: () => ({
+            getVerificationRequestsToDeviceInProgress: (userId: string) => {
+                requestedUserId = userId;
+
+                return [request];
+            },
+        }),
+    } as unknown as MatrixClient;
+    const internals = verificationInternals(service);
+
+    internals.client = client;
+    await internals.reconcileIncomingVerificationRequests(client, internals.lifecycleGeneration);
+
+    assert.equal(requestedUserId, SESSION.userId);
+    assert.equal(internals.snapshot.verification?.transactionId, "$persisted");
+});
+
+test("foreign, in-room, and locally initiated verification requests are ignored", () => {
+    const cases = [
+        { name: "foreign", otherUserId: "@other:matrix.example" },
+        { name: "in-room", roomId: "!room:matrix.example" },
+        { name: "locally initiated", initiatedByMe: true },
+    ];
+
+    for (const testCase of cases) {
+        const service = createService();
+        const internals = verificationInternals(service);
+        const request = createVerificationRequest(testCase);
+
+        internals.client = {} as MatrixClient;
+        internals.handleIncomingVerification(request as never);
+
+        assert.equal(internals.snapshot.verification, null, testCase.name);
+    }
+});
+
+test("duplicate verification wrappers do not cancel or replace the active request", () => {
+    const service = createService();
+    const internals = verificationInternals(service);
+    const first = createVerificationRequest({ transactionId: "$duplicate" });
+    const duplicate = createVerificationRequest({ transactionId: "$duplicate" });
+
+    internals.client = {} as MatrixClient;
+    internals.handleIncomingVerification(first as never);
+    internals.handleIncomingVerification(duplicate as never);
+
+    assert.equal(internals.activeVerification?.request, first);
+    assert.equal(duplicate.cancelCalls, 0);
+});
+
+test("verification reconciliation and events stay inert after the service stops", async () => {
+    const service = createService();
+    const request = createVerificationRequest();
+    let queryCalls = 0;
+    const client = {
+        getCrypto: () => ({
+            getVerificationRequestsToDeviceInProgress: () => {
+                queryCalls += 1;
+
+                return [request];
+            },
+        }),
+    } as unknown as MatrixClient;
+    const internals = verificationInternals(service);
+
+    service.stop();
+    internals.client = client;
+    internals.handleIncomingVerification(request as never);
+    await internals.reconcileIncomingVerificationRequests(client, internals.lifecycleGeneration);
+
+    assert.equal(queryCalls, 0);
+    assert.equal(internals.snapshot.verification, null);
 });
 
 test("a device verification request resolving after stop is cancelled without binding", async () => {
