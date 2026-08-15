@@ -5,6 +5,7 @@ import {
     containImageSize,
     MAX_VIEWER_ZOOM,
     MIN_VIEWER_ZOOM,
+    pinchViewerZoom,
     preserveScrollCenter,
     stepViewerZoom,
 } from "../lib/image-viewer";
@@ -48,6 +49,14 @@ test("viewer zoom uses deliberate 25 percent steps between fit and 400 percent",
     assert.equal(clampViewerZoom(0.25), MIN_VIEWER_ZOOM);
     assert.equal(clampViewerZoom(8), MAX_VIEWER_ZOOM);
     assert.equal(stepViewerZoom(MAX_VIEWER_ZOOM, 1), MAX_VIEWER_ZOOM);
+});
+
+test("pinch zoom scales from the gesture start and stays within viewer limits", () => {
+    assert.equal(pinchViewerZoom(1, 100, 150), 1.5);
+    assert.equal(pinchViewerZoom(2, 200, 100), 1);
+    assert.equal(pinchViewerZoom(3, 100, 200), MAX_VIEWER_ZOOM);
+    assert.equal(pinchViewerZoom(1, 100, 10), MIN_VIEWER_ZOOM);
+    assert.equal(pinchViewerZoom(2, 0, 100), 2);
 });
 
 test("zooming preserves the centered image point and clamps every edge", () => {

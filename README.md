@@ -52,6 +52,8 @@ The sealed session vault and Rust crypto store use IndexedDB. Timeline sync is h
 
 The service worker is intentionally limited to push handling and an inert offline response. It does not cache or replay the application shell or Matrix history.
 
+YouTube previews are browser-direct and lazy. When a preview enters the viewport, the browser sends the public video ID and ordinary network metadata to the YouTube CDN only; Sub-Etha sends no request to its backend and shares no Matrix credentials, room or user identity, or other message content. Other providers and general-purpose unfurling require a separate privacy and security review. See [ADR-0022](./docs/adr/0022-browser-only-youtube-thumbnails.md).
+
 For the complete boundary and state-ownership map, read [Architecture](./docs/architecture.md).
 
 ## Quick start

@@ -28,6 +28,27 @@ export function stepViewerZoom(zoom: number, direction: -1 | 1): number {
     return clampViewerZoom(zoom + VIEWER_ZOOM_STEP * direction);
 }
 
+/**
+ * Scale a viewer zoom level by the change in distance between two touch
+ * pointers. The result is clamped so a gesture can never escape the same
+ * limits used by the button and keyboard controls.
+ */
+export function pinchViewerZoom(
+    startZoom: number,
+    startDistance: number,
+    currentDistance: number,
+): number {
+    if (
+        !Number.isFinite(startDistance) ||
+        startDistance <= 0 ||
+        !Number.isFinite(currentDistance)
+    ) {
+        return clampViewerZoom(startZoom);
+    }
+
+    return clampViewerZoom(startZoom * (currentDistance / startDistance));
+}
+
 export function preserveScrollCenter(
     scrollOffset: number,
     viewportLength: number,

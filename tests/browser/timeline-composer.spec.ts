@@ -256,17 +256,7 @@ async function openMessageActions(row: Locator, actionName = "Reply"): Promise<v
     });
 
     if (!reachable) {
-        const toggle = row.locator('[data-ui="message-actions-toggle"]');
-        const usesToggle =
-            (await toggle.count()) > 0 &&
-            (await toggle.evaluate((button) => getComputedStyle(button).display !== "none"));
-
-        if (usesToggle) {
-            await toggle.click();
-            await expect(row).toHaveAttribute("data-actions-state", "open");
-        } else {
-            await row.hover();
-        }
+        await row.hover();
     }
 
     try {
@@ -474,7 +464,6 @@ test.describe("composer regression coverage", () => {
 
             await expect(reply).toBeVisible();
             await expect(reaction).toBeVisible();
-            await expect(remoteRow.locator('[data-ui="message-actions-toggle"]')).toHaveCount(0);
 
             const [contentBox, actionsBox, replyBox, reactionBox] = await Promise.all([
                 content.boundingBox(),
@@ -518,8 +507,6 @@ test.describe("composer regression coverage", () => {
             const ownRow = page.locator('[data-event-id="m9"]');
 
             await ownRow.scrollIntoViewIfNeeded();
-            await ownRow.locator('[data-ui="message-actions-toggle"]').click();
-            await expect(ownRow).toHaveAttribute("data-actions-state", "open");
 
             const edit = ownRow.getByRole("button", { name: "Edit" });
             const remove = ownRow.getByRole("button", { name: "Remove" });
@@ -533,10 +520,23 @@ test.describe("composer regression coverage", () => {
                 expect(bounds?.width ?? 0).toBeGreaterThanOrEqual(44);
                 expect(bounds?.height ?? 0).toBeGreaterThanOrEqual(44);
             }
-
-            await page.keyboard.press("Escape");
-            await expect(ownRow).toHaveAttribute("data-actions-state", "closed");
         }
+    });
+
+    test("message actions never render an overflow ellipsis", async ({ page }) => {
+        await openPreview(page);
+
+        const ownRow = page.locator('[data-event-id="m9"]');
+
+        await ownRow.scrollIntoViewIfNeeded();
+        await ownRow.hover();
+        await expect(page.getByRole("button", { name: /More actions/ })).toHaveCount(0);
+        await expect(page.locator('[data-ui="message-actions-toggle"]')).toHaveCount(0);
+        await expect(page.locator('[data-ui="message-actions-overflow"]')).toHaveCount(0);
+        await expect(ownRow.getByRole("button", { name: "Reply" })).toHaveCount(1);
+        await expect(ownRow.getByRole("button", { name: "Add reaction" })).toHaveCount(1);
+        await expect(ownRow.getByRole("button", { name: "Edit" })).toHaveCount(1);
+        await expect(ownRow.getByRole("button", { name: "Remove" })).toHaveCount(1);
     });
 
     test("typing presence fades without moving the timeline", async ({ page }) => {

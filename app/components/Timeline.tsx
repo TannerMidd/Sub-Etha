@@ -23,7 +23,6 @@ import {
     FileText,
     LoaderCircle,
     Maximize2,
-    MoreHorizontal,
     Pencil,
     Play,
     RefreshCw,
@@ -41,10 +40,18 @@ import {
     containImageSize,
     MAX_VIEWER_ZOOM,
     MIN_VIEWER_ZOOM,
+    pinchViewerZoom,
     preserveScrollCenter,
     stepViewerZoom,
     type ViewerSize,
 } from "@/lib/image-viewer";
+import {
+    isTimelineYouTubePreviewEligible,
+    timelineYouTubePreviews,
+    youtubePreviewLayout,
+    youtubeThumbnailFailureStore,
+    type YouTubePreview,
+} from "@/lib/youtube-preview";
 import { messageTextSegments } from "@/lib/matrix/message-text";
 import type { MediaAsset, TimelineItem } from "@/lib/matrix/types";
 import {
@@ -87,6 +94,7 @@ const TIMELINE_VIEWPORT_PADDING = { top: 0, bottom: 300 };
 const TIMELINE_COMPACT_BREAKPOINT_PX = 720;
 const TIMELINE_ESTIMATED_MEDIA_GUTTER_PX = 70;
 const TIMELINE_MAX_ESTIMATED_MEDIA_WIDTH_PX = 520;
+const TIMELINE_MOBILE_ACTION_ROW_HEIGHT_PX = 44;
 const HISTORY_ANCHOR_MIN_SETTLE_MS = 120;
 // Slow devices can continue delivering Virtuoso height corrections well after
 // the first stable frames. Keep the anchor live long enough to absorb those
@@ -158,6 +166,15 @@ function getAuthorAccentStyle(item: TimelineItem, replyItem?: TimelineItem): Aut
     return style;
 }
 
+function timelineItemHasActions(item: TimelineItem): boolean {
+    return (
+        item.type !== "system" &&
+        item.decryptionState === "ready" &&
+        !item.redacted &&
+        !item.sendingStatus
+    );
+}
+
 function estimateTimelineItemHeight(item: TimelineItem, viewportWidth: number): number {
     const compact = viewportWidth <= TIMELINE_COMPACT_BREAKPOINT_PX;
     const availableTextWidth = compact
@@ -181,6 +198,11 @@ function estimateTimelineItemHeight(item: TimelineItem, viewportWidth: number): 
     /* The constant covers the row's fixed chrome: the rule above the block, its
        padding, the sender line, and the gap below. */
     const textHeight = (compact ? 68 : 80) + estimatedTextLines * (compact ? 25.2 : 27.52);
+    const youtubePreviews = timelineYouTubePreviews(item);
+    const youtubeHeight = youtubePreviewLayout(
+        availableTextWidth,
+        youtubePreviews.length,
+    ).totalHeight;
     let estimate = textHeight;
 
     if (!item.redacted && (item.type === "image" || item.type === "video")) {
@@ -213,6 +235,12 @@ function estimateTimelineItemHeight(item: TimelineItem, viewportWidth: number): 
         estimate = compact ? 170 : 130;
     } else if (item.type === "notice" || item.type === "system") {
         estimate = compact ? 92 : 68;
+    }
+
+    estimate += youtubeHeight;
+
+    if (compact && timelineItemHasActions(item)) {
+        estimate += TIMELINE_MOBILE_ACTION_ROW_HEIGHT_PX;
     }
 
     if (item.replyTo) {
@@ -835,6 +863,23 @@ interface ViewerDragState {
     scrollTop: number;
 }
 
+interface ViewerPointerState {
+    pointerId: number;
+    clientX: number;
+    clientY: number;
+    startX: number;
+    startY: number;
+}
+
+interface ViewerPinchState {
+    startDistance: number;
+    startZoom: number;
+}
+
+function viewerPointerDistance(first: ViewerPointerState, second: ViewerPointerState): number {
+    return Math.hypot(second.clientX - first.clientX, second.clientY - first.clientY);
+}
+
 function readViewerScrollMetrics(stage: HTMLDivElement): ViewerScrollMetrics {
     return {
         left: stage.scrollLeft,
@@ -882,6 +927,9 @@ function Lightbox({
     const closeButton = useRef<HTMLButtonElement>(null);
     const pendingCenter = useRef<ViewerScrollMetrics | null>(null);
     const dragState = useRef<ViewerDragState | null>(null);
+    const activePointers = useRef<Map<number, ViewerPointerState>>(new Map());
+    const pinchState = useRef<ViewerPinchState | null>(null);
+    const zoomRef = useRef(zoom);
     const titleId = useId();
     const metadataId = useId();
     const fittedSize = useMemo(
@@ -895,22 +943,21 @@ function Lightbox({
     const canPan = zoom > MIN_VIEWER_ZOOM;
     const zoomPercent = Math.round(zoom * 100);
 
-    const updateZoom = useCallback(
-        (nextZoom: number) => {
-            const clamped = clampViewerZoom(nextZoom);
+    const updateZoom = useCallback((nextZoom: number) => {
+        const clamped = clampViewerZoom(nextZoom);
+        const currentZoom = zoomRef.current;
 
-            if (clamped === zoom) {
-                return;
-            }
+        if (clamped === currentZoom) {
+            return;
+        }
 
-            if (stage.current) {
-                pendingCenter.current = readViewerScrollMetrics(stage.current);
-            }
+        if (stage.current) {
+            pendingCenter.current = readViewerScrollMetrics(stage.current);
+        }
 
-            setZoom(clamped);
-        },
-        [zoom],
-    );
+        zoomRef.current = clamped;
+        setZoom(clamped);
+    }, []);
 
     const finishPan = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
         if (dragState.current?.pointerId !== event.pointerId) {
@@ -924,6 +971,27 @@ function Lightbox({
         dragState.current = null;
         setDragging(false);
     }, []);
+
+    const clearViewerGesture = useCallback(() => {
+        const currentStage = stage.current;
+
+        if (currentStage) {
+            for (const pointerId of activePointers.current.keys()) {
+                if (currentStage.hasPointerCapture(pointerId)) {
+                    currentStage.releasePointerCapture(pointerId);
+                }
+            }
+        }
+
+        activePointers.current.clear();
+        pinchState.current = null;
+        dragState.current = null;
+    }, []);
+
+    const resetViewerGesture = useCallback(() => {
+        clearViewerGesture();
+        setDragging(false);
+    }, [clearViewerGesture]);
 
     const move = (direction: number) => {
         if (items.length < 2) {
@@ -943,6 +1011,16 @@ function Lightbox({
             document.body.style.overflow = previousOverflow;
         };
     }, []);
+
+    useEffect(() => {
+        zoomRef.current = zoom;
+    }, [zoom]);
+
+    useEffect(() => {
+        clearViewerGesture();
+
+        return clearViewerGesture;
+    }, [clearViewerGesture, selectedId]);
 
     useLayoutEffect(() => {
         const currentStage = stage.current;
@@ -1167,10 +1245,41 @@ function Lightbox({
                     )}
                     onPointerDown={(event) => {
                         if (
-                            !canPan ||
                             event.button !== 0 ||
                             (event.target as HTMLElement).closest("button, a")
                         ) {
+                            return;
+                        }
+
+                        if (event.pointerType === "touch") {
+                            const pointer = {
+                                pointerId: event.pointerId,
+                                clientX: event.clientX,
+                                clientY: event.clientY,
+                                startX: event.clientX,
+                                startY: event.clientY,
+                            };
+
+                            activePointers.current.set(event.pointerId, pointer);
+                            event.currentTarget.setPointerCapture(event.pointerId);
+
+                            if (activePointers.current.size === 2) {
+                                const [first, second] = [...activePointers.current.values()];
+
+                                dragState.current = null;
+                                pinchState.current = {
+                                    startDistance: viewerPointerDistance(first, second),
+                                    startZoom: zoomRef.current,
+                                };
+                                setDragging(false);
+                            }
+
+                            event.preventDefault();
+
+                            return;
+                        }
+
+                        if (!canPan) {
                             return;
                         }
 
@@ -1186,6 +1295,47 @@ function Lightbox({
                         event.preventDefault();
                     }}
                     onPointerMove={(event) => {
+                        if (event.pointerType === "touch") {
+                            const pointer = activePointers.current.get(event.pointerId);
+
+                            if (!pointer) {
+                                return;
+                            }
+
+                            pointer.clientX = event.clientX;
+                            pointer.clientY = event.clientY;
+
+                            if (activePointers.current.size >= 2) {
+                                const [first, second] = [...activePointers.current.values()];
+                                const pinch = pinchState.current;
+
+                                if (pinch) {
+                                    updateZoom(
+                                        pinchViewerZoom(
+                                            pinch.startZoom,
+                                            pinch.startDistance,
+                                            viewerPointerDistance(first, second),
+                                        ),
+                                    );
+                                }
+
+                                event.preventDefault();
+
+                                return;
+                            }
+
+                            if (canPan && !dragState.current) {
+                                dragState.current = {
+                                    pointerId: event.pointerId,
+                                    startX: pointer.startX,
+                                    startY: pointer.startY,
+                                    scrollLeft: event.currentTarget.scrollLeft,
+                                    scrollTop: event.currentTarget.scrollTop,
+                                };
+                                setDragging(true);
+                            }
+                        }
+
                         const drag = dragState.current;
 
                         if (!drag || drag.pointerId !== event.pointerId) {
@@ -1197,12 +1347,38 @@ function Lightbox({
                         event.currentTarget.scrollTop =
                             drag.scrollTop - (event.clientY - drag.startY);
                     }}
-                    onPointerUp={finishPan}
-                    onPointerCancel={finishPan}
-                    onLostPointerCapture={() => {
-                        dragState.current = null;
-                        setDragging(false);
+                    onPointerUp={(event) => {
+                        if (event.pointerType === "touch") {
+                            activePointers.current.delete(event.pointerId);
+                            pinchState.current = null;
+
+                            if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+                                event.currentTarget.releasePointerCapture(event.pointerId);
+                            }
+
+                            if (activePointers.current.size === 0) {
+                                dragState.current = null;
+                                setDragging(false);
+                            } else if (dragState.current?.pointerId === event.pointerId) {
+                                dragState.current = null;
+                                setDragging(false);
+                            }
+
+                            return;
+                        }
+
+                        finishPan(event);
                     }}
+                    onPointerCancel={(event) => {
+                        if (event.pointerType === "touch") {
+                            resetViewerGesture();
+
+                            return;
+                        }
+
+                        finishPan(event);
+                    }}
+                    onLostPointerCapture={resetViewerGesture}
                 >
                     {error ? (
                         <div className={classes("lightbox__error")}>
@@ -1402,6 +1578,66 @@ function FormattedMessageBody({ html }: { html: NonNullable<TimelineItem["format
     );
 }
 
+function YouTubePreviewCard({ preview }: { preview: YouTubePreview }) {
+    const [failed, setFailed] = useState(() => youtubeThumbnailFailureStore.has(preview.id));
+
+    const markFailed = () => {
+        youtubeThumbnailFailureStore.markFailed(preview.id);
+        setFailed(true);
+    };
+
+    const contents = (
+        <>
+            <span className={classes("youtube-preview__media")} aria-hidden="true">
+                {failed ? null : (
+                    // YouTube must receive the browser-direct public thumbnail URL.
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <img
+                        src={preview.src}
+                        alt=""
+                        loading="lazy"
+                        referrerPolicy="no-referrer"
+                        onError={markFailed}
+                    />
+                )}
+            </span>
+            <span className={classes("youtube-preview__metadata")}>
+                {failed ? "YouTube preview unavailable" : "Watch on YouTube"}
+            </span>
+        </>
+    );
+
+    return failed ? (
+        <div className={classes("youtube-preview")} aria-label="YouTube preview unavailable">
+            {contents}
+        </div>
+    ) : (
+        <a
+            className={classes("youtube-preview")}
+            href={preview.href}
+            target="_blank"
+            rel="noopener noreferrer"
+            aria-label="Watch video on YouTube"
+        >
+            {contents}
+        </a>
+    );
+}
+
+function YouTubePreviewCards({ previews }: { previews: YouTubePreview[] }) {
+    if (!previews.length) {
+        return null;
+    }
+
+    return (
+        <div className={classes("youtube-preview-list")} aria-label="YouTube previews">
+            {previews.map((preview) => (
+                <YouTubePreviewCard key={preview.id} preview={preview} />
+            ))}
+        </div>
+    );
+}
+
 function replyExcerpt(item: TimelineItem): string {
     const firstLine = item.body.split("\n", 1)[0] ?? item.body;
 
@@ -1428,7 +1664,6 @@ function MessageRow({
     onOpenMedia: (item: TimelineItem, opener: HTMLElement) => void;
 }) {
     const [reactionOpen, setReactionOpen] = useState(false);
-    const [actionsOpen, setActionsOpen] = useState(false);
     /*
      * Which reaction is mid-pop. Set on the click rather than on the round
      * trip, because the pop acknowledges the tap; whether the homeserver
@@ -1448,37 +1683,9 @@ function MessageRow({
     );
     const nextDay =
         next && new Date(next.timestamp).toDateString() !== new Date(item.timestamp).toDateString();
-    const actionable = item.decryptionState === "ready" && !item.redacted && !item.sendingStatus;
+    const actionable = timelineItemHasActions(item);
     const editable = actionable && item.own && item.type === "message" && !item.media;
-    const hasSecondaryActions = editable || item.own;
-
-    useEffect(() => {
-        if (!actionsOpen) {
-            return;
-        }
-
-        const dismiss = (event: PointerEvent) => {
-            if (!rowRef.current?.contains(event.target as Node)) {
-                setActionsOpen(false);
-                setReactionOpen(false);
-            }
-        };
-
-        const escape = (event: KeyboardEvent) => {
-            if (event.key === "Escape") {
-                setActionsOpen(false);
-                setReactionOpen(false);
-            }
-        };
-
-        document.addEventListener("pointerdown", dismiss);
-        window.addEventListener("keydown", escape);
-
-        return () => {
-            document.removeEventListener("pointerdown", dismiss);
-            window.removeEventListener("keydown", escape);
-        };
-    }, [actionsOpen]);
+    const youtubePreviews = useMemo(() => timelineYouTubePreviews(item), [item]);
 
     if (item.type === "system") {
         return (
@@ -1497,11 +1704,10 @@ function MessageRow({
             <article
                 ref={rowRef}
                 className={classes(
-                    `message-row${item.own ? " message-row--own" : ""}${item.type === "notice" ? " message-row--notice" : ""}${next ? "" : " message-row--last"}${actionsOpen ? " is-actions-open" : ""}`,
+                    `message-row${item.own ? " message-row--own" : ""}${item.type === "notice" ? " message-row--notice" : ""}${next ? "" : " message-row--last"}`,
                 )}
                 style={getAuthorAccentStyle(item, replyItem)}
                 data-ui="message-row"
-                data-actions-state={actionsOpen ? "open" : "closed"}
                 data-enter={entering ? "in" : undefined}
                 data-send-state={item.sendingStatus ?? undefined}
                 data-event-id={item.id}
@@ -1559,6 +1765,7 @@ function MessageRow({
                     ) : item.type === "file" ? null : (
                         <PlainMessageBody body={item.body} />
                     )}
+                    <YouTubePreviewCards previews={youtubePreviews} />
                     {item.media ? (
                         <MediaAttachment item={item} service={service} onOpen={onOpenMedia} />
                     ) : null}
@@ -1623,7 +1830,6 @@ function MessageRow({
                             title="Reply"
                             aria-label="Reply"
                             onClick={() => {
-                                setActionsOpen(false);
                                 setReactionOpen(false);
                                 onReply(item);
                             }}
@@ -1637,61 +1843,30 @@ function MessageRow({
                             aria-expanded={reactionOpen}
                             onPointerDown={(event) => event.stopPropagation()}
                             onClick={() => {
-                                setActionsOpen(false);
                                 setReactionOpen((open) => !open);
                             }}
                         >
                             <SmilePlus />
                         </button>
-                        {hasSecondaryActions ? (
-                            <>
-                                <button
-                                    type="button"
-                                    className={classes("message-actions-toggle")}
-                                    data-ui="message-actions-toggle"
-                                    title="More actions"
-                                    aria-label={`More actions for message from ${item.senderName}`}
-                                    aria-expanded={actionsOpen}
-                                    onClick={() => {
-                                        setReactionOpen(false);
-                                        setActionsOpen((open) => !open);
-                                    }}
-                                >
-                                    <MoreHorizontal />
-                                </button>
-                                <div
-                                    className={classes("message-actions-overflow")}
-                                    data-ui="message-actions-overflow"
-                                    aria-label={`More actions for message from ${item.senderName}`}
-                                >
-                                    {editable ? (
-                                        <button
-                                            type="button"
-                                            title="Edit"
-                                            aria-label="Edit"
-                                            onClick={() => {
-                                                setActionsOpen(false);
-                                                onEdit(item);
-                                            }}
-                                        >
-                                            <Pencil />
-                                        </button>
-                                    ) : null}
-                                    {item.own ? (
-                                        <button
-                                            type="button"
-                                            title="Remove"
-                                            aria-label="Remove"
-                                            onClick={() => {
-                                                setActionsOpen(false);
-                                                void service.redact(item.id);
-                                            }}
-                                        >
-                                            <Trash2 />
-                                        </button>
-                                    ) : null}
-                                </div>
-                            </>
+                        {editable ? (
+                            <button
+                                type="button"
+                                title="Edit"
+                                aria-label="Edit"
+                                onClick={() => onEdit(item)}
+                            >
+                                <Pencil />
+                            </button>
+                        ) : null}
+                        {item.own ? (
+                            <button
+                                type="button"
+                                title="Remove"
+                                aria-label="Remove"
+                                onClick={() => void service.redact(item.id)}
+                            >
+                                <Trash2 />
+                            </button>
                         ) : null}
                         {reactionOpen ? (
                             <ReactionPicker
@@ -1938,10 +2113,12 @@ export function Timeline({
     const estimateLayoutSignature = useMemo(
         () =>
             items
-                .map(
-                    (item) =>
-                        `${item.id}:${item.type}:${item.media ? `${item.media.width ?? "?"}x${item.media.height ?? "?"}` : "none"}`,
-                )
+                .map((item) => {
+                    const youtubePreviews = timelineYouTubePreviews(item);
+                    const youtubeEligible = isTimelineYouTubePreviewEligible(item);
+
+                    return `${item.id}:${item.type}:${item.media ? `${item.media.width ?? "?"}x${item.media.height ?? "?"}` : "none"}:youtube=${youtubeEligible ? "eligible" : "ineligible"}:${youtubePreviews.length}:${youtubePreviews.map((preview) => preview.id).join(",")}`;
+                })
                 .join("|"),
         [items],
     );

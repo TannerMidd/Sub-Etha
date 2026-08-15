@@ -20,6 +20,7 @@ import {
     type SessionCleanupDescriptor,
     type SessionDeletionResult,
 } from "../lib/matrix/session-store";
+import { MediaLimitError } from "../lib/matrix/media";
 import type { MatrixSnapshot, PersistedMatrixSession, TimelineItem } from "../lib/matrix/types";
 
 const SESSION: PersistedMatrixSession = {
@@ -2546,7 +2547,7 @@ test("logout aborts active attachment and avatar uploads before either can publi
 
             uploadControllers.push(controller);
 
-            if (uploadControllers.length === 2) {
+            if (uploadControllers.length === 1) {
                 reportUploadsStarted();
             }
 
@@ -2589,8 +2590,13 @@ test("logout aborts active attachment and avatar uploads before either can publi
     const attachmentResult = service
         .sendFile(new File(["attachment"], "attachment.txt", { type: "text/plain" }))
         .catch((error: unknown) => error);
+    const avatarBytes = new Uint8Array(13);
+
+    avatarBytes.set(new TextEncoder().encode("GIF89a"));
+    new DataView(avatarBytes.buffer).setUint16(6, 1, true);
+    new DataView(avatarBytes.buffer).setUint16(8, 1, true);
     const avatarResult = service
-        .updateProfile("", new File(["avatar"], "avatar.txt", { type: "text/plain" }))
+        .updateProfile("", new File([avatarBytes], "avatar.gif", { type: "image/gif" }))
         .catch((error: unknown) => error);
 
     await uploadsStarted;
@@ -2598,7 +2604,7 @@ test("logout aborts active attachment and avatar uploads before either can publi
     const [attachmentError, avatarError] = await Promise.all([attachmentResult, avatarResult]);
 
     assert.deepEqual(logoutResult, { remoteSessionEnded: true });
-    assert.equal(uploadControllers.length, 2);
+    assert.equal(uploadControllers.length, 1);
     assert.equal(
         uploadControllers.every((controller) => controller.signal.aborted),
         true,
@@ -2607,6 +2613,149 @@ test("logout aborts active attachment and avatar uploads before either can publi
     assert.equal((avatarError as Error).name, "AbortError");
     assert.equal(roomSendCalls, 0);
     assert.equal(avatarMutationCalls, 0);
+});
+
+test("plain video uploads are not constrained by the 64 MiB image-preview ceiling", async () => {
+    const service = createService();
+    let uploadedSize = 0;
+    let sent = 0;
+    const client = {
+        getRoom: () => ({ hasEncryptionStateEvent: () => false }),
+        uploadContent: async (body: Blob) => {
+            uploadedSize = body.size;
+
+            return { content_uri: "mxc://matrix.example/video" };
+        },
+        sendMessage: async () => {
+            sent += 1;
+        },
+    } as unknown as MatrixClient;
+    const internals = service as unknown as {
+        client: MatrixClient | null;
+        snapshot: MatrixSnapshot;
+    };
+    const video = new File([Uint8Array.of(1)], "field-recording.mp4", {
+        type: "video/mp4",
+    });
+
+    Object.defineProperty(video, "size", { value: 65 * 1024 * 1024 });
+    internals.client = client;
+    internals.snapshot = {
+        ...service.getSnapshot(),
+        activeRoomId: "!uploads:matrix.example",
+    };
+
+    await service.sendFile(video);
+
+    assert.equal(uploadedSize, 65 * 1024 * 1024);
+    assert.equal(sent, 1);
+});
+
+test("cancelling a stalled upload-config request promptly releases the media gate", async () => {
+    const originalFetch = globalThis.fetch;
+    const service = createService();
+    let reportConfigStarted: () => void = () => undefined;
+    const configStarted = new Promise<void>((resolve) => {
+        reportConfigStarted = resolve;
+    });
+    const cancelUpload: { current: (() => void) | null } = { current: null };
+    const client = {
+        getRoom: () => ({ hasEncryptionStateEvent: () => false }),
+        getHomeserverUrl: () => "https://matrix.example",
+        getAccessToken: () => "token",
+    } as unknown as MatrixClient;
+    const internals = service as unknown as {
+        client: MatrixClient | null;
+        snapshot: MatrixSnapshot;
+        mediaGate: {
+            acquire: (bytes: number) => Promise<{ release: () => void }>;
+        };
+    };
+
+    internals.client = client;
+    internals.snapshot = {
+        ...service.getSnapshot(),
+        activeRoomId: "!uploads:matrix.example",
+    };
+    globalThis.fetch = ((_input, init) =>
+        new Promise<Response>((_resolve, reject) => {
+            reportConfigStarted();
+            init?.signal?.addEventListener("abort", () => reject(init.signal?.reason), {
+                once: true,
+            });
+        })) as typeof fetch;
+
+    try {
+        const upload = service.sendFile(
+            new File([Uint8Array.of(1)], "field-recording.mp4", { type: "video/mp4" }),
+            {},
+            undefined,
+            (cancel) => {
+                cancelUpload.current = cancel;
+            },
+        );
+
+        await configStarted;
+        cancelUpload.current?.();
+        await assert.rejects(upload, { name: "AbortError" });
+        const lease = await Promise.race([
+            internals.mediaGate.acquire(1),
+            new Promise<never>((_resolve, reject) =>
+                setTimeout(() => reject(new Error("Media gate remained blocked.")), 100),
+            ),
+        ]);
+
+        lease.release();
+    } finally {
+        globalThis.fetch = originalFetch;
+    }
+});
+
+test("a homeserver avatar ceiling is enforced before profile mutation or file reading", async () => {
+    const originalFetch = globalThis.fetch;
+    const service = createService();
+    let displayNameCalls = 0;
+    let uploadCalls = 0;
+    let fileReads = 0;
+    const client = {
+        getHomeserverUrl: () => "https://matrix.example",
+        getAccessToken: () => "token",
+        setDisplayName: async () => {
+            displayNameCalls += 1;
+        },
+        uploadContent: async () => {
+            uploadCalls += 1;
+
+            return { content_uri: "mxc://matrix.example/avatar" };
+        },
+    } as unknown as MatrixClient;
+    const internals = service as unknown as { client: MatrixClient | null };
+    const avatarBytes = new Uint8Array(13);
+
+    avatarBytes.set(new TextEncoder().encode("GIF89a"));
+    new DataView(avatarBytes.buffer).setUint16(6, 1, true);
+    new DataView(avatarBytes.buffer).setUint16(8, 1, true);
+    const avatar = new File([avatarBytes], "avatar.gif", { type: "image/gif" });
+    const originalArrayBuffer = avatar.arrayBuffer.bind(avatar);
+
+    avatar.arrayBuffer = async () => {
+        fileReads += 1;
+
+        return originalArrayBuffer();
+    };
+
+    internals.client = client;
+    globalThis.fetch = (async () =>
+        new Response(JSON.stringify({ "m.upload.size": 1 }), { status: 200 })) as typeof fetch;
+
+    try {
+        await assert.rejects(service.updateProfile("Changed", avatar), MediaLimitError);
+        assert.equal(fileReads, 0);
+        assert.equal(displayNameCalls, 0);
+        assert.equal(uploadCalls, 0);
+    } finally {
+        globalThis.fetch = originalFetch;
+    }
 });
 
 test("setupRecovery zeroes the generated private key after bootstrap", async () => {

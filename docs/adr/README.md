@@ -27,6 +27,7 @@ Use **Proposed**, **Accepted**, **Deprecated**, **Superseded** with one or more 
 | [0019](./0019-privacy-minimal-push-and-pwa.md)              | Keep push privacy-minimal; its PWA caching scope is superseded by ADR-0021 |
 | [0020](./0020-security-and-data-minimization.md)            | Minimize data and bound untrusted work                                     |
 | [0021](./0021-cache-free-pwa-and-inert-offline-response.md) | Keep the worker cache-free with an inert offline response                  |
+| [0022](./0022-browser-only-youtube-thumbnails.md)           | Keep bounded YouTube thumbnails browser-direct and privacy-minimal         |
 
 ## Historical records
 

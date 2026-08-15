@@ -173,7 +173,7 @@ test("the enforced policy contains each settled directive exactly once", () => {
         `style-src-elem 'self' 'nonce-${FIXED_NONCE}'`,
         "style-src-attr 'unsafe-inline'",
         "connect-src 'self' https:",
-        "img-src 'self' blob: data:",
+        "img-src 'self' blob: data: https://i.ytimg.com",
         "media-src 'self' blob:",
         "font-src 'self'",
         "worker-src 'self'",

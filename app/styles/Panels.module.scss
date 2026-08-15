@@ -892,12 +892,12 @@
     align-items: safe center;
     justify-content: safe center;
     overscroll-behavior: contain;
+    touch-action: none;
     scrollbar-color: var(--teal) transparent;
 }
 
 .lightbox__stage.is-pannable {
     cursor: grab;
-    touch-action: none;
 }
 
 .lightbox__stage.is-dragging {

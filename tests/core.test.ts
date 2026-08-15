@@ -21,6 +21,12 @@ import {
     bytesAreGif,
     firstImageFile,
     insertAtSelection,
+    MAX_AVATAR_BYTES,
+    MAX_ENCRYPTED_UPLOAD_BYTES,
+    MAX_IMAGE_BYTES,
+    MAX_MEDIA_CACHE_BYTES,
+    MAX_NONIMAGE_MEDIA_BYTES,
+    MAX_PLAIN_UPLOAD_BYTES,
     normalizeMediaFile,
 } from "../lib/matrix/media";
 import { isLegacySitesPusher, pushSubscriptionNeedsRepair } from "../lib/matrix/notifications";
@@ -144,15 +150,26 @@ test("authenticated media credentials are restricted to the homeserver origin", 
     assert.equal(shouldTryLegacyMedia(500), false);
 });
 
-test("GIF clipboard files are recognized even when the keyboard omits MIME metadata", async () => {
+test("media policy separates realistic file limits from bounded image and avatar work", () => {
+    const mib = 1024 * 1024;
+
+    assert.equal(MAX_PLAIN_UPLOAD_BYTES, 256 * mib);
+    assert.equal(MAX_ENCRYPTED_UPLOAD_BYTES, 128 * mib);
+    assert.equal(MAX_NONIMAGE_MEDIA_BYTES, 128 * mib);
+    assert.equal(MAX_IMAGE_BYTES, 64 * mib);
+    assert.equal(MAX_AVATAR_BYTES, 16 * mib);
+    assert.equal(MAX_MEDIA_CACHE_BYTES, 128 * mib);
+});
+
+test("GIF clipboard files without an image MIME or extension stay non-image uploads", async () => {
     const bytes = new TextEncoder().encode("GIF89a placeholder");
 
     assert.equal(bytesAreGif(bytes), true);
     const raw = new NodeFile([bytes], "image.", { type: "" }) as unknown as File;
     const normalized = await normalizeMediaFile(raw);
 
-    assert.equal(normalized.type, "image/gif");
-    assert.match(normalized.name, /\.gif$/);
+    assert.equal(normalized.type, "application/octet-stream");
+    assert.match(normalized.name, /\.bin$/);
     const transfer = {
         items: [{ kind: "file", type: "", getAsFile: () => raw }],
         files: [],
