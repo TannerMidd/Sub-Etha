@@ -1,4 +1,8 @@
+const SERVICE_WORKER_BUILD_ID = "__SUB_ETHA_BUILD_ID__";
 const CACHE_PREFIX = "sub-etha-";
+const LIFECYCLE_DB = "sub-etha-service-worker-lifecycle";
+const LIFECYCLE_STORE = "state";
+const LIFECYCLE_KEY = "activation";
 const OFFLINE_CSP =
     "default-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'; object-src 'none'";
 const PUSH_DB = "sub-etha-push";
@@ -330,9 +334,128 @@ function offlineNavigationResponse() {
     );
 }
 
-self.addEventListener("install", () => {
-    // Installation is deliberately cache-free. Updates remain waiting until the connected app
-    // explicitly accepts them, so a background update cannot interrupt an active session.
+function openLifecycleDatabase() {
+    return new Promise((resolve, reject) => {
+        const request = indexedDB.open(LIFECYCLE_DB, 1);
+
+        request.onupgradeneeded = () => request.result.createObjectStore(LIFECYCLE_STORE);
+        request.onsuccess = () => resolve(request.result);
+        request.onerror = () => reject(request.error);
+    });
+}
+
+async function writeLifecycleRecord(record) {
+    const database = await openLifecycleDatabase();
+
+    try {
+        await new Promise((resolve, reject) => {
+            const transaction = database.transaction(LIFECYCLE_STORE, "readwrite");
+            const request = transaction.objectStore(LIFECYCLE_STORE).put(record, LIFECYCLE_KEY);
+
+            request.onerror = () => reject(request.error);
+            transaction.oncomplete = resolve;
+            transaction.onerror = () => reject(transaction.error);
+            transaction.onabort = () =>
+                reject(transaction.error || new Error("Lifecycle transaction aborted."));
+        });
+    } finally {
+        database.close();
+    }
+}
+
+async function readLifecycleRecord() {
+    const database = await openLifecycleDatabase();
+
+    try {
+        return await new Promise((resolve, reject) => {
+            const request = database
+                .transaction(LIFECYCLE_STORE)
+                .objectStore(LIFECYCLE_STORE)
+                .get(LIFECYCLE_KEY);
+
+            request.onsuccess = () => resolve(request.result || null);
+            request.onerror = () => reject(request.error);
+        });
+    } finally {
+        database.close();
+    }
+}
+
+async function clearLifecycleRecord() {
+    const database = await openLifecycleDatabase();
+
+    try {
+        await new Promise((resolve, reject) => {
+            const transaction = database.transaction(LIFECYCLE_STORE, "readwrite");
+            const request = transaction.objectStore(LIFECYCLE_STORE).delete(LIFECYCLE_KEY);
+
+            request.onerror = () => reject(request.error);
+            transaction.oncomplete = resolve;
+            transaction.onerror = () => reject(transaction.error);
+            transaction.onabort = () =>
+                reject(transaction.error || new Error("Lifecycle transaction aborted."));
+        });
+    } finally {
+        database.close();
+    }
+}
+
+function sameOriginWindowClient(client) {
+    if (!client || client.type !== "window" || typeof client.url !== "string") {
+        return false;
+    }
+
+    try {
+        return new URL(client.url).origin === self.location.origin;
+    } catch {
+        return false;
+    }
+}
+
+async function activateServiceWorker() {
+    const record = await readLifecycleRecord();
+
+    if (
+        !record ||
+        record.buildId !== SERVICE_WORKER_BUILD_ID ||
+        typeof record.hadPreviousActiveWorker !== "boolean"
+    ) {
+        throw new Error("The service-worker lifecycle record is missing or invalid.");
+    }
+
+    let eligibleClients = [];
+
+    if (record.hadPreviousActiveWorker) {
+        const clients = await self.clients.matchAll({
+            type: "window",
+            includeUncontrolled: true,
+        });
+
+        eligibleClients = clients.filter(sameOriginWindowClient);
+    }
+
+    try {
+        const keys = await caches.keys();
+
+        await Promise.allSettled(
+            keys.filter((key) => key.startsWith(CACHE_PREFIX)).map((key) => caches.delete(key)),
+        );
+    } catch {
+        // Cache cleanup is best effort. Claiming and navigating must still complete.
+    }
+
+    await self.clients.claim();
+    await Promise.allSettled(eligibleClients.map((client) => client.navigate(client.url)));
+    await clearLifecycleRecord().catch(() => undefined);
+}
+
+self.addEventListener("install", (event) => {
+    event.waitUntil(
+        writeLifecycleRecord({
+            buildId: SERVICE_WORKER_BUILD_ID,
+            hadPreviousActiveWorker: Boolean(self.registration.active),
+        }).then(() => self.skipWaiting()),
+    );
 });
 
 self.addEventListener("message", (event) => {
@@ -440,18 +563,7 @@ self.addEventListener("message", (event) => {
 });
 
 self.addEventListener("activate", (event) => {
-    event.waitUntil(
-        caches
-            .keys()
-            .then((keys) =>
-                Promise.allSettled(
-                    keys
-                        .filter((key) => key.startsWith(CACHE_PREFIX))
-                        .map((key) => caches.delete(key)),
-                ),
-            )
-            .then(() => self.clients.claim()),
-    );
+    event.waitUntil(activateServiceWorker());
 });
 
 self.addEventListener("fetch", (event) => {
@@ -462,7 +574,9 @@ self.addEventListener("fetch", (event) => {
     }
 
     if (event.request.mode === "navigate" || event.request.destination === "document") {
-        event.respondWith(fetch(event.request).catch(() => offlineNavigationResponse()));
+        event.respondWith(
+            fetch(event.request, { cache: "no-store" }).catch(() => offlineNavigationResponse()),
+        );
 
         return;
     }

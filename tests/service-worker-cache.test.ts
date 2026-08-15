@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 import vm from "node:vm";
+import { IDBFactory } from "fake-indexeddb";
 
 const ORIGIN = "https://sub-etha.test";
 const WORKER_SOURCE = readFileSync(new URL("../public/sw.js", import.meta.url), "utf8");
@@ -14,7 +15,7 @@ interface WorkerRequest {
 }
 
 type FetchInput = Request | URL | WorkerRequest | string;
-type FetchImplementation = (url: URL, input: FetchInput) => Promise<Response>;
+type FetchImplementation = (url: URL, input: FetchInput, init?: RequestInit) => Promise<Response>;
 
 function inputUrl(input: FetchInput): URL {
     if (typeof input === "string") {
@@ -44,10 +45,12 @@ class CacheStorageSpy {
     readonly puts: string[] = [];
     private readonly names: Set<string>;
     private readonly rejectedDeletes: Set<string>;
+    private readonly rejectKeys: boolean;
 
-    constructor(names: string[] = [], rejectedDeletes: string[] = []) {
+    constructor(names: string[] = [], rejectedDeletes: string[] = [], rejectKeys = false) {
         this.names = new Set(names);
         this.rejectedDeletes = new Set(rejectedDeletes);
+        this.rejectKeys = rejectKeys;
     }
 
     async delete(name: string): Promise<boolean> {
@@ -61,6 +64,10 @@ class CacheStorageSpy {
     }
 
     async keys(): Promise<string[]> {
+        if (this.rejectKeys) {
+            throw new Error("Injected cache enumeration failure");
+        }
+
         return [...this.names];
     }
 
@@ -81,26 +88,51 @@ interface DispatchedEvent {
     waits: Promise<unknown>[];
 }
 
+interface WorkerClient {
+    type: "window";
+    url: string;
+    navigate: (url: string) => Promise<unknown>;
+}
+
 function createWorker(
     options: {
         cacheNames?: string[];
+        cacheKeysFailure?: boolean;
+        clients?: WorkerClient[];
         fetch?: FetchImplementation;
+        indexedDB?: IDBFactory;
+        matchAllFailure?: boolean;
+        active?: object | null;
         rejectedCacheDeletes?: string[];
         skipWaiting?: () => Promise<void>;
     } = {},
 ) {
     const handlers = new Map<string, (event: Record<string, unknown>) => void>();
-    const cacheStorage = new CacheStorageSpy(options.cacheNames, options.rejectedCacheDeletes);
+    const cacheStorage = new CacheStorageSpy(
+        options.cacheNames,
+        options.rejectedCacheDeletes,
+        options.cacheKeysFailure,
+    );
+    const indexedDB = options.indexedDB ?? new IDBFactory();
+    const clients = options.clients ?? [];
     const fetches: string[] = [];
+    const fetchInits: RequestInit[] = [];
     let claims = 0;
+    let matchAllCalls = 0;
     let skipWaitingCalls = 0;
 
-    const workerFetch = async (input: FetchInput) => {
+    const workerFetch = async (input: FetchInput, init?: RequestInit) => {
         const url = inputUrl(input);
 
         fetches.push(url.href);
 
-        return options.fetch ? options.fetch(url, input) : new Response(null, { status: 200 });
+        if (init) {
+            fetchInits.push(init);
+        }
+
+        return options.fetch
+            ? options.fetch(url, input, init)
+            : new Response(null, { status: 200 });
     };
 
     const worker = {
@@ -111,10 +143,19 @@ function createWorker(
             async claim() {
                 claims += 1;
             },
+            async matchAll() {
+                matchAllCalls += 1;
+
+                if (options.matchAllFailure) {
+                    throw new Error("Injected client enumeration failure");
+                }
+
+                return clients;
+            },
         },
         location: { origin: ORIGIN },
         navigator: {},
-        registration: {},
+        registration: { active: options.active ?? null },
         async skipWaiting() {
             skipWaitingCalls += 1;
             await options.skipWaiting?.();
@@ -127,6 +168,8 @@ function createWorker(
         atob,
         caches: cacheStorage,
         fetch: workerFetch,
+        indexedDB,
+        TextEncoder,
         self: worker,
     });
 
@@ -153,6 +196,9 @@ function createWorker(
         claims: () => claims,
         dispatch,
         fetches,
+        fetchInits,
+        indexedDB,
+        matchAllCalls: () => matchAllCalls,
         skipWaitingCalls: () => skipWaitingCalls,
     };
 }
@@ -165,7 +211,7 @@ async function settle(event: DispatchedEvent): Promise<Response | null> {
     return response;
 }
 
-test("install is cache-free and cannot be blocked by optional asset failures", async () => {
+test("install records its lifecycle marker, skips waiting, and never writes app caches", async () => {
     const worker = createWorker({
         fetch: async (url) => {
             if (url.pathname.endsWith(".png")) {
@@ -181,22 +227,49 @@ test("install is cache-free and cannot be blocked by optional asset failures", a
     const install = worker.dispatch("install");
 
     assert.equal(install.handled, true);
-    assert.equal(install.waits.length, 0);
+    assert.equal(install.waits.length, 1);
     assert.equal(await settle(install), null);
-    assert.equal(worker.skipWaitingCalls(), 0);
+    assert.equal(worker.skipWaitingCalls(), 1);
     assert.deepEqual(worker.fetches, []);
     assert.deepEqual(worker.cacheStorage.openedNames, []);
     assert.deepEqual(worker.cacheStorage.puts, []);
     assert.doesNotMatch(WORKER_SOURCE, /\bcaches\.open\b|\bcache\.put\b|\.addAll\(/);
 });
 
-test("worker updates only skip waiting after an explicit app message", async () => {
-    const worker = createWorker();
-    const update = worker.dispatch("message", { data: { type: "SKIP_WAITING" } });
+test("a lifecycle marker write failure rejects installation before skipWaiting", async () => {
+    const indexedDB = {
+        open() {
+            throw new Error("Injected lifecycle marker write failure");
+        },
+    } as unknown as IDBFactory;
+    const worker = createWorker({ indexedDB });
 
-    assert.equal(update.waits.length, 0);
-    await settle(update);
-    assert.equal(worker.skipWaitingCalls(), 1);
+    await assert.rejects(
+        () => settle(worker.dispatch("install")),
+        /lifecycle marker write failure/,
+    );
+    assert.equal(worker.skipWaitingCalls(), 0);
+});
+
+test("the lifecycle marker survives a worker global restart and first install does not enumerate clients", async () => {
+    const indexedDB = new IDBFactory();
+    const firstInstall = createWorker({ indexedDB });
+
+    await settle(firstInstall.dispatch("install"));
+
+    assert.equal(firstInstall.matchAllCalls(), 0);
+
+    const client = {
+        type: "window" as const,
+        url: `${ORIGIN}/login`,
+        navigate: async () => undefined,
+    };
+    const restartedWorker = createWorker({ indexedDB, active: {}, clients: [client] });
+
+    await settle(restartedWorker.dispatch("activate"));
+
+    assert.equal(restartedWorker.matchAllCalls(), 0);
+    assert.equal(restartedWorker.claims(), 1);
 });
 
 test("online navigation HTML is returned from network but never stored", async () => {
@@ -215,6 +288,8 @@ test("online navigation HTML is returned from network but never stored", async (
 
     assert.equal(await response?.text(), executableHtml);
     assert.equal(worker.fetches.length, 1);
+    assert.equal(worker.fetchInits.length, 1);
+    assert.equal(worker.fetchInits[0]?.cache, "no-store");
     assert.deepEqual(worker.cacheStorage.openedNames, []);
     assert.deepEqual(worker.cacheStorage.puts, []);
 });
@@ -285,24 +360,84 @@ test("the worker never intercepts or caches non-navigation requests", () => {
     assert.deepEqual(worker.cacheStorage.puts, []);
 });
 
-test("activation claims clients after attempting every owned cache deletion", async () => {
-    const worker = createWorker({
+test("update activation navigates old same-origin windows after attempting every owned cache deletion", async () => {
+    const indexedDB = new IDBFactory();
+    const navigated: string[] = [];
+    const clients = [
+        {
+            type: "window" as const,
+            url: `${ORIGIN}/room/one`,
+            navigate: async (url: string) => {
+                navigated.push(url);
+            },
+        },
+        {
+            type: "window" as const,
+            url: "https://accounts.example/login",
+            navigate: async (url: string) => {
+                navigated.push(url);
+            },
+        },
+    ];
+    const installingWorker = createWorker({ active: {}, indexedDB });
+
+    await settle(installingWorker.dispatch("install"));
+
+    const activatedWorker = createWorker({
+        active: {},
         cacheNames: ["sub-etha-shell-v7", "sub-etha-static-v8", "unrelated-old-worker-cache"],
+        clients,
+        indexedDB,
         rejectedCacheDeletes: ["sub-etha-shell-v7"],
     });
-    const activation = worker.dispatch("activate");
+    const activation = activatedWorker.dispatch("activate");
 
     assert.equal(activation.handled, true);
     assert.equal(activation.waits.length, 1);
     await settle(activation);
-    assert.deepEqual(await worker.cacheStorage.keys(), [
+    assert.deepEqual(await activatedWorker.cacheStorage.keys(), [
         "sub-etha-shell-v7",
         "unrelated-old-worker-cache",
     ]);
-    assert.deepEqual(worker.cacheStorage.deletedNames, ["sub-etha-shell-v7", "sub-etha-static-v8"]);
+    assert.deepEqual(activatedWorker.cacheStorage.deletedNames, [
+        "sub-etha-shell-v7",
+        "sub-etha-static-v8",
+    ]);
+    assert.equal(activatedWorker.claims(), 1);
+    assert.deepEqual(navigated, [`${ORIGIN}/room/one`]);
+    assert.deepEqual(activatedWorker.cacheStorage.openedNames, []);
+    assert.deepEqual(activatedWorker.cacheStorage.puts, []);
+});
+
+test("cache enumeration failure is best effort while claim and navigation continue", async () => {
+    const navigated: string[] = [];
+    const client = {
+        type: "window" as const,
+        url: `${ORIGIN}/room/one`,
+        navigate: async (url: string) => {
+            navigated.push(url);
+        },
+    };
+    const worker = createWorker({
+        active: {},
+        cacheKeysFailure: true,
+        clients: [client],
+    });
+
+    await settle(worker.dispatch("install"));
+    await settle(worker.dispatch("activate"));
+
     assert.equal(worker.claims(), 1);
-    assert.deepEqual(worker.cacheStorage.openedNames, []);
-    assert.deepEqual(worker.cacheStorage.puts, []);
+    assert.deepEqual(navigated, [client.url]);
+});
+
+test("client enumeration failure rejects activation before claim", async () => {
+    const worker = createWorker({ active: {}, matchAllFailure: true });
+
+    await settle(worker.dispatch("install"));
+
+    await assert.rejects(() => settle(worker.dispatch("activate")), /client enumeration failure/);
+    assert.equal(worker.claims(), 0);
 });
 
 test("registration bypasses HTTP cache and Vercel serves fixed worker headers", () => {
@@ -330,7 +465,7 @@ test("registration bypasses HTTP cache and Vercel serves fixed worker headers", 
     assert.deepEqual(
         Object.fromEntries(workerRules[0].headers.map(({ key, value }) => [key, value])),
         {
-            "Cache-Control": "public, max-age=0, must-revalidate",
+            "Cache-Control": "no-store, must-revalidate",
             "Content-Security-Policy":
                 "default-src 'none'; script-src 'self'; connect-src 'self'; object-src 'none'",
             "Content-Type": "application/javascript; charset=utf-8",

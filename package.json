@@ -9,6 +9,7 @@
         "dev": "vinext dev",
         "prebuild": "node scripts/apply-security-patches.mjs",
         "build": "vite build",
+        "postbuild": "node scripts/stamp-service-worker.mjs",
         "start": "node .output/server/index.mjs",
         "format": "prettier --write . --ignore-unknown",
         "format:check": "prettier --check . --ignore-unknown",

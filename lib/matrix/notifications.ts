@@ -228,10 +228,14 @@ export async function registerServiceWorker(): Promise<ServiceWorkerRegistration
     }
 
     // TypeScript's DOM signature has not yet adopted TrustedScriptURL, but browsers do.
-    await navigator.serviceWorker.register(scriptUrl as unknown as string, {
+    const registration = await navigator.serviceWorker.register(scriptUrl as unknown as string, {
         scope: "/",
         updateViaCache: "none",
     });
+
+    if (registration.active && typeof registration.update === "function") {
+        await registration.update().catch(() => undefined);
+    }
 
     return navigator.serviceWorker.ready;
 }

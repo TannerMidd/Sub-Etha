@@ -128,7 +128,6 @@ const cleanupDescriptorMatches = (
 export function SubEthaApp() {
     const [appState, setAppState] = useState<AppState>({ kind: "booting" });
     const [service, setService] = useState<MatrixService | null>(null);
-    const [waitingWorker, setWaitingWorker] = useState<ServiceWorker | null>(null);
     const [designPreview, setDesignPreview] = useState(false);
     const logoutInProgress = useRef(false);
     const operationGeneration = useRef(0);
@@ -726,63 +725,9 @@ export function SubEthaApp() {
             document.documentElement.dataset.theme = "dark";
         }
 
-        let registration: ServiceWorkerRegistration | null = null;
         let cancelled = false;
-        const installingWatchers = new Map<ServiceWorker, () => void>();
 
-        const stopWatchingInstalling = (worker: ServiceWorker) => {
-            const changed = installingWatchers.get(worker);
-
-            if (!changed) {
-                return;
-            }
-
-            worker.removeEventListener("statechange", changed);
-            installingWatchers.delete(worker);
-        };
-
-        const watchInstalling = () => {
-            const installing = registration?.installing;
-
-            if (!installing || installingWatchers.has(installing)) {
-                return;
-            }
-
-            const changed = () => {
-                if (installing.state === "installed" && navigator.serviceWorker.controller) {
-                    setWaitingWorker(registration?.waiting ?? installing);
-                }
-
-                if (
-                    installing.state === "installed" ||
-                    installing.state === "activated" ||
-                    installing.state === "redundant"
-                ) {
-                    stopWatchingInstalling(installing);
-                }
-            };
-
-            installingWatchers.set(installing, changed);
-            installing.addEventListener("statechange", changed);
-            changed();
-        };
-
-        void registerServiceWorker()
-            .then((nextRegistration) => {
-                if (cancelled) {
-                    return;
-                }
-
-                registration = nextRegistration;
-
-                if (registration?.waiting && navigator.serviceWorker.controller) {
-                    setWaitingWorker(registration.waiting);
-                }
-
-                registration?.addEventListener("updatefound", watchInstalling);
-                watchInstalling();
-            })
-            .catch(() => undefined);
+        void registerServiceWorker().catch(() => undefined);
 
         void (async () => {
             const operation = advanceOperation();
@@ -852,11 +797,6 @@ export function SubEthaApp() {
 
         return () => {
             cancelled = true;
-            registration?.removeEventListener("updatefound", watchInstalling);
-
-            for (const installing of installingWatchers.keys()) {
-                stopWatchingInstalling(installing);
-            }
         };
     }, [advanceOperation, prepareSetup, routeInspection]);
 
@@ -1428,19 +1368,6 @@ export function SubEthaApp() {
         await routeInspection(undefined, operation);
     };
 
-    const applyUpdate = () => {
-        if (!waitingWorker) {
-            return;
-        }
-
-        navigator.serviceWorker.addEventListener(
-            "controllerchange",
-            () => window.location.reload(),
-            { once: true },
-        );
-        waitingWorker.postMessage({ type: "SKIP_WAITING" });
-    };
-
     if (designPreview && DesignPreview) {
         return (
             <Suspense fallback={null}>
@@ -1555,25 +1482,7 @@ export function SubEthaApp() {
     }
 
     if (appState.kind === "connected" && service) {
-        return (
-            <>
-                <ChatShell service={service} onLogout={logout} />
-                {waitingWorker ? (
-                    <div className={classes("update-toast")} role="status">
-                        <RefreshCw />
-                        <span>
-                            <strong>A refreshed version is ready.</strong>
-                            <small>
-                                Update when you have finished composing anything important.
-                            </small>
-                        </span>
-                        <button type="button" onClick={applyUpdate}>
-                            Update now
-                        </button>
-                    </div>
-                ) : null}
-            </>
-        );
+        return <ChatShell service={service} onLogout={logout} />;
     }
 
     if (appState.kind === "duplicate") {
