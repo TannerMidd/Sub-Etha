@@ -1,4 +1,4 @@
-import { and, eq, lte, sql } from "drizzle-orm";
+import { and, eq, inArray, lte, sql } from "drizzle-orm";
 import { getDb } from "@/db";
 import { pushDeliveries, pushGlobalRateBudgets, pushSubscriptions } from "@/db/schema";
 
@@ -175,30 +175,15 @@ export const neonPushRepository: PushRepository = {
             return [];
         }
 
-        const rows = await getDb().execute<{
-            push_key_hash: string;
-            endpoint: string;
-            p256dh: string;
-            auth: string;
-        }>(sql`
-      SELECT
-        "push_key_hash",
-        "endpoint",
-        "p256dh",
-        "auth"
-      FROM "push_subscriptions"
-      WHERE "push_key_hash" IN ${sql.join(
-          pushKeyHashes.map((pushKeyHash) => sql`${pushKeyHash}`),
-          sql`, `,
-      )}
-    `);
-
-        return rows.rows.map((row) => ({
-            deliveryKeyHash: row.push_key_hash,
-            endpoint: row.endpoint,
-            p256dh: row.p256dh,
-            auth: row.auth,
-        }));
+        return getDb()
+            .select({
+                deliveryKeyHash: pushSubscriptions.pushKeyHash,
+                endpoint: pushSubscriptions.endpoint,
+                p256dh: pushSubscriptions.p256dh,
+                auth: pushSubscriptions.auth,
+            })
+            .from(pushSubscriptions)
+            .where(inArray(pushSubscriptions.pushKeyHash, pushKeyHashes));
     },
 
     async getManagedSubscription(managementKeyHash) {

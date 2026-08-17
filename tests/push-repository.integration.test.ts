@@ -106,6 +106,20 @@ test(
                     ?.deliveryKeyHash,
                 pushKeyHash,
             );
+            assert.deepEqual(
+                await neonPushRepository.getSubscriptions([
+                    pushKeyHash,
+                    `integration-missing-${suffix}`,
+                ]),
+                [
+                    {
+                        deliveryKeyHash: pushKeyHash,
+                        endpoint: `https://push.example.invalid/${suffix}`,
+                        p256dh: `${pushKeyHash}-p256dh`,
+                        auth: `${pushKeyHash}-auth`,
+                    },
+                ],
+            );
 
             assert.equal(
                 await neonPushRepository.consumeRateLimit(pushKeyHash, now, 60, 120),

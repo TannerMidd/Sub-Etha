@@ -1438,20 +1438,27 @@ async function registerGatewaySubscription(
         }
 
         if (!confirmationReceived) {
-            await Promise.race([
-                confirmation,
-                new Promise<void>((_resolve, reject) => {
-                    window.setTimeout(
-                        () =>
-                            reject(
-                                new Error("The browser did not confirm the push endpoint in time."),
-                            ),
-                        PUSH_CONFIRMATION_TIMEOUT_MS,
-                    );
-                }),
-            ]);
+            let confirmationTimeout = 0;
+
+            try {
+                await Promise.race([
+                    confirmation,
+                    new Promise<void>((resolve) => {
+                        confirmationTimeout = window.setTimeout(
+                            resolve,
+                            PUSH_CONFIRMATION_TIMEOUT_MS,
+                        );
+                    }),
+                ]);
+            } finally {
+                window.clearTimeout(confirmationTimeout);
+            }
         }
 
+        // A confirmed endpoint is already active at the gateway. Repeating the same registration
+        // is therefore an idempotent state probe when a mobile PWA drops the worker-to-page
+        // confirmation message. A still-pending result remains a failure for the caller's
+        // durable cleanup.
         const confirmed = await gatewayRequest("POST", body);
 
         if (confirmed.registered !== true) {

@@ -985,7 +985,11 @@ export function SettingsDialog({
                                     })
                                 }
                             >
-                                {pushState.checking ? "Checking" : pushState.enabled ? "On" : "Off"}
+                                {pushState.checking || busyAction === "push"
+                                    ? "Checking"
+                                    : pushState.enabled
+                                      ? "On"
+                                      : "Off"}
                             </button>
                         </div>
                     </div>

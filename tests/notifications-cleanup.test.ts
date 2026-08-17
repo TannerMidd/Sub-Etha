@@ -772,7 +772,7 @@ test("cleanup removes an in-flight subscription without clearing newer credentia
     assert.equal(fixture.storage.getItem("sub-etha-push-management-key"), "management-new");
 });
 
-type GatewayPostMode = "registered" | "pending" | "response-lost";
+type GatewayPostMode = "registered" | "pending" | "pending-always" | "response-lost";
 
 function installPushSetupFixture() {
     const storage = memoryStorage();
@@ -789,6 +789,7 @@ function installPushSetupFixture() {
     let lockTail: Promise<unknown> = Promise.resolve();
     let liveSubscription = false;
     let gatewayPostMode: GatewayPostMode = "registered";
+    let pageConfirmationDelivery = true;
     let gatewayDeleteFails = false;
     let removePusherFails = false;
     let pusherOperation: (pushKey: string) => Promise<void> = async () => undefined;
@@ -1029,15 +1030,21 @@ function installPushSetupFixture() {
                 throw new Error("gateway response lost after commit");
             }
 
-            if (gatewayPostMode === "pending" && gatewayPosts.length === 1) {
+            if (
+                (gatewayPostMode === "pending" && gatewayPosts.length === 1) ||
+                gatewayPostMode === "pending-always"
+            ) {
                 assert.equal(workerConfig?.generation, body.generation);
-                queueMicrotask(() => {
-                    for (const listener of pageMessageListeners) {
-                        listener({
-                            data: { type: "PUSH_SUBSCRIPTION_CONFIRMED" },
-                        } as MessageEvent);
-                    }
-                });
+
+                if (gatewayPosts.length === 1 && pageConfirmationDelivery) {
+                    queueMicrotask(() => {
+                        for (const listener of pageMessageListeners) {
+                            listener({
+                                data: { type: "PUSH_SUBSCRIPTION_CONFIRMED" },
+                            } as MessageEvent);
+                        }
+                    });
+                }
 
                 return new Response(JSON.stringify({ pending: true }), {
                     status: 202,
@@ -1092,6 +1099,9 @@ function installPushSetupFixture() {
         setGatewayPostMode: (value: GatewayPostMode) => {
             gatewayPostMode = value;
         },
+        setPageConfirmationDelivery: (value: boolean) => {
+            pageConfirmationDelivery = value;
+        },
         setWorkerProtocolVersion: (value: number | undefined) => {
             workerProtocolVersion = value;
         },
@@ -1129,6 +1139,36 @@ test("fresh enrollment installs provisional generation before a pending challeng
         fixture.operationOrder.indexOf("worker-set") <
             fixture.operationOrder.indexOf("gateway-post"),
     );
+    assert.equal(fixture.storage.getItem("sub-etha-push-cleanup-v1"), null);
+});
+
+test("fresh enrollment probes confirmed gateway state when the page message is lost", async () => {
+    const fixture = installPushSetupFixture();
+
+    fixture.setGatewayPostMode("pending");
+    fixture.setPageConfirmationDelivery(false);
+    const state = await enablePush(fixture.service);
+
+    assert.equal(state.enabled, true);
+    assert.equal(fixture.gatewayPosts.length, 2);
+    assert.deepEqual(fixture.gatewayPosts[1], fixture.gatewayPosts[0]);
+    assert.deepEqual(fixture.gatewayDeletes, []);
+    assert.equal(fixture.matrixPushers.length, 1);
+    assert.equal(fixture.storage.getItem("sub-etha-push-cleanup-v1"), null);
+});
+
+test("a still-pending fallback fails once and runs durable cleanup", async () => {
+    const fixture = installPushSetupFixture();
+
+    fixture.setGatewayPostMode("pending-always");
+    fixture.setPageConfirmationDelivery(false);
+
+    await assert.rejects(enablePush(fixture.service), /was not confirmed/i);
+    assert.equal(fixture.gatewayPosts.length, 2);
+    assert.deepEqual(fixture.gatewayPosts[1], fixture.gatewayPosts[0]);
+    assert.equal(fixture.gatewayDeletes.length, 1);
+    assert.equal(fixture.storage.getItem("sub-etha-push-delivery-key"), null);
+    assert.equal(fixture.storage.getItem("sub-etha-push-management-key"), null);
     assert.equal(fixture.storage.getItem("sub-etha-push-cleanup-v1"), null);
 });
 
