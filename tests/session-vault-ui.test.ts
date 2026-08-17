@@ -274,7 +274,7 @@ test("app cleanup ordering preserves local finality and partial migration recove
     assert.match(source, /inspection\.kind !== "empty"[\s\S]*hasPendingLocalPushCleanup\(\)/);
     assert.match(
         source,
-        /await nextService\.start\(\);[\s\S]*hasPendingLocalPushCleanup\(\)[\s\S]*forgetLocalPushState\(nextService\)/,
+        /await nextService\.start\(\);[\s\S]*hasPendingLocalPushCleanup\(\)[\s\S]*forgetLocalPushState\(nextService,\s*\{\s*abandonMatrixPusherAfterGatewayCleanup: true,\s*\}\)/,
     );
     assert.match(source, /abandonMatrixPusherAfterGatewayCleanup: true/);
     assert.match(

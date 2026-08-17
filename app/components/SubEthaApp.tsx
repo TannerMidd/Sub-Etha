@@ -633,7 +633,9 @@ export function SubEthaApp() {
                 await nextService.start();
 
                 if (hasPendingLocalPushCleanup()) {
-                    const cleanup = await forgetLocalPushState(nextService);
+                    const cleanup = await forgetLocalPushState(nextService, {
+                        abandonMatrixPusherAfterGatewayCleanup: true,
+                    });
 
                     if (!cleanup.complete) {
                         throw new Error(
