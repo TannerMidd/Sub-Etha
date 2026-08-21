@@ -681,6 +681,14 @@ test("pusher-abandonment policy survives a failed gateway cleanup and reload", a
     });
 
     assert.equal(first.complete, false);
+    assert.equal(first.matrixPusherAbandoned, undefined);
+    const marker = JSON.parse(fixture.storage.getItem("sub-etha-push-cleanup-v1") ?? "{}") as {
+        pusherDone?: boolean;
+    };
+
+    assert.equal(marker.pusherDone, false);
+    assert.equal(fixture.storage.getItem("sub-etha-matrix-pusher-abandoned-warning-v1"), null);
+    assert.equal(readAbandonedMatrixPusherWarning(), null);
     assert.match(
         fixture.storage.getItem("sub-etha-push-cleanup-v1") ?? "",
         /"allowPusherAbandonment":true/,

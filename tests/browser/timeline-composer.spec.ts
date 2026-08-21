@@ -11,6 +11,13 @@ const FAILURE_PREVIEW_URL =
 // scroller edge itself.
 const MESSAGE_COMPOSER_CLEARANCE_PX = 0;
 const SUBPIXEL_TOLERANCE_PX = 0.5;
+const DETACHED_SCROLL_MARGIN_PX = 32;
+const DIRECT_SCROLL_DISTANCE_PX = 240;
+// Virtuoso publishes at-bottom changes through a deliberate 50ms throttle;
+// four animation frames covers that public callback plus the React commit.
+const DIRECT_SCROLL_FRAME_BUDGET = 4;
+const PREPEND_ANCHOR_TOLERANCE_PX = 4;
+const MAX_VISIBLE_FRAME_JERK_PX = 8;
 
 interface TextareaMetrics {
     height: number;
@@ -23,6 +30,15 @@ interface TimelineMotionSample {
     rowTop: number | null;
     stageHeight: number | null;
     typingHeight: number | null;
+}
+
+interface TimelineGeometrySample {
+    mode: string | null;
+    paginationState: string | null;
+    firstItemIndex: number | null;
+    scrollTop: number;
+    bottomDistance: number;
+    rowTops: Record<string, number>;
 }
 
 async function startTimelineMotionProbe(page: Page, eventId: string): Promise<string> {
@@ -108,6 +124,102 @@ function motionExcursion(samples: TimelineMotionSample[], key: keyof TimelineMot
         .filter((value): value is number => value !== null);
 
     return values.length ? Math.max(...values) - Math.min(...values) : Number.POSITIVE_INFINITY;
+}
+
+async function startTimelineGeometryProbe(page: Page): Promise<string> {
+    const key = `geometry-${Date.now()}-${Math.random()}`;
+
+    await page.evaluate((probeKey) => {
+        type GeometryProbe = {
+            frame: number;
+            samples: TimelineGeometrySample[];
+        };
+        const probeWindow = window as typeof window & {
+            __timelineGeometryProbes?: Record<string, GeometryProbe>;
+        };
+        const probes = (probeWindow.__timelineGeometryProbes ??= {});
+        const probe: GeometryProbe = { frame: 0, samples: [] };
+
+        const record = () => {
+            const scroller = document.querySelector<HTMLElement>('[data-virtuoso-scroller="true"]');
+            const timeline = document.querySelector<HTMLElement>('[data-ui="timeline"]');
+
+            if (scroller) {
+                const rowTops: Record<string, number> = {};
+
+                for (const row of scroller.querySelectorAll<HTMLElement>("[data-event-id]")) {
+                    const id = row.dataset.eventId;
+
+                    if (id) {
+                        rowTops[id] = row.getBoundingClientRect().top;
+                    }
+                }
+
+                probe.samples.push({
+                    mode: timeline?.dataset.scrollMode ?? null,
+                    paginationState: timeline?.dataset.paginationState ?? null,
+                    firstItemIndex: timeline?.dataset.firstItemIndex
+                        ? Number.parseInt(timeline.dataset.firstItemIndex, 10)
+                        : null,
+                    scrollTop: scroller.scrollTop,
+                    bottomDistance:
+                        scroller.scrollHeight - scroller.clientHeight - scroller.scrollTop,
+                    rowTops,
+                });
+            }
+
+            probe.frame = window.requestAnimationFrame(record);
+        };
+
+        probes[probeKey] = probe;
+        record();
+    }, key);
+
+    return key;
+}
+
+async function stopTimelineGeometryProbe(
+    page: Page,
+    key: string,
+): Promise<TimelineGeometrySample[]> {
+    return page.evaluate((probeKey) => {
+        type GeometryProbe = {
+            frame: number;
+            samples: TimelineGeometrySample[];
+        };
+        const probeWindow = window as typeof window & {
+            __timelineGeometryProbes?: Record<string, GeometryProbe>;
+        };
+        const probe = probeWindow.__timelineGeometryProbes?.[probeKey];
+
+        if (!probe) {
+            return [];
+        }
+
+        window.cancelAnimationFrame(probe.frame);
+        delete probeWindow.__timelineGeometryProbes?.[probeKey];
+
+        return probe.samples;
+    }, key);
+}
+
+function maxCommonRowFrameDelta(samples: TimelineGeometrySample[]): number {
+    let maximum = 0;
+
+    for (let sampleIndex = 1; sampleIndex < samples.length; sampleIndex += 1) {
+        const previous = samples[sampleIndex - 1]?.rowTops ?? {};
+        const current = samples[sampleIndex]?.rowTops ?? {};
+
+        for (const [id, top] of Object.entries(current)) {
+            const previousTop = previous[id];
+
+            if (previousTop !== undefined) {
+                maximum = Math.max(maximum, Math.abs(top - previousTop));
+            }
+        }
+    }
+
+    return maximum;
 }
 
 async function openPreview(page: Page, url = PREVIEW_URL): Promise<void> {
@@ -650,7 +762,9 @@ test.describe("composer regression coverage", () => {
         );
         await expectNewestMessageClearOfComposer(page, "stress-remote-append");
 
-        await wheelTimeline(scroller, -1_800);
+        await scroller.evaluate((element) => {
+            element.scrollTop = Math.max(0, element.scrollTop - 1_800);
+        });
         await expect(timeline).toHaveAttribute("data-scroll-mode", "detached");
         const before = await visibleEventAnchor(scroller);
 
@@ -700,204 +814,152 @@ test.describe("composer regression coverage", () => {
     });
 });
 
-test("immediate upward scrolling is never overridden by delayed bottom positioning", async ({
+test("direct scroll away from bottom detaches and ignores later geometry changes", async ({
     page,
 }) => {
-    await page.addInitScript(() => {
-        type UpwardScrollSample = {
-            time: number;
-            mode: string | null;
-            bottomDistance: number;
-            firstVisibleIndex: number | null;
-        };
-        const probeWindow = window as typeof window & {
-            __upwardScrollSamples?: UpwardScrollSample[];
-        };
-
-        probeWindow.__upwardScrollSamples = [];
-
-        const sample = () => {
-            const scroller = document.querySelector<HTMLElement>('[data-virtuoso-scroller="true"]');
-            const timeline = document.querySelector<HTMLElement>('[data-ui="timeline"]');
-
-            if (scroller) {
-                const bounds = scroller.getBoundingClientRect();
-                const firstVisible = [...scroller.querySelectorAll<HTMLElement>("[data-event-id]")]
-                    .filter((row) => {
-                        const rowBounds = row.getBoundingClientRect();
-
-                        return rowBounds.bottom > bounds.top && rowBounds.top < bounds.bottom;
-                    })
-                    .sort(
-                        (left, right) =>
-                            left.getBoundingClientRect().top - right.getBoundingClientRect().top,
-                    )[0];
-                const match = firstVisible?.dataset.eventId?.match(/^stress-(\d+)$/);
-
-                probeWindow.__upwardScrollSamples?.push({
-                    time: performance.now(),
-                    mode: timeline?.dataset.scrollMode ?? null,
-                    bottomDistance:
-                        scroller.scrollHeight - scroller.clientHeight - scroller.scrollTop,
-                    firstVisibleIndex: match ? Number.parseInt(match[1], 10) : null,
-                });
-            }
-
-            window.requestAnimationFrame(sample);
-        };
-
-        window.requestAnimationFrame(sample);
-    });
-    await page.goto(STRESS_PREVIEW_URL, { waitUntil: "domcontentloaded" });
+    test.slow();
+    await openPreview(page, STRESS_PREVIEW_URL);
 
     const timeline = page.locator('[data-ui="timeline"]');
     const scroller = page.locator('[data-virtuoso-scroller="true"]');
 
-    await scroller.waitFor({ state: "visible" });
-    const bounds = await scroller.boundingBox();
+    await expect(timeline).toHaveAttribute("data-scroll-mode", "attached");
 
-    expect(bounds).not.toBeNull();
-    await page.mouse.move(
-        (bounds?.x ?? 0) + (bounds?.width ?? 0) / 2,
-        (bounds?.y ?? 0) + (bounds?.height ?? 0) / 2,
-    );
-    const gestureStartedAt = await page.evaluate(() => performance.now());
+    const directScroll = await scroller.evaluate(async (element, distance) => {
+        const start = element.scrollTop;
+        const target = Math.max(0, start - distance);
+        const samples: Array<{ scrollTop: number; mode: string | null; bottomDistance: number }> =
+            [];
 
-    for (let gesture = 0; gesture < 20; gesture += 1) {
-        await page.mouse.wheel(0, -180);
-    }
+        // This is deliberately a direct DOM scroll position change. It
+        // does not synthesize wheel, touch, pointer, or keyboard ownership.
+        element.scrollTop = target;
 
-    const gestureEndedAt = await page.evaluate(() => performance.now());
+        for (let frame = 0; frame < 8; frame += 1) {
+            await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
+            const timelineRoot = document.querySelector<HTMLElement>('[data-ui="timeline"]');
 
-    await page.waitForTimeout(200);
-    const samples = await page.evaluate(
-        ({ startedAt, endedAt }) => {
-            const probeWindow = window as typeof window & {
-                __upwardScrollSamples?: Array<{
-                    time: number;
-                    mode: string | null;
-                    bottomDistance: number;
-                    firstVisibleIndex: number | null;
-                }>;
-            };
+            samples.push({
+                scrollTop: element.scrollTop,
+                mode: timelineRoot?.dataset.scrollMode ?? null,
+                bottomDistance: element.scrollHeight - element.clientHeight - element.scrollTop,
+            });
+        }
 
-            return (probeWindow.__upwardScrollSamples ?? []).filter(
-                (sample) => sample.time >= startedAt && sample.time <= endedAt + 100,
-            );
-        },
-        { startedAt: gestureStartedAt, endedAt: gestureEndedAt },
-    );
-    const detachedAwayIndex = samples.findIndex(
-        (sample) => sample.mode === "detached" && sample.bottomDistance > 200,
+        return { start, target, samples };
+    }, DIRECT_SCROLL_DISTANCE_PX);
+
+    expect(directScroll.target).toBeLessThan(directScroll.start - 100);
+    const changedIndex = directScroll.samples.findIndex(
+        (sample) => sample.scrollTop < directScroll.start - 100,
     );
 
-    expect(detachedAwayIndex).toBeGreaterThanOrEqual(0);
-    const afterDetaching = samples.slice(detachedAwayIndex);
+    expect(changedIndex).toBeGreaterThanOrEqual(0);
+    const detachedIndex = directScroll.samples.findIndex((sample) => sample.mode === "detached");
 
-    expect(Math.min(...afterDetaching.map((sample) => sample.bottomDistance))).toBeGreaterThan(14);
+    expect(detachedIndex).toBeGreaterThanOrEqual(0);
+    expect(detachedIndex).toBeLessThanOrEqual(changedIndex + DIRECT_SCROLL_FRAME_BUDGET);
+    expect(
+        Math.min(
+            ...directScroll.samples.slice(detachedIndex).map((sample) => sample.bottomDistance),
+        ),
+    ).toBeGreaterThan(DETACHED_SCROLL_MARGIN_PX);
 
-    const visibleIndices = afterDetaching
-        .map((sample) => sample.firstVisibleIndex)
-        .filter((index): index is number => index !== null);
-    const largestJumpTowardNewer = visibleIndices.reduce(
-        (largest, index, sampleIndex) =>
-            sampleIndex === 0
-                ? largest
-                : Math.max(largest, index - visibleIndices[sampleIndex - 1]),
-        0,
+    const mutationCountAtDetach = await page.evaluate(
+        () =>
+            (window as typeof window & { __previewTimelineMutationCount?: number })
+                .__previewTimelineMutationCount ?? 0,
     );
 
-    expect(largestJumpTowardNewer).toBeLessThanOrEqual(1);
+    await expect
+        .poll(
+            () =>
+                page.evaluate(
+                    () =>
+                        (window as typeof window & { __previewTimelineMutationCount?: number })
+                            .__previewTimelineMutationCount ?? 0,
+                ),
+            { timeout: 4_000 },
+        )
+        .toBeGreaterThan(mutationCountAtDetach);
+    await expect(timeline).toHaveAttribute("data-item-count", "121", { timeout: 4_000 });
     await expect(timeline).toHaveAttribute("data-scroll-mode", "detached");
+
+    expect(
+        await scroller.evaluate(
+            (element) => element.scrollHeight - element.clientHeight - element.scrollTop,
+        ),
+    ).toBeGreaterThan(DETACHED_SCROLL_MARGIN_PX);
 });
 
-test("mobile momentum remains user-owned through viewport and row measurement changes", async ({
+test("slow fractional direct scrolling stays detached from the live edge", async ({
     page,
 }, testInfo) => {
-    test.skip(testInfo.project.name !== "mobile-390", "Mobile momentum regression");
+    test.skip(testInfo.project.name !== "mobile-390", "Mobile fractional scroll regression");
     await openPreview(page, STRESS_PREVIEW_URL);
 
     const timeline = page.locator('[data-ui="timeline"]');
 
     await expect(timeline).toHaveAttribute("data-scroll-mode", "attached");
-    const viewport = page.viewportSize();
+    const samples = await page
+        .locator('[data-virtuoso-scroller="true"]')
+        .evaluate(async (element) => {
+            let target = element.scrollTop;
+            const start = target;
+            const samples: Array<{
+                scrollTop: number;
+                mode: string | null;
+                bottomDistance: number;
+            }> = [];
 
-    expect(viewport).not.toBeNull();
-    const momentum = page.evaluate(async () => {
-        const element = document.querySelector<HTMLElement>('[data-virtuoso-scroller="true"]');
+            for (let frame = 0; frame < 160; frame += 1) {
+                // Keep the target fractional across assignments. Blink rounds a
+                // single subpixel scrollTop write, so repeatedly writing
+                // `current - 0.4` would not move the scroller at all.
+                target -= 0.4;
+                element.scrollTop = Math.max(0, target);
 
-        if (!element) {
-            throw new Error("Timeline scroller is missing.");
-        }
+                await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
 
-        const sample = () => {
-            const bounds = element.getBoundingClientRect();
-            const firstVisible = [...element.querySelectorAll<HTMLElement>("[data-event-id]")]
-                .filter((row) => {
-                    const rowBounds = row.getBoundingClientRect();
+                const timelineRoot = document.querySelector<HTMLElement>('[data-ui="timeline"]');
 
-                    return rowBounds.bottom > bounds.top && rowBounds.top < bounds.bottom;
-                })
-                .sort(
-                    (left, right) =>
-                        left.getBoundingClientRect().top - right.getBoundingClientRect().top,
-                )[0];
-            const match = firstVisible?.dataset.eventId?.match(/^stress-(\d+)$/);
+                samples.push({
+                    scrollTop: element.scrollTop,
+                    mode: timelineRoot?.dataset.scrollMode ?? null,
+                    bottomDistance: element.scrollHeight - element.clientHeight - element.scrollTop,
+                });
+            }
 
-            return {
-                bottomDistance: element.scrollHeight - element.clientHeight - element.scrollTop,
-                firstVisibleIndex: match ? Number.parseInt(match[1], 10) : null,
-            };
-        };
+            return { start, samples };
+        });
 
-        const samples = [sample()];
-
-        element.dispatchEvent(
-            new WheelEvent("wheel", { bubbles: true, cancelable: true, deltaY: -180 }),
-        );
-        element.scrollTop = Math.max(0, element.scrollTop - 180);
-
-        for (let frame = 0; frame < 24; frame += 1) {
-            await new Promise<void>((resolve) => window.setTimeout(resolve, 40));
-            element.scrollTop = Math.max(0, element.scrollTop - 24);
-            samples.push(sample());
-        }
-
-        return samples;
-    });
-
-    await page.waitForTimeout(240);
-
-    if (viewport) {
-        await page.setViewportSize({ width: viewport.width, height: viewport.height - 96 });
-        await page.waitForTimeout(220);
-        await page.setViewportSize(viewport);
-    }
-
-    const samples = await momentum;
-    const movedAwayIndex = samples.findIndex((sample) => sample.bottomDistance > 200);
-
-    expect(movedAwayIndex).toBeGreaterThanOrEqual(0);
-    const afterMovingAway = samples.slice(movedAwayIndex);
-
-    expect(Math.min(...afterMovingAway.map((sample) => sample.bottomDistance))).toBeGreaterThan(14);
-    const visibleIndices = afterMovingAway
-        .map((sample) => sample.firstVisibleIndex)
-        .filter((index): index is number => index !== null);
-    const largestJumpTowardNewer = visibleIndices.reduce(
-        (largest, index, sampleIndex) =>
-            sampleIndex === 0
-                ? largest
-                : Math.max(largest, index - visibleIndices[sampleIndex - 1]),
-        0,
+    const changedIndex = samples.samples.findIndex(
+        (sample) => sample.scrollTop < samples.start - 8,
     );
 
-    expect(largestJumpTowardNewer).toBeLessThanOrEqual(1);
-    await page.waitForTimeout(250);
+    expect(changedIndex).toBeGreaterThanOrEqual(0);
+    expect(samples.start - samples.samples.at(-1)!.scrollTop).toBeGreaterThanOrEqual(32);
+    const detachedIndex = samples.samples.findIndex((sample) => sample.mode === "detached");
+
+    expect(detachedIndex).toBeGreaterThanOrEqual(0);
+    expect(detachedIndex).toBeLessThanOrEqual(changedIndex + DIRECT_SCROLL_FRAME_BUDGET);
+
+    const awayIndex = samples.samples.findIndex(
+        (sample) => sample.bottomDistance > DETACHED_SCROLL_MARGIN_PX,
+    );
+
+    expect(awayIndex).toBeGreaterThanOrEqual(0);
+    expect(samples.samples.slice(awayIndex).some((sample) => sample.mode === "attached")).toBe(
+        false,
+    );
     await expect(timeline).toHaveAttribute("data-scroll-mode", "detached");
 });
 
-test("a planted touch keeps older-message intent until the contact ends", async ({
+/*
+ * Keep this historical touch test separate from the direct-scroll regression:
+ * it exercises a held contact, not post-release inertial physics.
+ */
+test("a held touch that reaches the physical bottom reports attached", async ({
     page,
 }, testInfo) => {
     test.skip(testInfo.project.name !== "mobile-390", "Mobile touch ownership regression");
@@ -973,79 +1035,74 @@ test("a planted touch keeps older-message intent until the contact ends", async 
             ),
         )
         .toBeLessThanOrEqual(2);
-    await expect(timeline).toHaveAttribute("data-scroll-mode", "detached");
+    await expect(timeline).toHaveAttribute("data-scroll-mode", "attached");
 
     await session.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
     await session.detach();
 });
 
-test("scrolling up into unmeasured history never lurches the visible rows", async ({ page }) => {
+test("history prepend preserves its anchor and bounds visible frame jerk", async ({ page }) => {
+    test.slow();
     await openPreview(page, STRESS_PREVIEW_URL);
 
+    const timeline = page.locator('[data-ui="timeline"]');
     const scroller = page.locator('[data-virtuoso-scroller="true"]');
 
-    // Let the preview's delayed decryption and late attachment land first, so
-    // this measures steady-state reading rather than fixture start-up.
+    // Let the fixture's delayed content settle before measuring the prepend;
+    // the probe should cover the firstItemIndex transition itself, not startup.
     await page.waitForTimeout(2_500);
+    await expect(timeline).toHaveAttribute("data-first-item-index", "1000000");
 
-    // Sample every rendered row's screen position each frame. Reading upward
-    // should only ever move rows downward; any upward jerk is the timeline
-    // correcting a row-height estimate after it has already been painted.
-    await page.evaluate(() => {
-        const testWindow = window as typeof window & {
-            __timelineLurch?: number;
-            __timelineLurchFrame?: number;
-        };
-        let previous = new Map<string, number>();
+    const geometryProbe = await startTimelineGeometryProbe(page);
 
-        testWindow.__timelineLurch = 0;
+    await scrollTimelineTo(scroller, "top");
+    await expect(timeline).toHaveAttribute("data-pagination-state", "loading");
+    const anchorBefore = await visibleEventAnchor(scroller);
 
-        const sample = () => {
-            const current = new Map<string, number>();
+    await expect(timeline).toHaveAttribute("data-first-item-index", "999960");
+    await expect(timeline).toHaveAttribute("data-item-count", "161");
+    await page.waitForTimeout(350);
 
-            for (const row of document.querySelectorAll<HTMLElement>("[data-event-id]")) {
-                current.set(row.dataset.eventId ?? "", row.getBoundingClientRect().top);
-            }
+    const samples = await stopTimelineGeometryProbe(page, geometryProbe);
+    const stablePrependIndex = samples.findIndex((sample, sampleIndex) => {
+        const next = samples[sampleIndex + 1];
+        const anchorTop = sample.rowTops["stress-80"];
+        const nextAnchorTop = next?.rowTops["stress-80"];
 
-            for (const [id, top] of current) {
-                const before = previous.get(id);
-
-                if (before !== undefined) {
-                    testWindow.__timelineLurch = Math.max(
-                        testWindow.__timelineLurch ?? 0,
-                        before - top,
-                    );
-                }
-            }
-
-            previous = current;
-            testWindow.__timelineLurchFrame = window.requestAnimationFrame(sample);
-        };
-
-        testWindow.__timelineLurchFrame = window.requestAnimationFrame(sample);
+        return (
+            sample.firstItemIndex === 999960 &&
+            next?.firstItemIndex === 999960 &&
+            anchorTop !== undefined &&
+            nextAnchorTop !== undefined &&
+            Math.abs(nextAnchorTop - anchorTop) <= MAX_VISIBLE_FRAME_JERK_PX
+        );
     });
 
-    for (let pass = 0; pass < 16; pass += 1) {
-        await wheelTimeline(scroller, -420);
-        await page.waitForTimeout(160);
-    }
+    expect(stablePrependIndex).toBeGreaterThan(0);
 
-    const lurch = await page.evaluate(() => {
-        const testWindow = window as typeof window & {
-            __timelineLurch?: number;
-            __timelineLurchFrame?: number;
-        };
+    const afterAnchor = samples
+        .slice(stablePrependIndex, stablePrependIndex + 12)
+        .map((sample) => sample.rowTops["stress-80"])
+        .filter((top): top is number => top !== undefined);
 
-        window.cancelAnimationFrame(testWindow.__timelineLurchFrame ?? 0);
+    expect(afterAnchor.length).toBeGreaterThanOrEqual(2);
 
-        return testWindow.__timelineLurch ?? 0;
-    });
+    const afterMedian = afterAnchor[Math.floor(afterAnchor.length / 2)] ?? 0;
 
-    // Estimate corrections are inherent to virtualization, so this guards
-    // their magnitude rather than their existence. Per-item heightEstimates
-    // hold this to roughly 91px wide and 231px compact; a flat estimate for
-    // every row put it over 600px.
-    expect(lurch).toBeLessThan(400);
+    expect(
+        Math.abs(afterMedian - anchorBefore.top),
+        `history anchor moved from ${anchorBefore.top}px to ${afterMedian}px`,
+    ).toBeLessThanOrEqual(PREPEND_ANCHOR_TOLERANCE_PX);
+
+    // The frames before this point include the intentional wheel travel and
+    // Virtuoso's logical scrollTop increase by the newly prepended height. Only
+    // screen-space row motion after the preserved anchor has stabilized counts
+    // as a visible jerk.
+    const postCommitSamples = samples.slice(stablePrependIndex, stablePrependIndex + 10);
+
+    expect(maxCommonRowFrameDelta(postCommitSamples)).toBeLessThanOrEqual(
+        MAX_VISIBLE_FRAME_JERK_PX,
+    );
 });
 
 test("rapid real scrolling never swaps messages for seek skeletons or reattaches", async ({
@@ -1180,7 +1237,10 @@ test("failed history loading exposes retry without concurrent pagination", async
     await page.waitForTimeout(700);
     const anchorAfter = await waitForMessageTop(page, anchorBefore.id);
 
-    expect(Math.abs(anchorAfter - anchorBefore.top)).toBeLessThanOrEqual(2);
+    expect(
+        Math.abs(anchorAfter - anchorBefore.top),
+        `retry prepend moved ${anchorBefore.id} from ${anchorBefore.top}px to ${anchorAfter}px`,
+    ).toBeLessThanOrEqual(MAX_VISIBLE_FRAME_JERK_PX);
 });
 
 test("top pagination preserves the reading anchor, exhausts history, and keeps the newest message reachable", async ({
@@ -1227,8 +1287,12 @@ test("top pagination preserves the reading anchor, exhausts history, and keeps t
     await expect(timeline).toHaveAttribute("data-first-item-index", "999920");
     await expect(timeline).toHaveAttribute("data-item-count", "201");
 
-    await scrollTimelineTo(scroller, "bottom");
-    await expect(page.locator('[data-event-id="stress-remote-append"]')).toBeVisible();
+    await expect(timeline).toHaveAttribute("data-scroll-mode", "detached");
+    await expect(page.locator('[data-event-id="stress-remote-append"]')).not.toBeVisible();
+    await scroller.evaluate((element) => {
+        element.scrollTop = element.scrollHeight;
+    });
+    await expect(timeline).toHaveAttribute("data-scroll-mode", "attached");
     await expectNewestMessageClearOfComposer(page, "stress-remote-append");
 });
 
@@ -1251,26 +1315,20 @@ test("a local send stays attached while an earlier-history request completes", a
     await expect(timeline).toHaveAttribute("data-scroll-mode", "attached");
 });
 
-test("a local send reaches the live edge during the scroll-end window", async ({ page }) => {
+test("a local send reattaches after direct detachment", async ({ page }) => {
     await openPreview(page, STRESS_PREVIEW_URL);
 
     const timeline = page.locator('[data-ui="timeline"]');
     const scroller = page.locator('[data-virtuoso-scroller="true"]');
     const textarea = page.locator("#message-composer");
 
-    await textarea.fill("Follow this transmission despite the unsettled gesture.");
-    await scroller.evaluate((element) => {
-        const pointerOptions = {
-            bubbles: true,
-            cancelable: true,
-            pointerId: 41,
-            pointerType: "touch",
-        };
-
-        element.dispatchEvent(new PointerEvent("pointerdown", { ...pointerOptions, clientY: 200 }));
-        element.dispatchEvent(new PointerEvent("pointermove", { ...pointerOptions, clientY: 220 }));
-        element.scrollTop = Math.max(0, element.scrollHeight - element.clientHeight - 220);
-    });
+    // The direct-detach regression above owns late fixture updates. Settle them
+    // here so this test isolates the local-append reattachment contract.
+    await page.waitForTimeout(2_500);
+    await textarea.fill("Follow this transmission after direct detachment.");
+    await scroller.evaluate((element, distance) => {
+        element.scrollTop = Math.max(0, element.scrollHeight - element.clientHeight - distance);
+    }, DIRECT_SCROLL_DISTANCE_PX);
     await expect(timeline).toHaveAttribute("data-scroll-mode", "detached");
     expect(
         await scroller.evaluate(
@@ -1278,30 +1336,10 @@ test("a local send reaches the live edge during the scroll-end window", async ({
         ),
     ).toBeGreaterThan(200);
 
-    // Send while the planted pointer keeps user-scroll ownership active, then
-    // let Virtuoso finish measuring the append before ending the gesture.
-    await textarea.evaluate((element) => {
-        element.dispatchEvent(
-            new KeyboardEvent("keydown", {
-                bubbles: true,
-                cancelable: true,
-                key: "Enter",
-            }),
-        );
-    });
+    await page.getByRole("button", { name: "Send message" }).click();
 
     await expect(timeline).toHaveAttribute("data-scroll-mode", "attached");
     await expect(page.locator('[data-event-id="stress-local-1"]')).toBeAttached();
-    await page.waitForTimeout(300);
-    await scroller.evaluate((element) => {
-        element.dispatchEvent(
-            new PointerEvent("pointerup", {
-                bubbles: true,
-                pointerId: 41,
-                pointerType: "touch",
-            }),
-        );
-    });
     await expectNewestMessageClearOfComposer(page, "stress-local-1");
 });
 

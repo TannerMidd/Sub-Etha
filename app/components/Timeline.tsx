@@ -14,6 +14,7 @@ import {
 } from "react";
 import type { CSSProperties, PointerEvent as ReactPointerEvent } from "react";
 import { Virtuoso } from "react-virtuoso";
+import type { ListItem, VirtuosoHandle } from "react-virtuoso";
 import {
     CheckCheck,
     ChevronLeft,
@@ -46,7 +47,6 @@ import {
     type ViewerSize,
 } from "@/lib/image-viewer";
 import {
-    isTimelineYouTubePreviewEligible,
     timelineYouTubePreviews,
     youtubePreviewLayout,
     youtubeThumbnailFailureStore,
@@ -95,24 +95,7 @@ const TIMELINE_COMPACT_BREAKPOINT_PX = 720;
 const TIMELINE_ESTIMATED_MEDIA_GUTTER_PX = 70;
 const TIMELINE_MAX_ESTIMATED_MEDIA_WIDTH_PX = 520;
 const TIMELINE_MOBILE_ACTION_ROW_HEIGHT_PX = 44;
-const HISTORY_ANCHOR_MIN_SETTLE_MS = 120;
-// Slow devices can continue delivering Virtuoso height corrections well after
-// the first stable frames. Keep the anchor live long enough to absorb those
-// late measurements; any real user gesture still cancels or defers restoration.
-const HISTORY_ANCHOR_MAX_SETTLE_MS = 1_500;
-const HISTORY_ANCHOR_STABLE_FRAMES = 4;
-const HISTORY_COMMIT_GRACE_FRAMES = 4;
-const HISTORY_COMMIT_GRACE_MAX_MS = 250;
-// Trackpad and wheel bursts can arrive farther apart on a busy or low-power
-// device. Do not hand geometry correction back to the list between events that
-// still belong to the same gesture.
-const USER_SCROLL_END_DELAY_MS = 600;
 const TIMELINE_BOTTOM_TOLERANCE_PX = 2;
-const NEWEST_MESSAGE_MIN_SETTLE_MS = 200;
-const NEWEST_MESSAGE_MAX_SETTLE_MS = 2_000;
-const NEWEST_MESSAGE_STABLE_FRAMES = 3;
-
-type UserScrollDirection = -1 | 0 | 1;
 
 const AUTHOR_ACCENTS = [
     "var(--participant-steel)",
@@ -261,13 +244,6 @@ interface TimelineVirtuosoContext {
     requestEarlierHistory: () => void;
 }
 
-interface TimelineHistoryAnchor {
-    id: string;
-    index: number;
-    target: "event" | "item";
-    top: number;
-}
-
 /*
  * The rhythm of the placeholder rows. Uneven line lengths, and rows that vary
  * between one body line and two, read as a conversation rather than as a table;
@@ -383,14 +359,6 @@ const TIMELINE_COMPONENTS = {
     Header: TimelineHistoryHeader,
     Footer: TimelineFooter,
 };
-
-function isEditableKeyboardTarget(target: EventTarget | null): boolean {
-    if (!(target instanceof HTMLElement)) {
-        return false;
-    }
-
-    return target.isContentEditable || ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName);
-}
 
 function formatTime(timestamp: number): string {
     return new Intl.DateTimeFormat(undefined, {
@@ -1914,192 +1882,154 @@ export function Timeline({
     const enterTrackingReady = useRef(false);
     const enterTimers = useRef<Map<string, number>>(new Map());
     const lightboxOpener = useRef<HTMLElement | null>(null);
-    const scroller = useRef<HTMLElement | null>(null);
-    const removeScrollerListeners = useRef<(() => void) | null>(null);
+    const virtuosoRef = useRef<VirtuosoHandle | null>(null);
+    const scrollerElement = useRef<HTMLElement | null>(null);
+    const removeScrollerListener = useRef<(() => void) | null>(null);
+    const scrollerResizeObserver = useRef<ResizeObserver | null>(null);
+    const scrollerResizeFrame = useRef<number | null>(null);
     const scrollModeRef = useRef<TimelineScrollMode>("initializing");
     const previousItems = useRef<TimelineIdentity[]>([]);
     const previousFirstItemIndex = useRef(firstItemIndex);
-    const historyAnchor = useRef<TimelineHistoryAnchor | null>(null);
-    const historyAnchorFrame = useRef<number | null>(null);
-    const historyRestoreDeferred = useRef(false);
-    const detachedViewportAnchor = useRef<TimelineHistoryAnchor | null>(null);
-    const detachedRestoreFrame = useRef<number | null>(null);
     const historyRequestInFlight = useRef(false);
-    const historyRequestGeneration = useRef(0);
-    const touchY = useRef<number | null>(null);
-    const pointerGesture = useRef<{ id: number; y: number } | null>(null);
-    const scrollbarPointerActive = useRef(false);
-    const bottomFrame = useRef<number | null>(null);
-    const bottomPositionPending = useRef(false);
-    const scheduleBottomPositionRef = useRef<() => void>(() => undefined);
-    const programmaticResetFrame = useRef<number | null>(null);
-    const newestMessageFrame = useRef<number | null>(null);
-    const programmaticScroll = useRef(false);
-    const userScrollActive = useRef(false);
-    const userScrollEndTimer = useRef<number | null>(null);
-    const userScrollEndFrame = useRef<number | null>(null);
-    const finishUserScrollRef = useRef<() => void>(() => undefined);
-    const userScrollDirection = useRef<UserScrollDirection>(0);
-    const olderIntentLatched = useRef(false);
-    // Virtuoso can report `startReached` while it is still resolving the
-    // initial align-to-bottom layout. Keep that notification inert until a
-    // real upward gesture has handed history pagination to the user.
-    const historyPaginationIntent = useRef(false);
     const unreadBoundaryInitialized = useRef(items.length > 0 || !initializing);
     const transitionScrollMode = useCallback((event: TimelineScrollEvent) => {
         const nextMode = transitionTimelineScrollMode(scrollModeRef.current, event);
 
-        if (nextMode === "attached" || nextMode === "initializing") {
-            detachedViewportAnchor.current = null;
-        }
-
         scrollModeRef.current = nextMode;
         setScrollMode((current) => (current === nextMode ? current : nextMode));
     }, []);
-    const captureDetachedAnchor = useCallback(() => {
-        const element = scroller.current;
-        const bounds = element?.getBoundingClientRect();
-
-        if (!element || !bounds) {
-            return;
-        }
-
-        const visibleEvent = [...element.querySelectorAll<HTMLElement>("[data-event-id]")]
-            .filter((candidate) => {
-                const candidateBounds = candidate.getBoundingClientRect();
-
-                return candidateBounds.bottom > bounds.top && candidateBounds.top < bounds.bottom;
-            })
-            .sort(
-                (left, right) =>
-                    left.getBoundingClientRect().top - right.getBoundingClientRect().top,
-            )[0];
-
-        if (!visibleEvent?.dataset.eventId) {
-            return;
-        }
-
-        detachedViewportAnchor.current = {
-            id: visibleEvent.dataset.eventId,
-            index: Number.parseInt(
-                visibleEvent.closest<HTMLElement>("[data-index]")?.dataset.index ?? "0",
-                10,
-            ),
-            target: "event",
-            top: visibleEvent.getBoundingClientRect().top,
-        };
-    }, []);
-    const refreshHistoryAnchorPosition = useCallback(() => {
-        const element = scroller.current;
-        const anchor = historyAnchor.current;
-        const scrollerBounds = element?.getBoundingClientRect();
-
-        if (!element || !anchor || !scrollerBounds) {
-            return;
-        }
-
-        const anchorElement =
-            anchor.target === "event"
-                ? [...element.querySelectorAll<HTMLElement>("[data-event-id]")].find(
-                      (candidate) => candidate.dataset.eventId === anchor.id,
-                  )
-                : element.querySelector<HTMLElement>(`[data-index="${anchor.index}"]`);
-
-        const anchorBounds = anchorElement?.getBoundingClientRect();
-
-        if (
-            anchorElement &&
-            anchorBounds &&
-            anchorBounds.bottom > scrollerBounds.top &&
-            anchorBounds.top < scrollerBounds.bottom
-        ) {
-            anchor.top = anchorBounds.top;
-            anchor.index = Number.parseInt(
-                anchorElement.closest<HTMLElement>("[data-index]")?.dataset.index ??
-                    `${anchor.index}`,
-                10,
-            );
-
-            return;
-        }
-
-        const visibleEvent = [...element.querySelectorAll<HTMLElement>("[data-event-id]")]
-            .filter((candidate) => {
-                const bounds = candidate.getBoundingClientRect();
-
-                return bounds.bottom > scrollerBounds.top && bounds.top < scrollerBounds.bottom;
-            })
-            .sort(
-                (left, right) =>
-                    left.getBoundingClientRect().top - right.getBoundingClientRect().top,
-            )[0];
-
-        if (visibleEvent?.dataset.eventId) {
-            historyAnchor.current = {
-                id: visibleEvent.dataset.eventId,
-                index: Number.parseInt(
-                    visibleEvent.closest<HTMLElement>("[data-index]")?.dataset.index ??
-                        `${anchor.index}`,
-                    10,
-                ),
-                target: "event",
-                top: visibleEvent.getBoundingClientRect().top,
-            };
-        }
-    }, []);
-    const scheduleDetachedAnchorRestore = useCallback(() => {
-        if (detachedRestoreFrame.current !== null) {
-            window.cancelAnimationFrame(detachedRestoreFrame.current);
-        }
-
-        detachedRestoreFrame.current = window.requestAnimationFrame(() => {
-            detachedRestoreFrame.current = window.requestAnimationFrame(() => {
-                detachedRestoreFrame.current = null;
-
-                if (scrollModeRef.current !== "detached" || userScrollActive.current) {
-                    return;
-                }
-
-                const element = scroller.current;
-                const anchor = detachedViewportAnchor.current;
-                const anchorElement = anchor
-                    ? [...(element?.querySelectorAll<HTMLElement>("[data-event-id]") ?? [])].find(
-                          (candidate) => candidate.dataset.eventId === anchor.id,
-                      )
-                    : null;
-
-                if (!element || !anchor || !anchorElement) {
-                    return;
-                }
-
-                const correction = anchorElement.getBoundingClientRect().top - anchor.top;
-
-                if (Math.abs(correction) <= 0.5) {
-                    return;
-                }
-
-                programmaticScroll.current = true;
-                element.scrollTop += correction;
-                window.requestAnimationFrame(() => {
-                    programmaticScroll.current = false;
-                });
-            });
+    const scrollToNewest = useCallback(() => {
+        virtuosoRef.current?.scrollToIndex({
+            index: "LAST",
+            align: "end",
+            behavior: "auto",
         });
     }, []);
-    const cancelHistoryRestoration = useCallback(() => {
-        if (historyAnchorFrame.current !== null) {
-            window.cancelAnimationFrame(historyAnchorFrame.current);
-            historyAnchorFrame.current = null;
-        }
+    const handleBottomStateChange = useCallback(
+        (atBottom: boolean) => {
+            // A true value is useful when a short list needs no physical scroll.
+            // Detachment is classified by the native scroll event below so it is
+            // immediate rather than waiting for Virtuoso's throttled callback.
+            if (atBottom && scrollModeRef.current === "initializing") {
+                transitionScrollMode({ type: "bottom-state", atBottom: true });
 
-        historyAnchor.current = null;
-        historyRestoreDeferred.current = false;
-        programmaticScroll.current = false;
+                return;
+            }
 
-        if (scrollModeRef.current === "restoring-history") {
-            transitionScrollMode({ type: "user-detach" });
-        }
-    }, [transitionScrollMode]);
+            if (!atBottom && scrollModeRef.current === "attached") {
+                // Row or viewport geometry grew while the reader remained at
+                // the live edge. Ask Virtuoso to reconcile its own measurement;
+                // native upward scrolling has already switched to detached.
+                scrollToNewest();
+            }
+        },
+        [scrollToNewest, transitionScrollMode],
+    );
+    const setScroller = useCallback(
+        (value: HTMLElement | Window | null) => {
+            removeScrollerListener.current?.();
+            removeScrollerListener.current = null;
+            scrollerResizeObserver.current?.disconnect();
+            scrollerResizeObserver.current = null;
+
+            if (scrollerResizeFrame.current !== null) {
+                window.cancelAnimationFrame(scrollerResizeFrame.current);
+                scrollerResizeFrame.current = null;
+            }
+
+            scrollerElement.current = null;
+
+            if (!(value instanceof HTMLElement)) {
+                return;
+            }
+
+            scrollerElement.current = value;
+            let previousScrollTop = value.scrollTop;
+
+            const handleScroll = () => {
+                const currentScrollTop = value.scrollTop;
+                const atBottom =
+                    value.scrollHeight - value.clientHeight - currentScrollTop <=
+                    TIMELINE_BOTTOM_TOLERANCE_PX;
+
+                if (atBottom) {
+                    transitionScrollMode({ type: "bottom-state", atBottom: true });
+                } else if (
+                    scrollModeRef.current !== "initializing" &&
+                    currentScrollTop < previousScrollTop
+                ) {
+                    if (scrollerResizeFrame.current !== null) {
+                        window.cancelAnimationFrame(scrollerResizeFrame.current);
+                        scrollerResizeFrame.current = null;
+                    }
+
+                    // Moving upward from the live edge is the only scroll that
+                    // detaches. Downward Virtuoso navigation (initial open or a
+                    // local send) stays attached until it reaches the bottom. It
+                    // also cancels a pending viewport follow so a resize cannot
+                    // pull against the reader's movement on the next frame.
+                    transitionScrollMode({ type: "bottom-state", atBottom: false });
+                }
+
+                previousScrollTop = currentScrollTop;
+            };
+
+            value.addEventListener("scroll", handleScroll, { passive: true });
+            removeScrollerListener.current = () =>
+                value.removeEventListener("scroll", handleScroll);
+
+            if (typeof ResizeObserver !== "undefined") {
+                const observer = new ResizeObserver(() => {
+                    if (
+                        scrollModeRef.current === "attached" &&
+                        scrollerResizeFrame.current === null
+                    ) {
+                        // Let Virtuoso consume the same resize notification before
+                        // asking it to reposition. This coalesces composer/mobile
+                        // viewport changes into one library-owned movement.
+                        scrollerResizeFrame.current = window.requestAnimationFrame(() => {
+                            scrollerResizeFrame.current = null;
+
+                            if (scrollModeRef.current === "attached") {
+                                scrollToNewest();
+                            }
+                        });
+                    }
+                });
+
+                observer.observe(value);
+                scrollerResizeObserver.current = observer;
+            }
+        },
+        [scrollToNewest, transitionScrollMode],
+    );
+    const handleItemsRendered = useCallback(
+        (renderedItems: ListItem<TimelineItem>[]) => {
+            if (renderedItems.length === 0 || scrollModeRef.current !== "initializing") {
+                return;
+            }
+
+            scrollToNewest();
+
+            const element = scrollerElement.current;
+            const newestId = items.at(-1)?.id;
+            const newestIsRendered = renderedItems.some((item) => item.data?.id === newestId);
+
+            // Short conversations may already fit without producing a scroll
+            // event. Only trust physical state after Virtuoso has rendered the
+            // newest item; its provisional first-frame scroll height is otherwise
+            // indistinguishable from a genuinely short list.
+            if (
+                element &&
+                newestIsRendered &&
+                element.scrollHeight - element.clientHeight - element.scrollTop <=
+                    TIMELINE_BOTTOM_TOLERANCE_PX
+            ) {
+                transitionScrollMode({ type: "bottom-state", atBottom: true });
+            }
+        },
+        [items, scrollToNewest, transitionScrollMode],
+    );
     const imageItems = useMemo(
         () => items.filter((item) => item.type === "image" && item.media && !item.redacted),
         [items],
@@ -2110,32 +2040,6 @@ export function Timeline({
         () => items.map((item) => estimateTimelineItemHeight(item, estimateViewportWidth)),
         [estimateViewportWidth, items],
     );
-    const estimateLayoutSignature = useMemo(
-        () =>
-            items
-                .map((item) => {
-                    const youtubePreviews = timelineYouTubePreviews(item);
-                    const youtubeEligible = isTimelineYouTubePreviewEligible(item);
-
-                    return `${item.id}:${item.type}:${item.media ? `${item.media.width ?? "?"}x${item.media.height ?? "?"}` : "none"}:youtube=${youtubeEligible ? "eligible" : "ineligible"}:${youtubePreviews.length}:${youtubePreviews.map((preview) => preview.id).join(",")}`;
-                })
-                .join("|"),
-        [items],
-    );
-    const previousEstimateLayoutSignature = useRef(estimateLayoutSignature);
-    const [estimateLayoutRevision, setEstimateLayoutRevision] = useState(0);
-
-    useLayoutEffect(() => {
-        if (previousEstimateLayoutSignature.current === estimateLayoutSignature) {
-            return;
-        }
-
-        previousEstimateLayoutSignature.current = estimateLayoutSignature;
-
-        if (scrollModeRef.current === "attached" || scrollModeRef.current === "initializing") {
-            setEstimateLayoutRevision((revision) => revision + 1);
-        }
-    }, [estimateLayoutSignature]);
     const loadEarlierHistory = useCallback(
         (fromUserGesture = false) => {
             if (
@@ -2147,114 +2051,17 @@ export function Timeline({
                 return;
             }
 
-            if (!fromUserGesture && !historyPaginationIntent.current) {
+            if (!fromUserGesture && scrollModeRef.current !== "detached") {
                 return;
             }
 
-            historyPaginationIntent.current = false;
-
-            cancelHistoryRestoration();
-            detachedViewportAnchor.current = null;
-            const element = scroller.current;
-            const scrollerBounds = element?.getBoundingClientRect();
-            const visibleEvent =
-                element && scrollerBounds
-                    ? [...element.querySelectorAll<HTMLElement>("[data-event-id]")]
-                          .filter((candidate) => {
-                              const bounds = candidate.getBoundingClientRect();
-
-                              return (
-                                  bounds.bottom > scrollerBounds.top &&
-                                  bounds.top < scrollerBounds.bottom
-                              );
-                          })
-                          .sort(
-                              (left, right) =>
-                                  left.getBoundingClientRect().top -
-                                  right.getBoundingClientRect().top,
-                          )[0]
-                    : null;
-            const firstRenderedItem = element?.querySelector<HTMLElement>("[data-index]") ?? null;
-
-            historyAnchor.current = visibleEvent?.dataset.eventId
-                ? {
-                      id: visibleEvent.dataset.eventId,
-                      index: Number.parseInt(
-                          visibleEvent.closest<HTMLElement>("[data-index]")?.dataset.index ??
-                              `${firstItemIndex}`,
-                          10,
-                      ),
-                      target: "event",
-                      top: visibleEvent.getBoundingClientRect().top,
-                  }
-                : firstRenderedItem
-                  ? {
-                        id: items[0]?.id ?? "",
-                        index: Number.parseInt(
-                            firstRenderedItem.dataset.index ?? `${firstItemIndex}`,
-                            10,
-                        ),
-                        target: "item",
-                        top: firstRenderedItem.getBoundingClientRect().top,
-                    }
-                  : null;
             historyRequestInFlight.current = true;
-            const requestGeneration = ++historyRequestGeneration.current;
-            const requestedFirstItemIndex = firstItemIndex;
 
             void service.paginate().finally(() => {
-                if (historyRequestGeneration.current !== requestGeneration) {
-                    return;
-                }
-
                 historyRequestInFlight.current = false;
-                const resolvedAt = window.performance.now();
-                let graceFramesRemaining = HISTORY_COMMIT_GRACE_FRAMES;
-
-                const reconcileCommittedHistory = () => {
-                    if (historyRequestGeneration.current !== requestGeneration) {
-                        return;
-                    }
-
-                    if (previousFirstItemIndex.current !== requestedFirstItemIndex) {
-                        return;
-                    }
-
-                    if (
-                        graceFramesRemaining > 0 &&
-                        window.performance.now() - resolvedAt < HISTORY_COMMIT_GRACE_MAX_MS
-                    ) {
-                        graceFramesRemaining -= 1;
-                        window.requestAnimationFrame(reconcileCommittedHistory);
-
-                        return;
-                    }
-
-                    historyAnchor.current = null;
-                    historyRestoreDeferred.current = false;
-
-                    if (scrollModeRef.current === "restoring-history") {
-                        transitionScrollMode({ type: "history-complete" });
-                    }
-
-                    if (scrollModeRef.current !== "attached" && !userScrollActive.current) {
-                        captureDetachedAnchor();
-                    }
-                };
-
-                window.requestAnimationFrame(reconcileCommittedHistory);
             });
         },
-        [
-            cancelHistoryRestoration,
-            captureDetachedAnchor,
-            firstItemIndex,
-            hasMoreHistory,
-            items,
-            loadingHistory,
-            service,
-            transitionScrollMode,
-        ],
+        [hasMoreHistory, loadingHistory, service],
     );
 
     const firstTimestamp = items[0]?.timestamp ?? null;
@@ -2268,659 +2075,10 @@ export function Timeline({
         [firstTimestamp, hasMoreHistory, loadEarlierHistory, loadingHistory],
     );
 
-    const restoreHistoryAnchor = useCallback(() => {
-        if (historyAnchorFrame.current !== null) {
-            window.cancelAnimationFrame(historyAnchorFrame.current);
-            historyAnchorFrame.current = null;
-        }
-
-        if (userScrollActive.current) {
-            historyRestoreDeferred.current = true;
-            programmaticScroll.current = false;
-            transitionScrollMode({ type: "history-complete" });
-
-            return;
-        }
-
-        transitionScrollMode({ type: "history-start" });
-        historyRestoreDeferred.current = false;
-        const startedAt = window.performance.now();
-        let stableFrames = 0;
-
-        const restore = () => {
-            historyAnchorFrame.current = null;
-
-            if (userScrollActive.current) {
-                historyRestoreDeferred.current = true;
-                programmaticScroll.current = false;
-                transitionScrollMode({ type: "history-complete" });
-
-                return;
-            }
-
-            const element = scroller.current;
-            const anchor = historyAnchor.current;
-
-            if (!element || !anchor) {
-                historyAnchor.current = null;
-                historyRestoreDeferred.current = false;
-                programmaticScroll.current = false;
-                transitionScrollMode({ type: "history-complete" });
-                captureDetachedAnchor();
-
-                return;
-            }
-
-            const anchorElement =
-                anchor.target === "event"
-                    ? [...element.querySelectorAll<HTMLElement>("[data-event-id]")].find(
-                          (candidate) => candidate.dataset.eventId === anchor.id,
-                      )
-                    : element.querySelector<HTMLElement>(`[data-index="${anchor.index}"]`);
-
-            if (anchorElement) {
-                const delta = anchorElement.getBoundingClientRect().top - anchor.top;
-
-                if (Math.abs(delta) > 0.5) {
-                    programmaticScroll.current = true;
-                    element.scrollTop += delta;
-                    stableFrames = 0;
-                } else {
-                    stableFrames += 1;
-                }
-            } else {
-                stableFrames = 0;
-            }
-
-            const elapsed = window.performance.now() - startedAt;
-            const stillSettling =
-                elapsed < HISTORY_ANCHOR_MIN_SETTLE_MS ||
-                stableFrames < HISTORY_ANCHOR_STABLE_FRAMES;
-
-            if (elapsed < HISTORY_ANCHOR_MAX_SETTLE_MS && stillSettling) {
-                historyAnchorFrame.current = window.requestAnimationFrame(restore);
-
-                return;
-            }
-
-            historyAnchor.current = null;
-            historyRestoreDeferred.current = false;
-            programmaticScroll.current = false;
-            transitionScrollMode({ type: "history-complete" });
-            captureDetachedAnchor();
-        };
-
-        restore();
-    }, [captureDetachedAnchor, transitionScrollMode]);
-
-    const pauseHistoryRestoration = useCallback(() => {
-        if (
-            !historyAnchor.current ||
-            (historyAnchorFrame.current === null &&
-                !historyRestoreDeferred.current &&
-                scrollModeRef.current !== "restoring-history")
-        ) {
-            return;
-        }
-
-        if (historyAnchorFrame.current !== null) {
-            window.cancelAnimationFrame(historyAnchorFrame.current);
-            historyAnchorFrame.current = null;
-        }
-
-        historyRestoreDeferred.current = true;
-        programmaticScroll.current = false;
-
-        if (scrollModeRef.current === "restoring-history") {
-            transitionScrollMode({ type: "history-complete" });
-        }
-    }, [transitionScrollMode]);
-
     const closeLightbox = () => {
         setLightboxId(null);
         window.requestAnimationFrame(() => lightboxOpener.current?.focus());
     };
-
-    const finishUserScroll = useCallback(() => {
-        if (userScrollEndTimer.current !== null) {
-            window.clearTimeout(userScrollEndTimer.current);
-            userScrollEndTimer.current = null;
-        }
-
-        if (!userScrollActive.current) {
-            return;
-        }
-
-        if (
-            touchY.current !== null ||
-            pointerGesture.current !== null ||
-            scrollbarPointerActive.current
-        ) {
-            userScrollEndTimer.current = window.setTimeout(() => {
-                userScrollEndTimer.current = null;
-                finishUserScrollRef.current();
-            }, USER_SCROLL_END_DELAY_MS);
-
-            return;
-        }
-
-        if (userScrollEndFrame.current !== null) {
-            window.cancelAnimationFrame(userScrollEndFrame.current);
-        }
-
-        userScrollEndFrame.current = window.requestAnimationFrame(() => {
-            userScrollEndFrame.current = null;
-
-            if (!userScrollActive.current) {
-                return;
-            }
-
-            const element = scroller.current;
-            const atBottom = element
-                ? element.scrollHeight - element.clientHeight - element.scrollTop <=
-                  TIMELINE_BOTTOM_TOLERANCE_PX
-                : false;
-            const direction = userScrollDirection.current;
-            const hadOlderIntent = olderIntentLatched.current;
-            const restoreDeferredHistory =
-                historyRestoreDeferred.current && historyAnchor.current !== null;
-
-            userScrollActive.current = false;
-            userScrollDirection.current = 0;
-            olderIntentLatched.current = false;
-
-            if (direction > 0) {
-                historyPaginationIntent.current = false;
-            }
-
-            if (restoreDeferredHistory) {
-                historyRestoreDeferred.current = false;
-                restoreHistoryAnchor();
-
-                return;
-            }
-
-            if (
-                atBottom &&
-                scrollModeRef.current === "detached" &&
-                direction === 1 &&
-                !hadOlderIntent
-            ) {
-                transitionScrollMode({ type: "bottom-state", atBottom: true });
-            } else if (scrollModeRef.current === "detached") {
-                captureDetachedAnchor();
-            }
-
-            if (bottomPositionPending.current && scrollModeRef.current === "attached") {
-                scheduleBottomPositionRef.current();
-            }
-        });
-    }, [captureDetachedAnchor, restoreHistoryAnchor, transitionScrollMode]);
-
-    useLayoutEffect(() => {
-        finishUserScrollRef.current = finishUserScroll;
-    }, [finishUserScroll]);
-
-    const armUserScrollEnd = useCallback(() => {
-        if (!userScrollActive.current) {
-            return;
-        }
-
-        if (userScrollEndFrame.current !== null) {
-            window.cancelAnimationFrame(userScrollEndFrame.current);
-            userScrollEndFrame.current = null;
-        }
-
-        if (userScrollEndTimer.current !== null) {
-            window.clearTimeout(userScrollEndTimer.current);
-        }
-
-        userScrollEndTimer.current = window.setTimeout(() => {
-            userScrollEndTimer.current = null;
-            finishUserScroll();
-        }, USER_SCROLL_END_DELAY_MS);
-    }, [finishUserScroll]);
-
-    const beginUserScroll = useCallback(
-        (direction: UserScrollDirection = 0) => {
-            pauseHistoryRestoration();
-
-            userScrollActive.current = true;
-
-            if (direction !== 0) {
-                userScrollDirection.current = direction;
-            }
-
-            if (direction < 0) {
-                olderIntentLatched.current = true;
-            }
-
-            armUserScrollEnd();
-        },
-        [armUserScrollEnd, pauseHistoryRestoration],
-    );
-
-    const detachFromBottom = useCallback(() => {
-        beginUserScroll(-1);
-        historyPaginationIntent.current = true;
-
-        if (bottomFrame.current !== null) {
-            window.cancelAnimationFrame(bottomFrame.current);
-            bottomFrame.current = null;
-        }
-
-        bottomPositionPending.current = false;
-
-        if (programmaticResetFrame.current !== null) {
-            window.cancelAnimationFrame(programmaticResetFrame.current);
-            programmaticResetFrame.current = null;
-        }
-
-        if (detachedRestoreFrame.current !== null) {
-            window.cancelAnimationFrame(detachedRestoreFrame.current);
-            detachedRestoreFrame.current = null;
-        }
-
-        if (newestMessageFrame.current !== null) {
-            window.cancelAnimationFrame(newestMessageFrame.current);
-            newestMessageFrame.current = null;
-        }
-
-        programmaticScroll.current = false;
-        detachedViewportAnchor.current = null;
-
-        transitionScrollMode({ type: "user-detach" });
-    }, [beginUserScroll, transitionScrollMode]);
-
-    const scheduleBottomPosition = useCallback(() => {
-        bottomPositionPending.current = true;
-
-        if (bottomFrame.current !== null) {
-            return;
-        }
-
-        bottomFrame.current = window.requestAnimationFrame(() => {
-            bottomFrame.current = null;
-
-            if (scrollModeRef.current !== "attached") {
-                bottomPositionPending.current = false;
-
-                return;
-            }
-
-            if (userScrollActive.current) {
-                return;
-            }
-
-            const element = scroller.current;
-
-            if (!element) {
-                bottomPositionPending.current = false;
-
-                return;
-            }
-
-            bottomPositionPending.current = false;
-            programmaticScroll.current = true;
-            element.scrollTo({ top: element.scrollHeight, behavior: "auto" });
-
-            if (programmaticResetFrame.current !== null) {
-                window.cancelAnimationFrame(programmaticResetFrame.current);
-            }
-
-            programmaticResetFrame.current = window.requestAnimationFrame(() => {
-                programmaticScroll.current = false;
-                programmaticResetFrame.current = null;
-            });
-        });
-    }, []);
-
-    useLayoutEffect(() => {
-        scheduleBottomPositionRef.current = scheduleBottomPosition;
-    }, [scheduleBottomPosition]);
-
-    // Virtuoso reports a viewport-sized scroll height until it has measured the
-    // rows, so "already at the bottom" is meaningless on the first frames after
-    // a room opens. Hold the timeline against the newest message until the end
-    // of the list stays put across consecutive frames; only then hand over to
-    // the attached-mode handlers. Leaving `initializing` early stranded readers
-    // at the top of an unmeasured list, where `startReached` then paginated more
-    // history in and pushed the newest message even further out of reach.
-    const settleAtNewestMessage = useCallback(() => {
-        if (newestMessageFrame.current !== null || scrollModeRef.current !== "initializing") {
-            return;
-        }
-
-        let startedAt: number | null = null;
-        let stableFrames = 0;
-
-        const settle = () => {
-            newestMessageFrame.current = null;
-
-            if (scrollModeRef.current !== "initializing") {
-                programmaticScroll.current = false;
-
-                return;
-            }
-
-            const element = scroller.current;
-
-            if (!element) {
-                // The list is not mounted yet; `itemsRendered` restarts the settle.
-                programmaticScroll.current = false;
-
-                return;
-            }
-
-            startedAt ??= window.performance.now();
-            const distanceFromBottom =
-                element.scrollHeight - element.clientHeight - element.scrollTop;
-
-            if (userScrollActive.current) {
-                stableFrames = 0;
-            } else if (distanceFromBottom > TIMELINE_BOTTOM_TOLERANCE_PX) {
-                programmaticScroll.current = true;
-                element.scrollTo({ top: element.scrollHeight, behavior: "auto" });
-                stableFrames = 0;
-            } else {
-                stableFrames += 1;
-            }
-
-            const elapsed = window.performance.now() - startedAt;
-            const stillSettling =
-                elapsed < NEWEST_MESSAGE_MIN_SETTLE_MS ||
-                stableFrames < NEWEST_MESSAGE_STABLE_FRAMES;
-
-            if (elapsed < NEWEST_MESSAGE_MAX_SETTLE_MS && stillSettling) {
-                newestMessageFrame.current = window.requestAnimationFrame(settle);
-
-                return;
-            }
-
-            programmaticScroll.current = false;
-            transitionScrollMode({ type: "initial-positioned" });
-        };
-
-        newestMessageFrame.current = window.requestAnimationFrame(settle);
-    }, [transitionScrollMode]);
-
-    const preservePositionAfterGeometryChange = useCallback(() => {
-        if (userScrollActive.current) {
-            return;
-        }
-
-        if (scrollModeRef.current === "attached") {
-            scheduleBottomPosition();
-
-            return;
-        }
-
-        if (scrollModeRef.current === "detached" && detachedViewportAnchor.current) {
-            scheduleDetachedAnchorRestore();
-        }
-    }, [scheduleBottomPosition, scheduleDetachedAnchorRestore]);
-
-    const preserveAttachedBottomAfterTimelineHeightChange = useCallback(() => {
-        if (userScrollActive.current) {
-            return;
-        }
-
-        if (scrollModeRef.current === "attached") {
-            scheduleBottomPosition();
-
-            return;
-        }
-
-        if (scrollModeRef.current === "initializing") {
-            // Virtuoso may recalculate the virtual list after the initial
-            // settle loop has observed a provisional height. Re-assert the
-            // newest edge for every such geometry change while attachment is
-            // still withheld; otherwise the first attached frame can be tens
-            // of thousands of pixels above the live edge.
-            const element = scroller.current;
-
-            if (element) {
-                programmaticScroll.current = true;
-                element.scrollTo({ top: element.scrollHeight, behavior: "auto" });
-            }
-
-            settleAtNewestMessage();
-        }
-    }, [scheduleBottomPosition, settleAtNewestMessage]);
-
-    const setScroller = useCallback(
-        (value: HTMLElement | Window | null) => {
-            removeScrollerListeners.current?.();
-            removeScrollerListeners.current = null;
-            scroller.current = value instanceof HTMLElement ? value : null;
-            const element = scroller.current;
-
-            if (!element) {
-                return;
-            }
-
-            let lastScrollTop = element.scrollTop;
-
-            const onScroll = () => {
-                const scrollDelta = element.scrollTop - lastScrollTop;
-
-                lastScrollTop = element.scrollTop;
-                const atBottom =
-                    element.scrollHeight - element.clientHeight - element.scrollTop <=
-                    TIMELINE_BOTTOM_TOLERANCE_PX;
-                const atTop = element.scrollTop <= TIMELINE_BOTTOM_TOLERANCE_PX;
-
-                if (
-                    userScrollActive.current &&
-                    !programmaticScroll.current &&
-                    Math.abs(scrollDelta) > 0.5
-                ) {
-                    const inputDirection = scrollbarPointerActive.current
-                        ? scrollDelta < 0
-                            ? -1
-                            : 1
-                        : userScrollDirection.current;
-                    const movedInRequestedDirection =
-                        inputDirection !== 0 && Math.sign(scrollDelta) === inputDirection;
-
-                    if (historyAnchor.current && movedInRequestedDirection) {
-                        refreshHistoryAnchorPosition();
-                    }
-
-                    if (scrollbarPointerActive.current) {
-                        if (scrollDelta < 0) {
-                            detachFromBottom();
-                        } else {
-                            beginUserScroll(1);
-                        }
-                    } else {
-                        armUserScrollEnd();
-                    }
-
-                    if (
-                        atBottom &&
-                        scrollModeRef.current === "detached" &&
-                        userScrollDirection.current === 1 &&
-                        !olderIntentLatched.current
-                    ) {
-                        transitionScrollMode({ type: "bottom-state", atBottom: true });
-                    }
-                }
-
-                // `startReached` is debounced by Virtuoso and may have
-                // already emitted (and been intentionally ignored) during
-                // the initial layout. A real upward gesture that reaches the
-                // top must still paginate even when the stream has no new
-                // value to publish.
-                if (
-                    atTop &&
-                    scrollModeRef.current === "detached" &&
-                    historyPaginationIntent.current
-                ) {
-                    loadEarlierHistory();
-                }
-            };
-
-            const onWheel = (event: WheelEvent) => {
-                if (event.deltaY < 0) {
-                    detachFromBottom();
-                } else if (event.deltaY > 0) {
-                    beginUserScroll(1);
-                }
-            };
-
-            const onTouchStart = (event: TouchEvent) => {
-                touchY.current = event.touches[0]?.clientY ?? null;
-            };
-
-            const onTouchMove = (event: TouchEvent) => {
-                const nextY = event.touches[0]?.clientY;
-
-                if (nextY === undefined) {
-                    return;
-                }
-
-                if (touchY.current !== null && Math.abs(nextY - touchY.current) > 1) {
-                    if (nextY > touchY.current) {
-                        detachFromBottom();
-                    } else {
-                        beginUserScroll(1);
-                    }
-                }
-
-                touchY.current = nextY;
-            };
-
-            const clearTouch = () => {
-                touchY.current = null;
-            };
-
-            const onPointerDown = (event: PointerEvent) => {
-                if (event.pointerType === "mouse") {
-                    const bounds = element.getBoundingClientRect();
-
-                    scrollbarPointerActive.current = event.clientX >= bounds.right - 24;
-
-                    if (scrollbarPointerActive.current) {
-                        beginUserScroll();
-                    }
-
-                    return;
-                }
-
-                pointerGesture.current = { id: event.pointerId, y: event.clientY };
-            };
-
-            const onPointerMove = (event: PointerEvent) => {
-                if (event.pointerType === "mouse") {
-                    if (scrollbarPointerActive.current) {
-                        beginUserScroll();
-                    }
-
-                    return;
-                }
-
-                const current = pointerGesture.current;
-
-                if (!current || current.id !== event.pointerId) {
-                    return;
-                }
-
-                if (event.clientY > current.y + 3) {
-                    detachFromBottom();
-                } else if (Math.abs(event.clientY - current.y) > 1) {
-                    beginUserScroll(event.clientY > current.y ? -1 : 1);
-                }
-
-                pointerGesture.current = { id: event.pointerId, y: event.clientY };
-            };
-
-            const onScrollEnd = () => armUserScrollEnd();
-
-            const clearPointer = (event: PointerEvent) => {
-                if (event.pointerType === "mouse") {
-                    scrollbarPointerActive.current = false;
-                }
-
-                if (pointerGesture.current?.id === event.pointerId) {
-                    pointerGesture.current = null;
-                }
-            };
-
-            const resizeObserver = new ResizeObserver(preservePositionAfterGeometryChange);
-
-            element.addEventListener("scroll", onScroll, { passive: true });
-            element.addEventListener("wheel", onWheel, { passive: true });
-            element.addEventListener("touchstart", onTouchStart, { passive: true });
-            element.addEventListener("touchmove", onTouchMove, { passive: true });
-            element.addEventListener("touchend", clearTouch, { passive: true });
-            element.addEventListener("touchcancel", clearTouch, { passive: true });
-            element.addEventListener("pointerdown", onPointerDown, { passive: true });
-            element.addEventListener("pointermove", onPointerMove, { passive: true });
-            element.addEventListener("pointerup", clearPointer, { passive: true });
-            element.addEventListener("pointercancel", clearPointer, { passive: true });
-            element.addEventListener("scrollend", onScrollEnd, { passive: true });
-            window.addEventListener("pointerup", clearPointer, { passive: true });
-            window.addEventListener("pointercancel", clearPointer, { passive: true });
-            resizeObserver.observe(element);
-
-            removeScrollerListeners.current = () => {
-                resizeObserver.disconnect();
-                element.removeEventListener("scroll", onScroll);
-                element.removeEventListener("wheel", onWheel);
-                element.removeEventListener("touchstart", onTouchStart);
-                element.removeEventListener("touchmove", onTouchMove);
-                element.removeEventListener("touchend", clearTouch);
-                element.removeEventListener("touchcancel", clearTouch);
-                element.removeEventListener("pointerdown", onPointerDown);
-                element.removeEventListener("pointermove", onPointerMove);
-                element.removeEventListener("pointerup", clearPointer);
-                element.removeEventListener("pointercancel", clearPointer);
-                element.removeEventListener("scrollend", onScrollEnd);
-                window.removeEventListener("pointerup", clearPointer);
-                window.removeEventListener("pointercancel", clearPointer);
-            };
-        },
-        [
-            armUserScrollEnd,
-            beginUserScroll,
-            detachFromBottom,
-            loadEarlierHistory,
-            preservePositionAfterGeometryChange,
-            refreshHistoryAnchorPosition,
-            transitionScrollMode,
-        ],
-    );
-
-    useEffect(() => {
-        const onKeyDown = (event: KeyboardEvent) => {
-            if (event.defaultPrevented || isEditableKeyboardTarget(event.target)) {
-                return;
-            }
-
-            const upwardKey =
-                event.key === "ArrowUp" ||
-                event.key === "PageUp" ||
-                event.key === "Home" ||
-                (event.key === " " && event.shiftKey);
-            const scrollKey =
-                upwardKey ||
-                event.key === "ArrowDown" ||
-                event.key === "PageDown" ||
-                event.key === "End" ||
-                event.key === " ";
-
-            if (upwardKey && scroller.current) {
-                detachFromBottom();
-            } else if (scrollKey && scroller.current) {
-                beginUserScroll(1);
-            }
-        };
-
-        window.addEventListener("keydown", onKeyDown);
-
-        return () => window.removeEventListener("keydown", onKeyDown);
-    }, [beginUserScroll, detachFromBottom]);
 
     useLayoutEffect(() => {
         if (unreadBoundaryInitialized.current || initializing || items.length === 0) {
@@ -2990,12 +2148,9 @@ export function Timeline({
 
         /*
          * Only the live edge animates. Backfilled history is new to the reader
-         * too, but `getBoundingClientRect` reports a transformed element where
-         * the transform has put it, and the history anchor restores the reader
-         * by comparing exactly those tops — so a row sliding into place while
-         * the anchor measures it moves the reader instead of the row. History
-         * is meant to appear without motion here anyway; that is the promise
-         * the anchor exists to keep.
+         * too, but Virtuoso is preserving the reading position while those rows
+         * are measured. Keeping prepended rows motionless avoids mixing entrance
+         * transforms with that single measurement authority.
          */
         const suffixStart = items.length - arrived.length;
         const appended = arrived.every((id, offset) => items[suffixStart + offset]?.id === id);
@@ -3049,6 +2204,17 @@ export function Timeline({
             }
 
             enterTimers.current.clear();
+            removeScrollerListener.current?.();
+            removeScrollerListener.current = null;
+            scrollerResizeObserver.current?.disconnect();
+            scrollerResizeObserver.current = null;
+
+            if (scrollerResizeFrame.current !== null) {
+                window.cancelAnimationFrame(scrollerResizeFrame.current);
+                scrollerResizeFrame.current = null;
+            }
+
+            scrollerElement.current = null;
         },
         [],
     );
@@ -3069,122 +2235,25 @@ export function Timeline({
         previousItems.current = nextItems;
         previousFirstItemIndex.current = firstItemIndex;
 
-        if (firstItemIndex < previousStartIndex) {
-            const latestReadingAnchor = detachedViewportAnchor.current;
-
-            detachedViewportAnchor.current = null;
-
-            // A user can continue moving after startReached begins the request.
-            // Prefer the last anchor captured when that gesture settled over
-            // the earlier request-time position.
-            if (historyAnchor.current && latestReadingAnchor) {
-                historyAnchor.current = { ...latestReadingAnchor };
-            }
-
-            if (scrollModeRef.current === "attached") {
-                cancelHistoryRestoration();
-            } else if (historyAnchor.current) {
-                restoreHistoryAnchor();
-            } else if (scrollModeRef.current === "restoring-history") {
-                transitionScrollMode({ type: "history-complete" });
-            }
-        } else if (change.kind === "replace") {
-            cancelHistoryRestoration();
-            historyRequestGeneration.current += 1;
-            historyRequestInFlight.current = false;
-            bottomPositionPending.current = false;
-            programmaticScroll.current = false;
-        }
-
         if (change.kind === "initial") {
-            settleAtNewestMessage();
-
             return;
         }
 
         if (!shouldFollowTimelineChange(change, scrollMode)) {
-            if (scrollMode === "detached") {
-                scheduleDetachedAnchorRestore();
-            }
+            return;
+        }
+
+        if (change.appendedLocalItem) {
+            transitionScrollMode({ type: "local-append" });
+            scrollToNewest();
 
             return;
         }
 
-        const wasAttachedRemoteAppend = change.kind === "append" && scrollMode === "attached";
-
-        if (change.appendedLocalItem) {
-            cancelHistoryRestoration();
-            historyPaginationIntent.current = false;
-            transitionScrollMode({ type: "local-append" });
-        } else if (wasAttachedRemoteAppend) {
-            transitionScrollMode({ type: "bottom-state", atBottom: true });
+        if (scrollMode === "attached") {
+            scrollToNewest();
         }
-
-        scheduleBottomPosition();
-    }, [
-        cancelHistoryRestoration,
-        firstItemIndex,
-        items,
-        restoreHistoryAnchor,
-        scheduleBottomPosition,
-        scheduleDetachedAnchorRestore,
-        scrollMode,
-        settleAtNewestMessage,
-        transitionScrollMode,
-    ]);
-
-    useEffect(
-        () => () => {
-            removeScrollerListeners.current?.();
-
-            if (bottomFrame.current !== null) {
-                window.cancelAnimationFrame(bottomFrame.current);
-            }
-
-            if (programmaticResetFrame.current !== null) {
-                window.cancelAnimationFrame(programmaticResetFrame.current);
-            }
-
-            if (historyAnchorFrame.current !== null) {
-                window.cancelAnimationFrame(historyAnchorFrame.current);
-            }
-
-            if (detachedRestoreFrame.current !== null) {
-                window.cancelAnimationFrame(detachedRestoreFrame.current);
-            }
-
-            if (newestMessageFrame.current !== null) {
-                window.cancelAnimationFrame(newestMessageFrame.current);
-            }
-
-            if (userScrollEndTimer.current !== null) {
-                window.clearTimeout(userScrollEndTimer.current);
-            }
-
-            if (userScrollEndFrame.current !== null) {
-                window.cancelAnimationFrame(userScrollEndFrame.current);
-            }
-
-            historyAnchor.current = null;
-            historyRestoreDeferred.current = false;
-            detachedViewportAnchor.current = null;
-            historyRequestGeneration.current += 1;
-            historyRequestInFlight.current = false;
-            bottomPositionPending.current = false;
-            programmaticScroll.current = false;
-            userScrollActive.current = false;
-        },
-        [],
-    );
-
-    const onItemsRendered = useCallback(
-        (renderedItems: readonly unknown[]) => {
-            if (renderedItems.length > 0) {
-                settleAtNewestMessage();
-            }
-        },
-        [settleAtNewestMessage],
-    );
+    }, [firstItemIndex, items, scrollToNewest, scrollMode, transitionScrollMode]);
 
     const paginationState = loadingHistory ? "loading" : hasMoreHistory ? "idle" : "exhausted";
 
@@ -3220,17 +2289,18 @@ export function Timeline({
             data-pagination-state={paginationState}
         >
             <Virtuoso
-                key={estimateLayoutRevision}
+                ref={virtuosoRef}
                 data={items}
                 firstItemIndex={firstItemIndex}
                 alignToBottom
                 heightEstimates={itemHeightEstimates}
-                computeItemKey={(_index, item) => item.id}
+                computeItemKey={(_index, item) => timelineEntranceIdentity(item)}
                 followOutput={false}
+                atBottomThreshold={TIMELINE_BOTTOM_TOLERANCE_PX}
+                atBottomStateChange={handleBottomStateChange}
+                itemsRendered={handleItemsRendered}
                 startReached={() => loadEarlierHistory()}
                 scrollerRef={setScroller}
-                itemsRendered={onItemsRendered}
-                totalListHeightChanged={preserveAttachedBottomAfterTimelineHeightChange}
                 increaseViewportBy={TIMELINE_VIEWPORT_PADDING}
                 components={TIMELINE_COMPONENTS}
                 context={virtuosoContext}
