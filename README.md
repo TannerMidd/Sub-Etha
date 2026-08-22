@@ -68,6 +68,8 @@ docker compose up --build -d
 
 Then open <http://localhost:3000>. That single command builds the app, starts a local PostgreSQL database, applies migrations, generates Web Push keys, and serves the client. Data survives restarts in named volumes; see the [local Docker guide](./docs/local-docker.md) for logs, resets, port overrides, using it from your phone or another device, and troubleshooting.
 
+Matrix OAuth requires an HTTPS origin, so local logins use password or access-token methods by default. To exercise OAuth, legacy SSO against allowlisting homeservers, phone notifications, or the installable PWA, start the optional HTTPS tunnel (`docker compose --profile tunnel up -d tunnel`, then read the URL from `docker compose logs tunnel`) — details and homeserver-side caveats in [the guide](./docs/local-docker.md#testing-matrix-oauth-and-sso-through-the-tunnel).
+
 ### Browser and interface development
 
 Node.js development requires Node.js 22.13 or later and uses the committed npm lockfile.

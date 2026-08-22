@@ -98,6 +98,21 @@ Notes and limits:
 - Push subscriptions are per-origin: enabling notifications on the tunnel origin does not conflict with `localhost`; each browser manages its own subscription.
 - A quick-tunnel URL is reachable from the public internet by anyone who learns it (long and unguessable, but not protected). Fine for testing; tear it down with `docker compose --profile tunnel down` when finished.
 
+### Testing Matrix OAuth and SSO through the tunnel
+
+The app refuses OAuth outside HTTPS by design — over `http://localhost:3000` it offers password, legacy SSO (homeserver permitting), and access-token login instead. The tunnel supplies a real HTTPS origin, which satisfies that requirement; the rest is homeserver policy:
+
+1. Start the tunnel and open its `https://*.trycloudflare.com` URL.
+2. Choose "Continue securely with OAuth". Sub-Etha registers itself dynamically with your homeserver's authentication service using `<tunnel-origin>/` as the redirect URI.
+
+Whether login completes depends on what the homeserver accepts:
+
+- Homeservers running [Matrix Authentication Service](https://github.com/matrix-org/matrix-authentication-service) **with dynamic client registration enabled** accept the new origin immediately. Self-hosting MAS? Set `dynamic_client_registration: true` while testing.
+- Locked-down providers may reject unknown redirect URIs or clients. There is nothing to configure on this side; use password or access-token login there instead, or ask the administrator to allow your origin.
+- Legacy SSO redirects must match the homeserver's allowlist (Synapse: `sso.allowed_client_redirect_url_patterns`). Synapse's defaults already cover `http://localhost` patterns, so SSO often works directly on `http://localhost:3000` without any tunnel; a tunnel hostname needs an admin-added pattern.
+
+Because quick-tunnel URLs change on every restart, treat them as disposable test origins. For dependable OAuth, use a stable hostname (a named Cloudflare tunnel or Tailscale Funnel) so you allowlist exactly one origin with your homeserver once.
+
 ## Configuration
 
 Everything has a working default; these overrides are optional.
