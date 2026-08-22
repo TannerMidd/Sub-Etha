@@ -1,0 +1,57 @@
+# Run Sub-Etha entirely on your machine:
+#
+#   docker compose up --build -d
+#
+# Then open http://localhost:3000. See docs/local-docker.md for details.
+
+services:
+    db:
+        image: postgres:17-alpine
+        restart: unless-stopped
+        environment:
+            POSTGRES_USER: sub_etha
+            POSTGRES_PASSWORD: sub_etha
+            POSTGRES_DB: sub_etha
+        volumes:
+            - db-data:/var/lib/postgresql/data
+        healthcheck:
+            test: ["CMD-SHELL", "pg_isready -U sub_etha -d sub_etha"]
+            interval: 5s
+            timeout: 3s
+            retries: 24
+            start_period: 5s
+
+    app:
+        build:
+            context: .
+        restart: unless-stopped
+        ports:
+            # Override with APP_PORT=8080 docker compose up if port 3000 is taken.
+            - "${APP_PORT:-3000}:3000"
+        environment:
+            DATABASE_URL: postgres://sub_etha:sub_etha@db:5432/sub_etha
+            DATABASE_URL_UNPOOLED: postgres://sub_etha:sub_etha@db:5432/sub_etha
+            VAPID_SUBJECT: ${VAPID_SUBJECT:-http://localhost:3000}
+        volumes:
+            - app-state:/app/state
+        depends_on:
+            db:
+                condition: service_healthy
+
+    # Optional public HTTPS entry for phones and other devices:
+    #
+    #   docker compose --profile tunnel up -d tunnel
+    #   docker compose logs tunnel   # copy the https://*.trycloudflare.com URL
+    #
+    # See "Use Sub-Etha from your phone or another device" in docs/local-docker.md.
+    tunnel:
+        image: cloudflare/cloudflared:latest
+        profiles: ["tunnel"]
+        restart: unless-stopped
+        command: tunnel --no-autoupdate --url http://app:3000
+        depends_on:
+            - app
+
+volumes:
+    db-data:
+    app-state:

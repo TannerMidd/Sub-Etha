@@ -46,3 +46,6 @@ yarn-error.log*
 
 # local visual QA evidence
 /design-*.png
+
+# local VAPID key state (scripts/generate-vapid-keys.mjs default output)
+.local-state/
