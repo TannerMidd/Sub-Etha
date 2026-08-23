@@ -49,7 +49,7 @@ test("Trusted Types policy and dependency patches stay narrow and fail-closed", 
         patcherSource,
     ] = await Promise.all([
         readFile(`${PROJECT_ROOT}/lib/matrix/trusted-html.ts`, "utf8"),
-        readFile(`${PROJECT_ROOT}/app/components/Timeline.tsx`, "utf8"),
+        readFile(`${PROJECT_ROOT}/app/components/timeline/MessageBody.tsx`, "utf8"),
         readFile(`${PROJECT_ROOT}/app/components/EmojiPickerPanel.tsx`, "utf8"),
         readFile(`${PROJECT_ROOT}/package.json`, "utf8"),
         readFile(`${PROJECT_ROOT}/package-lock.json`, "utf8"),

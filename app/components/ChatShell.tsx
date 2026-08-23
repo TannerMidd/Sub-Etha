@@ -49,7 +49,7 @@ import {
     VerificationDialog,
 } from "./Panels";
 import { SkeletonBar, SkeletonGroup } from "./Skeleton";
-import { Timeline, TimelineSkeleton } from "./Timeline";
+import { Timeline, TimelineSkeleton } from "./timeline";
 import { classes } from "../styles/appStyles";
 
 type OpenDialog = "new" | "search" | "settings" | "details" | null;

@@ -62,7 +62,7 @@ It improves short-term reuse but permits memory growth controlled by remote cont
 
 - Limits and byte validation: `lib/matrix/media.ts`
 - Fetching, decryption, queueing, and cache lifecycle: `lib/matrix/client.ts`
-- Rendering and viewer behavior: `app/components/Timeline.tsx`
+- Rendering and viewer behavior: `app/components/timeline/` (full-screen viewer: `Lightbox.tsx`)
 - Media unit tests: `tests/security-client.test.ts`, `tests/matrix-service.test.ts`
 
 ## Revisit when

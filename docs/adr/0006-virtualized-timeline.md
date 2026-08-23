@@ -60,7 +60,7 @@ Virtuoso supplies mechanics, but Matrix-specific attachment and change semantics
 
 - State machine: `lib/timeline-scroll.ts`
 - Prepend geometry: `lib/timeline-window.ts`
-- Integration: `app/components/Timeline.tsx`
+- Integration: `app/components/timeline/Timeline.tsx`
 - Layout owners: `app/styles/Timeline.module.scss`, composer styles
 - Unit and CSS-invariant tests: `tests/*.test.ts`
 - Desktop and mobile behavior: `tests/browser/`
