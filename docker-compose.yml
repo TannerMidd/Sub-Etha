@@ -31,7 +31,7 @@ services:
         environment:
             DATABASE_URL: postgres://sub_etha:sub_etha@db:5432/sub_etha
             DATABASE_URL_UNPOOLED: postgres://sub_etha:sub_etha@db:5432/sub_etha
-            VAPID_SUBJECT: ${VAPID_SUBJECT:-http://localhost:3000}
+            VAPID_SUBJECT: ${VAPID_SUBJECT:-mailto:admin@localhost}
         volumes:
             - app-state:/app/state
         depends_on:

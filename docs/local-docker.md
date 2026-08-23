@@ -94,7 +94,7 @@ Copy the `https://<something>.trycloudflare.com` URL from the logs and open it o
 Notes and limits:
 
 - Quick-tunnel URLs change whenever the `tunnel` container restarts. A new URL means a new origin: sign in and enable notifications again. For a stable name use [Tailscale Funnel](https://tailscale.com/kb/1223/funnel) or a named Cloudflare tunnel pointed at `http://localhost:3000`.
-- Set `VAPID_SUBJECT` to the origin you actually use before starting the `app` service if you care about the contact address embedded in push messages.
+- The default `VAPID_SUBJECT` is the valid local contact URI `mailto:admin@localhost`. For a shared deployment, replace it with a real `mailto:` address or `https:` contact page. This is contact metadata and does not need to match the app's browser origin.
 - Push subscriptions are per-origin: enabling notifications on the tunnel origin does not conflict with `localhost`; each browser manages its own subscription.
 - A quick-tunnel URL is reachable from the public internet by anyone who learns it (long and unguessable, but not protected). Fine for testing; tear it down with `docker compose --profile tunnel down` when finished.
 
@@ -125,7 +125,7 @@ If port 3000 is already used on your machine:
 APP_PORT=8080 docker compose up --build -d
 ```
 
-Then open <http://localhost:8080>. If you rely on Web Push in the browser, also set `VAPID_SUBJECT` to the origin browsers use, for example `-e` style via an environment line: add `VAPID_SUBJECT: http://localhost:8080` under `app.environment`, or export `VAPID_SUBJECT=...` before `docker compose up`.
+Then open <http://localhost:8080>. The VAPID subject is contact metadata rather than an application origin, so it does not need to change when the host port changes.
 
 ### Bring your own VAPID keys
 
@@ -135,7 +135,7 @@ Generate once with any web-push tool (or reuse production keys if you own them):
 npx web-push generate-vapid-keys
 ```
 
-Then set `VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY`, and `VAPID_SUBJECT` in the `app.environment` block of `docker-compose.yml` (or an override file). Environment-provided keys win over the auto-generated ones stored in `app-state`.
+Then set `VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY`, and `VAPID_SUBJECT` in the `app.environment` block of `docker-compose.yml` (or an override file). The subject must be an `https:` contact URL or `mailto:` address. Environment-provided keys win over the auto-generated ones stored in `app-state`.
 
 ### Reach the database from your host
 

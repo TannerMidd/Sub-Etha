@@ -33,7 +33,7 @@ ensure_vapid_keys() {
 ensure_vapid_keys
 
 if [ -z "${VAPID_SUBJECT:-}" ]; then
-    VAPID_SUBJECT="http://localhost:${PORT:-3000}"
+    VAPID_SUBJECT="mailto:admin@localhost"
     export VAPID_SUBJECT
 fi
 
