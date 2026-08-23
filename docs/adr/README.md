@@ -28,6 +28,7 @@ Use **Proposed**, **Accepted**, **Deprecated**, **Superseded** with one or more 
 | [0020](./0020-security-and-data-minimization.md)            | Minimize data and bound untrusted work                                     |
 | [0021](./0021-cache-free-pwa-and-inert-offline-response.md) | Keep the worker cache-free with an inert offline response                  |
 | [0022](./0022-browser-only-youtube-thumbnails.md)           | Keep bounded YouTube thumbnails browser-direct and privacy-minimal         |
+| [0023](./0023-local-docker-deployment-topology.md)          | Support a fully local Docker deployment topology                           |
 
 ## Historical records
 

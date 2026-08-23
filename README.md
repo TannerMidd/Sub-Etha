@@ -58,9 +58,21 @@ For the complete boundary and state-ownership map, read [Architecture](./docs/ar
 
 ## Quick start
 
-Sub-Etha requires Node.js 22.13 or later and uses the committed npm lockfile.
+### Run it entirely on your machine (easiest)
 
-For browser and interface development:
+The only prerequisite is [Docker](https://docs.docker.com/get-docker/). From the repository root:
+
+```bash
+docker compose up --build -d
+```
+
+Then open <http://localhost:3000>. That single command builds the app, starts a local PostgreSQL database, applies migrations, generates Web Push keys, and serves the client. Data survives restarts in named volumes; see the [local Docker guide](./docs/local-docker.md) for logs, resets, port overrides, using it from your phone or another device, and troubleshooting.
+
+Matrix OAuth requires an HTTPS origin, so local logins use password or access-token methods by default. To exercise OAuth, legacy SSO against allowlisting homeservers, phone notifications, or the installable PWA, start the optional HTTPS tunnel (`docker compose --profile tunnel up -d tunnel`, then read the URL from `docker compose logs tunnel`) — details and homeserver-side caveats in [the guide](./docs/local-docker.md#testing-matrix-oauth-and-sso-through-the-tunnel).
+
+### Browser and interface development
+
+Node.js development requires Node.js 22.13 or later and uses the committed npm lockfile.
 
 ```bash
 npm ci
@@ -98,15 +110,15 @@ Apply compatible database additions before deploying code that depends on them.
 
 ## Project guide
 
-| Area                 | Responsibility                                                              |
-| -------------------- | --------------------------------------------------------------------------- |
-| `app/components/`    | Application shell, login, rooms, timeline, composer, and settings           |
-| `app/styles/`        | Semantic tokens, shared primitives, and component presentation              |
-| `lib/matrix/`        | Matrix authentication, SDK lifecycle, crypto, media, and normalized UI data |
-| `lib/push-*.ts`      | Push validation, delivery policy, rate budgets, and persistence boundary    |
-| `db/` and `drizzle/` | Neon/Drizzle schema, repository connection, and migrations                  |
-| `tests/`             | Unit, integration, security-boundary, browser, and visual coverage          |
-| `docs/`              | Current architecture, code conventions, and durable decisions               |
+| Area                 | Responsibility                                                                     |
+| -------------------- | ---------------------------------------------------------------------------------- |
+| `app/components/`    | Application shell, login, rooms, timeline, composer, and settings                  |
+| `app/styles/`        | Semantic tokens, shared primitives, and component presentation                     |
+| `lib/matrix/`        | Matrix authentication, SDK lifecycle, crypto, media, and normalized UI data        |
+| `lib/push-*.ts`      | Push validation, delivery policy, rate budgets, and persistence boundary           |
+| `db/` and `drizzle/` | PostgreSQL/Drizzle schema, repository connection, driver selection, and migrations |
+| `tests/`             | Unit, integration, security-boundary, browser, and visual coverage                 |
+| `docs/`              | Current architecture, code conventions, and durable decisions                      |
 
 Start with the [architecture map](./docs/architecture.md), use the [active ADRs](./docs/adr/README.md#active-decisions) for durable rationale, and follow the [codebase conventions](./docs/code-conventions.md) for routine development.
 

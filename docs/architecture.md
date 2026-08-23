@@ -65,17 +65,17 @@ Resource-intensive media work is admitted serially through a bounded count-and-b
 
 ## State ownership
 
-| State                                            | Owner                   | Persistence                                 |
-| ------------------------------------------------ | ----------------------- | ------------------------------------------- |
-| Matrix session and crypto storage key            | Browser Matrix adapter  | IndexedDB                                   |
-| Matrix sync and timeline store                   | Matrix adapter          | `MemoryStore`; fresh sync after each reload |
-| Rust crypto store                                | Matrix SDK              | IndexedDB                                   |
-| Active application snapshot                      | Matrix adapter          | Memory                                      |
-| Component interaction state                      | Owning React component  | Memory                                      |
-| Drafts, theme, authoritative push capabilities   | Browser application     | `localStorage`                              |
-| Pending OAuth or SSO transaction                 | Browser tab             | `sessionStorage`                            |
-| Worker-side push configuration replica           | Service worker          | IndexedDB                                   |
-| Push subscriptions, budgets, and delivery leases | Push service/repository | Neon PostgreSQL                             |
+| State                                            | Owner                   | Persistence                                                                                                                |
+| ------------------------------------------------ | ----------------------- | -------------------------------------------------------------------------------------------------------------------------- |
+| Matrix session and crypto storage key            | Browser Matrix adapter  | IndexedDB                                                                                                                  |
+| Matrix sync and timeline store                   | Matrix adapter          | `MemoryStore`; fresh sync after each reload                                                                                |
+| Rust crypto store                                | Matrix SDK              | IndexedDB                                                                                                                  |
+| Active application snapshot                      | Matrix adapter          | Memory                                                                                                                     |
+| Component interaction state                      | Owning React component  | Memory                                                                                                                     |
+| Drafts, theme, authoritative push capabilities   | Browser application     | `localStorage`                                                                                                             |
+| Pending OAuth or SSO transaction                 | Browser tab             | `sessionStorage`                                                                                                           |
+| Worker-side push configuration replica           | Service worker          | IndexedDB                                                                                                                  |
+| Push subscriptions, budgets, and delivery leases | Push service/repository | PostgreSQL via Drizzle (Neon HTTP in production; standard wire protocol for [local Docker deployments](./local-docker.md)) |
 
 Page-side push capabilities are authoritative. Enabling or reconciling push sends `SET_PUSH_CONFIG` to the worker replica; disable and logout send `CLEAR_PUSH_CONFIG`. The replica exists so the worker can handle subscription lifecycle while no page is open. Other mirrored state needs an explicit synchronization rule; otherwise consumers derive it from the owner.
 

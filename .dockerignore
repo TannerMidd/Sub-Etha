@@ -1,0 +1,33 @@
+# Keep the build context small; the image only needs source, configs, and lockfile.
+.git
+.npm-cache
+.next
+.vinext
+.output
+.vercel
+dist
+node_modules
+
+# Local state and secrets never enter the image.
+.env*
+*.pem
+*.local
+
+# Development and QA tooling that the build does not read.
+docs
+designs
+tests
+playwright-report
+test-results
+work
+outputs
+
+# Docker files themselves.
+Dockerfile
+docker-compose.yml
+.dockerignore
+
+# Generated artifacts.
+*.tsbuildinfo
+design-*.png
+npm-debug.log*

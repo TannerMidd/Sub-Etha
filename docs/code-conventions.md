@@ -28,6 +28,7 @@ These rules keep routine changes consistent. They are deliberately not ADRs: the
 - Change `db/schema.ts`, generate and review the corresponding Drizzle migration, and commit both.
 - Follow the expand-and-contract rollout in [ADR-0016](./adr/0016-runtime-and-deployment-topology.md): apply compatible additions before dependent code and defer destructive removal.
 - Include an apply-before-deploy plan when application code depends on new schema.
+- Local Docker deployments migrate through `scripts/migrate.mjs`, which shares drizzle-kit's history table; both paths stay interchangeable.
 
 ## Documentation
 
