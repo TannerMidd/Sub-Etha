@@ -19,9 +19,7 @@ test("local Docker VAPID defaults use supported contact URIs", async () => {
         readFile(`${PROJECT_ROOT}/docker-compose.yml`, "utf8"),
         readFile(`${PROJECT_ROOT}/docker/entrypoint.sh`, "utf8"),
     ]);
-    const composeDefault = compose.match(
-        /VAPID_SUBJECT:\s+\$\{VAPID_SUBJECT:-([^}]+)\}/,
-    )?.[1];
+    const composeDefault = compose.match(/VAPID_SUBJECT:\s+\$\{VAPID_SUBJECT:-([^}]+)\}/)?.[1];
     const entrypointDefault = entrypoint.match(/VAPID_SUBJECT="([^"]+)"/)?.[1];
 
     assert.ok(composeDefault, "Compose must define a default VAPID subject.");
