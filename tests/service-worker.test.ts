@@ -406,6 +406,14 @@ test("background Matrix pushes collapse to one notification per room", async () 
     assert.equal(worker.active.size, 2);
 });
 
+test("badge-only Matrix pushes update the badge without alerting", async () => {
+    const worker = createWorker();
+
+    await worker.push({ kind: "matrix", unread: 4 });
+    assert.equal(worker.shown.length, 0);
+    assert.deepEqual(worker.badgeSets, [4]);
+});
+
 test("visible clients suppress Matrix notifications while badges remain accurate", async () => {
     const worker = createWorker(true);
 
