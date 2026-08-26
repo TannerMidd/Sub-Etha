@@ -652,7 +652,7 @@ self.addEventListener("push", (event) => {
 
             const operations = [];
 
-            if (!visible) {
+            if (!visible && (test || eventId)) {
                 operations.push(
                     showNotificationForGeneration(config, "Sub-Etha", {
                         body: test
