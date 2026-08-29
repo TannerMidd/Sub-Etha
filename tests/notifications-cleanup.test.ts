@@ -9,6 +9,7 @@ import {
     hasBrowserPushArtifacts,
     hasLocalPushStateForCleanup,
     readAbandonedMatrixPusherWarning,
+    reconcilePushOnStartup,
     refreshPushState,
 } from "../lib/matrix/notifications";
 
@@ -799,6 +800,8 @@ function installPushSetupFixture() {
     let gatewayPostMode: GatewayPostMode = "registered";
     let pageConfirmationDelivery = true;
     let gatewayDeleteFails = false;
+    let vapidFails = false;
+    let permissionRequests = 0;
     let removePusherFails = false;
     let pusherOperation: (pushKey: string) => Promise<void> = async () => undefined;
     let permissionOperation: () => Promise<void> = async () => undefined;
@@ -936,6 +939,7 @@ function installPushSetupFixture() {
     const notification = {
         permission: "granted" as NotificationPermission,
         requestPermission: async () => {
+            permissionRequests += 1;
             await permissionOperation();
 
             return "granted" as NotificationPermission;
@@ -1018,10 +1022,13 @@ function installPushSetupFixture() {
     });
     globalThis.fetch = (async (_input, init) => {
         if (!init?.method) {
-            return new Response(JSON.stringify({ publicKey: "AQID" }), {
-                status: 200,
-                headers: { "Content-Type": "application/json" },
-            });
+            return new Response(
+                JSON.stringify(vapidFails ? { error: "push unavailable" } : { publicKey: "AQID" }),
+                {
+                    status: vapidFails ? 503 : 200,
+                    headers: { "Content-Type": "application/json" },
+                },
+            );
         }
 
         const body = JSON.parse(String(init.body)) as {
@@ -1084,6 +1091,7 @@ function installPushSetupFixture() {
         gatewayPosts,
         matrixPushers,
         operationOrder,
+        permissionRequests: () => permissionRequests,
         removedPushers,
         service,
         storage,
@@ -1104,8 +1112,17 @@ function installPushSetupFixture() {
         setGatewayDeleteFails: (value: boolean) => {
             gatewayDeleteFails = value;
         },
+        setLiveSubscription: (value: boolean) => {
+            liveSubscription = value;
+        },
+        setVapidFails: (value: boolean) => {
+            vapidFails = value;
+        },
         setGatewayPostMode: (value: GatewayPostMode) => {
             gatewayPostMode = value;
+        },
+        setNotificationPermission: (value: NotificationPermission) => {
+            notification.permission = value;
         },
         setPageConfirmationDelivery: (value: boolean) => {
             pageConfirmationDelivery = value;
@@ -1191,6 +1208,106 @@ test("a worker without protocol-v2 acknowledgement leaves push lifecycle untouch
     assert.equal(fixture.operationOrder.includes("worker-set"), false);
     assert.equal(fixture.storage.getItem("sub-etha-push-cleanup-v1"), null);
     assert.equal(fixture.storage.getItem("sub-etha-push-management-key"), null);
+});
+
+test("startup reconciliation repairs a prior granted enrollment without prompting", async () => {
+    const fixture = installPushSetupFixture();
+
+    fixture.storage.setItem("sub-etha-push-delivery-key", "delivery-existing");
+    fixture.storage.setItem("sub-etha-push-management-key", "management-existing");
+    fixture.storage.setItem("sub-etha-push-generation", "generation-existing");
+    const state = await reconcilePushOnStartup(fixture.service);
+
+    assert.equal(state?.enabled, true);
+    assert.equal(fixture.gatewayPosts.length, 1);
+    assert.equal(fixture.matrixPushers.length, 1);
+    assert.equal(fixture.permissionRequests(), 0);
+});
+
+test("startup reconciliation ignores fresh and ungranted browsers", async () => {
+    const fresh = installPushSetupFixture();
+
+    assert.equal(await reconcilePushOnStartup(fresh.service), null);
+    assert.equal(fresh.gatewayPosts.length, 0);
+    assert.equal(fresh.permissionRequests(), 0);
+
+    const defaultPermission = installPushSetupFixture();
+
+    defaultPermission.storage.setItem("sub-etha-push-delivery-key", "delivery-existing");
+    defaultPermission.storage.setItem("sub-etha-push-management-key", "management-existing");
+    defaultPermission.storage.setItem("sub-etha-push-generation", "generation-existing");
+    defaultPermission.setNotificationPermission("default");
+    assert.equal(await reconcilePushOnStartup(defaultPermission.service), null);
+    assert.equal(defaultPermission.permissionRequests(), 0);
+
+    const denied = installPushSetupFixture();
+
+    denied.storage.setItem("sub-etha-push-delivery-key", "delivery-existing");
+    denied.storage.setItem("sub-etha-push-management-key", "management-existing");
+    denied.storage.setItem("sub-etha-push-generation", "generation-existing");
+    denied.setNotificationPermission("denied");
+    assert.equal(await reconcilePushOnStartup(denied.service), null);
+    assert.equal(denied.gatewayPosts.length, 0);
+    assert.equal(denied.permissionRequests(), 0);
+});
+
+test("startup cleans worker-only artifacts instead of promoting replica capabilities", async () => {
+    const fixture = installPushSetupFixture();
+
+    fixture.setWorkerConfig({
+        deliveryKey: "delivery-worker",
+        managementKey: "management-worker",
+        generation: "generation-worker",
+    });
+    fixture.setLiveSubscription(true);
+    const state = await reconcilePushOnStartup(fixture.service);
+
+    assert.equal(state?.enabled, false);
+    assert.deepEqual(fixture.gatewayPosts, []);
+    assert.deepEqual(fixture.gatewayDeletes, ["management-worker"]);
+    assert.deepEqual(fixture.removedPushers, ["delivery-worker"]);
+    assert.equal(fixture.storage.getItem("sub-etha-push-delivery-key"), null);
+    assert.equal(fixture.permissionRequests(), 0);
+});
+
+test("startup reconciliation can retry after VAPID discovery fails", async () => {
+    const fixture = installPushSetupFixture();
+
+    fixture.storage.setItem("sub-etha-push-delivery-key", "delivery-existing");
+    fixture.storage.setItem("sub-etha-push-management-key", "management-existing");
+    fixture.storage.setItem("sub-etha-push-generation", "generation-existing");
+    fixture.setVapidFails(true);
+    const failed = await reconcilePushOnStartup(fixture.service);
+
+    assert.equal(failed?.enabled, false);
+    assert.match(failed?.error ?? "", /not configured/i);
+
+    fixture.setVapidFails(false);
+    const state = await reconcilePushOnStartup(fixture.service);
+
+    assert.equal(state?.enabled, true);
+    assert.equal(fixture.gatewayPosts.length, 1);
+    assert.equal(fixture.permissionRequests(), 0);
+});
+
+test("startup and Settings share one in-flight push reconciliation", async () => {
+    const fixture = installPushSetupFixture();
+
+    fixture.storage.setItem("sub-etha-push-delivery-key", "delivery-existing");
+    fixture.storage.setItem("sub-etha-push-management-key", "management-existing");
+    fixture.storage.setItem("sub-etha-push-generation", "generation-existing");
+    const paused = fixture.pauseNextSubscriptionLookup();
+    const startup = reconcilePushOnStartup(fixture.service);
+
+    await paused.started;
+    const settings = refreshPushState(fixture.service);
+
+    paused.release();
+    const [startupState, settingsState] = await Promise.all([startup, settings]);
+
+    assert.equal(startupState?.enabled, true);
+    assert.equal(settingsState.enabled, true);
+    assert.equal(fixture.gatewayPosts.length, 1);
 });
 
 test("refresh reports update-required without clearing an existing enrollment", async () => {

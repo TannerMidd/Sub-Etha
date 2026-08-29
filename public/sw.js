@@ -10,6 +10,8 @@ const PUSH_STORE = "settings";
 const ROOM_NOTIFICATION_PREFIX = "sub-etha-room:";
 const GENERIC_NOTIFICATION_TAG = "sub-etha-generic";
 const TEST_NOTIFICATION_TAG = "sub-etha-test";
+const SETUP_NOTIFICATION_TAG = "sub-etha-setup";
+const FALLBACK_NOTIFICATION_TAG = "sub-etha-fallback";
 const PUSH_PROTOCOL_VERSION = 2;
 // Push configuration, badges, and stale-push compensation all share one queue.
 // A badge API call cannot be cancelled once it has started, so configuration
@@ -71,12 +73,6 @@ async function dismissNotificationTag(tag, generation) {
             notification.close();
         }
     }
-}
-
-async function hasVisibleWindow() {
-    const windows = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
-
-    return windows.some((client) => client.visibilityState === "visible");
 }
 
 function openPushDatabase() {
@@ -211,15 +207,16 @@ async function dismissNotificationsForGeneration(generation) {
     }
 }
 
-async function canonicalGeneration(managementKey) {
-    const digest = await self.crypto.subtle.digest(
-        "SHA-256",
-        new TextEncoder().encode(managementKey),
-    );
+async function hashPushIdentifier(value) {
+    const digest = await self.crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
 
     return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join(
         "",
     );
+}
+
+function canonicalGeneration(managementKey) {
+    return hashPushIdentifier(managementKey);
 }
 
 async function migratePushConfigInQueue(generation, managementKey) {
@@ -302,10 +299,23 @@ function showNotificationForGeneration(config, title, options) {
         const current = await readPushConfig();
 
         if (!samePushConfig(config, current)) {
-            return;
+            return false;
         }
 
         await self.registration.showNotification(title, options);
+
+        return true;
+    });
+}
+
+function showFallbackNotification() {
+    return self.registration.showNotification("Sub-Etha", {
+        body: "A new transmission has arrived.",
+        icon: "/icon-192.png",
+        badge: "/icon-192.png",
+        tag: FALLBACK_NOTIFICATION_TAG,
+        renotify: false,
+        data: { kind: "fallback" },
     });
 }
 
@@ -595,89 +605,135 @@ self.addEventListener("push", (event) => {
 
     event.waitUntil(
         (async () => {
-            if (
-                payload.kind === "subscription-challenge" &&
-                typeof payload.challenge === "string" &&
-                (typeof payload.generation === "string" || payload.generation === undefined)
-            ) {
-                const config = await readPushConfig();
-                const generationMatches =
-                    typeof payload.generation === "string"
-                        ? config?.generation === payload.generation
-                        : config?.legacyGeneration === true;
+            let displayed = false;
 
-                if (!generationMatches) {
+            const displayFallback = async () => {
+                if (!displayed) {
+                    await showFallbackNotification();
+                    displayed = true;
+                }
+            };
+
+            try {
+                if (
+                    payload.kind === "subscription-challenge" &&
+                    typeof payload.challenge === "string" &&
+                    (typeof payload.generation === "string" || payload.generation === undefined)
+                ) {
+                    // WebKit enforces userVisibleOnly by revoking subscriptions that handle push
+                    // silently; a badge alone is not sufficient. Keep endpoint proof, but make its
+                    // one-time challenge visible without exposing the challenge or capabilities.
+                    await self.registration.showNotification("Sub-Etha", {
+                        body: "Notifications are ready to receive transmissions.",
+                        icon: "/icon-192.png",
+                        badge: "/icon-192.png",
+                        tag: SETUP_NOTIFICATION_TAG,
+                        renotify: false,
+                        data: { kind: "setup" },
+                    });
+                    displayed = true;
+
+                    const config = await readPushConfig();
+                    const generationMatches =
+                        typeof payload.generation === "string"
+                            ? config?.generation === payload.generation
+                            : config?.legacyGeneration === true;
+
+                    if (!generationMatches) {
+                        return;
+                    }
+
+                    const response = await fetch("/api/push/subscriptions", {
+                        method: "PATCH",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({ challenge: payload.challenge }),
+                    });
+
+                    if (!response.ok) {
+                        throw new Error("Push subscription confirmation failed.");
+                    }
+
+                    const clients = await self.clients.matchAll({
+                        type: "window",
+                        includeUncontrolled: true,
+                    });
+
+                    for (const client of clients) {
+                        client.postMessage({ type: "PUSH_SUBSCRIPTION_CONFIRMED" });
+                    }
+
                     return;
                 }
 
-                const response = await fetch("/api/push/subscriptions", {
-                    method: "PATCH",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ challenge: payload.challenge }),
-                });
+                const config = await readPushConfig();
 
-                if (!response.ok) {
-                    throw new Error("Push subscription confirmation failed.");
+                if (!config?.deliveryKey || !config?.managementKey || !config?.generation) {
+                    await displayFallback();
+
+                    return;
                 }
 
-                const clients = await self.clients.matchAll({
-                    type: "window",
-                    includeUncontrolled: true,
-                });
+                const test = payload.kind === "test";
+                const matrix = payload.kind === "matrix";
+                const roomId = matrix && typeof payload.roomId === "string" ? payload.roomId : null;
+                const eventId =
+                    matrix && typeof payload.eventId === "string" && payload.eventId.length > 0
+                        ? payload.eventId
+                        : null;
+                const unread = Number(payload.unread || 0);
+                const current = await readPushConfig();
+                const owner = await hashPushIdentifier(config.deliveryKey);
 
-                for (const client of clients) {
-                    client.postMessage({ type: "PUSH_SUBSCRIPTION_CONFIRMED" });
+                if (
+                    !samePushConfig(config, current) ||
+                    typeof payload.owner !== "string" ||
+                    payload.owner !== owner
+                ) {
+                    await displayFallback();
+
+                    return;
                 }
 
-                return;
-            }
+                if (!test && !eventId) {
+                    await displayFallback();
+                    await syncBadgeForGeneration(config, unread);
 
-            const config = await readPushConfig();
+                    return;
+                }
 
-            if (!config?.deliveryKey || !config?.managementKey || !config?.generation) {
-                return;
-            }
-
-            const kind = payload.kind === "test" ? "test" : "matrix";
-            const roomId = typeof payload.roomId === "string" ? payload.roomId : null;
-            const eventId = typeof payload.eventId === "string" ? payload.eventId : null;
-            const unread = Number(payload.unread || 0);
-            const test = kind === "test";
-            const visible = test ? false : await hasVisibleWindow();
-            const current = await readPushConfig();
-
-            if (!samePushConfig(config, current)) {
-                return;
-            }
-
-            const operations = [];
-
-            if (!visible && (test || eventId)) {
-                operations.push(
-                    showNotificationForGeneration(config, "Sub-Etha", {
-                        body: test
-                            ? "The test transmission arrived successfully."
-                            : "A new transmission has arrived.",
-                        icon: "/icon-192.png",
-                        badge: "/icon-192.png",
-                        tag: test ? TEST_NOTIFICATION_TAG : notificationTag(roomId),
-                        renotify: test,
-                        data: { kind, roomId, eventId, generation: config.generation },
-                    }),
-                );
-            }
-
-            if (!test) {
-                operations.push(syncBadgeForGeneration(config, unread));
-            }
-
-            await Promise.all(operations);
-            const finalConfig = await readPushConfig();
-
-            if (!samePushConfig(config, finalConfig)) {
+                const kind = test ? "test" : "matrix";
                 const tag = test ? TEST_NOTIFICATION_TAG : notificationTag(roomId);
 
-                await dismissStaleNotification(config, tag);
+                displayed = await showNotificationForGeneration(config, "Sub-Etha", {
+                    body: test
+                        ? "The test transmission arrived successfully."
+                        : "A new transmission has arrived.",
+                    icon: "/icon-192.png",
+                    badge: "/icon-192.png",
+                    tag,
+                    renotify: test,
+                    data: { kind, roomId, eventId, generation: config.generation, owner },
+                });
+
+                if (!displayed) {
+                    await displayFallback();
+
+                    return;
+                }
+
+                if (!test) {
+                    await syncBadgeForGeneration(config, unread);
+                }
+
+                const finalConfig = await readPushConfig();
+
+                if (!samePushConfig(config, finalConfig)) {
+                    await dismissStaleNotification(config, tag);
+                }
+            } catch {
+                // A failed local read or confirmation remains retryable through page-side setup,
+                // but this received push must still settle visibly for userVisibleOnly.
+                await displayFallback();
             }
         })(),
     );
@@ -746,13 +802,36 @@ self.addEventListener("pushsubscriptionchange", (event) => {
 self.addEventListener("notificationclick", (event) => {
     event.notification.close();
     const data = event.notification.data || {};
-    const hash = data.roomId
-        ? `#/room/${encodeURIComponent(data.roomId)}${data.eventId ? `/event/${encodeURIComponent(data.eventId)}` : ""}`
-        : "#/";
-    const target = new URL(hash, self.location.origin).href;
 
     event.waitUntil(
-        self.clients.matchAll({ type: "window", includeUncontrolled: true }).then((clients) => {
+        (async () => {
+            let hash = "#/";
+
+            if (
+                data.kind === "matrix" &&
+                typeof data.generation === "string" &&
+                typeof data.owner === "string" &&
+                typeof data.roomId === "string"
+            ) {
+                const config = await readPushConfig().catch(() => null);
+                const currentOwner = config
+                    ? await hashPushIdentifier(config.deliveryKey).catch(() => null)
+                    : null;
+
+                if (
+                    config?.generation === data.generation &&
+                    currentOwner !== null &&
+                    currentOwner === data.owner
+                ) {
+                    hash = `#/room/${encodeURIComponent(data.roomId)}${data.eventId ? `/event/${encodeURIComponent(data.eventId)}` : ""}`;
+                }
+            }
+
+            const target = new URL(hash, self.location.origin).href;
+            const clients = await self.clients.matchAll({
+                type: "window",
+                includeUncontrolled: true,
+            });
             const client = clients[0];
 
             if (client) {
@@ -762,6 +841,6 @@ self.addEventListener("notificationclick", (event) => {
             }
 
             return self.clients.openWindow(target);
-        }),
+        })(),
     );
 });

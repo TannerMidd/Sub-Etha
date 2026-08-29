@@ -4,18 +4,31 @@ import test from "node:test";
 import vm from "node:vm";
 import { IDBFactory } from "fake-indexeddb";
 
+async function hashForTest(value: string): Promise<string> {
+    const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
+
+    return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
 interface ShownNotification {
     title: string;
     options: {
+        body?: string;
         data?: {
             eventId?: string | null;
             generation?: string;
             kind?: string;
+            owner?: string;
             roomId?: string | null;
         };
         renotify?: boolean;
         tag?: string;
     };
+}
+
+function assertOnlyNotificationKind(notification: ShownNotification, kind: string): void {
+    assert.equal(notification.options.data?.kind, kind);
+    assert.deepEqual(Object.keys(notification.options.data ?? {}), ["kind"]);
 }
 
 function createWorker(visible = false) {
@@ -28,13 +41,18 @@ function createWorker(visible = false) {
     >();
     const badgeSets: number[] = [];
     const clientMessages: unknown[] = [];
+    const navigations: string[] = [];
+    const openedWindows: string[] = [];
     const requests: Array<{ input: string; init?: RequestInit }> = [];
     const indexedDB = new IDBFactory();
     let badgeClears = 0;
+    let badgeFails = false;
     let badgeValue: number | null = null;
     let badgeWriteBarrier: Promise<void> | null = null;
     let badgeWriteStarted: (() => void) | null = null;
     let configured = false;
+    let currentDeliveryKey = "delivery-current";
+    let challengePatchStatus = 200;
     let notificationBarrier: Promise<void> | null = null;
     let notificationStarted: (() => void) | null = null;
     let firstNotificationBarrier: Promise<void> | null = null;
@@ -108,17 +126,29 @@ function createWorker(visible = false) {
                         postMessage(message: unknown) {
                             clientMessages.push(message);
                         },
+                        navigate(target: string) {
+                            navigations.push(target);
+                        },
+                        async focus() {},
                     },
                 ];
             },
+            async openWindow(target: string) {
+                openedWindows.push(target);
+            },
         },
         crypto: globalThis.crypto,
+        location: { origin: "https://sub-etha.example" },
         navigator: {
             async clearAppBadge() {
                 badgeWriteStarted?.();
 
                 if (badgeWriteBarrier) {
                     await badgeWriteBarrier;
+                }
+
+                if (badgeFails) {
+                    throw new Error("badge unavailable");
                 }
 
                 badgeClears += 1;
@@ -129,6 +159,10 @@ function createWorker(visible = false) {
 
                 if (badgeWriteBarrier) {
                     await badgeWriteBarrier;
+                }
+
+                if (badgeFails) {
+                    throw new Error("badge unavailable");
                 }
 
                 badgeSets.push(count);
@@ -148,7 +182,12 @@ function createWorker(visible = false) {
             await interleave?.();
         }
 
-        return new Response(null, { status: 200 });
+        return new Response(null, {
+            status:
+                input === "/api/push/subscriptions" && init?.method === "PATCH"
+                    ? challengePatchStatus
+                    : 200,
+        });
     };
 
     vm.runInNewContext(source, {
@@ -176,13 +215,17 @@ function createWorker(visible = false) {
         await Promise.all(waits);
     };
 
-    const configure = async (generation = "generation-current", includeGeneration = true) => {
+    const configure = async (
+        generation = "generation-current",
+        includeGeneration = true,
+        deliveryKey = "delivery-current",
+    ) => {
         let response: { ok?: boolean; protocolVersion?: number; cleared?: boolean } | undefined;
 
         await settle("message", {
             data: {
                 type: "SET_PUSH_CONFIG",
-                deliveryKey: "delivery-current",
+                deliveryKey,
                 managementKey: "management-current",
                 publicKey: "AQID",
                 ...(includeGeneration ? { generation } : {}),
@@ -192,6 +235,7 @@ function createWorker(visible = false) {
         assert.equal(response?.ok, true);
         assert.equal(response?.protocolVersion, 2);
         configured = true;
+        currentDeliveryKey = deliveryKey;
     };
 
     const clearConfig = async (generation: string, deliveryKey = "delivery-current") => {
@@ -274,8 +318,16 @@ function createWorker(visible = false) {
         });
     };
 
-    const rawPush = (payload: Record<string, unknown>) =>
+    const rawUnboundPush = (payload: Record<string, unknown>) =>
         settle("push", { data: { json: () => payload } });
+
+    const rawPush = async (payload: Record<string, unknown>) =>
+        rawUnboundPush(
+            (payload.kind === "matrix" || payload.kind === "test") &&
+                typeof payload.owner !== "string"
+                ? { ...payload, owner: await hashForTest(currentDeliveryKey) }
+                : payload,
+        );
 
     const renew = () => settle("pushsubscriptionchange", {});
 
@@ -295,13 +347,33 @@ function createWorker(visible = false) {
         dismiss: (roomId: string) =>
             settle("message", { data: { type: "DISMISS_ROOM_NOTIFICATION", roomId } }),
         interleaveRenewalWithChallenge,
+        navigations,
+        openedWindows,
+        click: (notification: ShownNotification) =>
+            settle("notificationclick", {
+                notification: {
+                    close() {},
+                    data: notification.options.data,
+                },
+            }),
         push: async (payload: Record<string, unknown>) => {
-            if (payload.kind !== "subscription-challenge" && !configured) {
+            const effectivePayload = { kind: "matrix", ...payload };
+
+            if (effectivePayload.kind !== "subscription-challenge" && !configured) {
                 await configure();
             }
 
-            await rawPush(payload);
+            await rawPush(effectivePayload);
         },
+        rawUnboundPush,
+        pushMalformed: () =>
+            settle("push", {
+                data: {
+                    json() {
+                        throw new Error("invalid payload");
+                    },
+                },
+            }),
         pauseNotificationDisplay: () => {
             let release: () => void = () => undefined;
             const started = new Promise<void>((resolve) => {
@@ -341,6 +413,12 @@ function createWorker(visible = false) {
                     release();
                 },
             };
+        },
+        setBadgeFails: (value: boolean) => {
+            badgeFails = value;
+        },
+        setChallengePatchStatus: (value: number) => {
+            challengePatchStatus = value;
         },
         pauseBadgeWrite: () => {
             let release: () => void = () => undefined;
@@ -404,25 +482,139 @@ test("background Matrix pushes collapse to one notification per room", async () 
     await worker.push({ kind: "matrix", roomId: "!two:example", eventId: "$3", unread: 3 });
     assert.notEqual(worker.shown[1].options.tag, worker.shown[2].options.tag);
     assert.equal(worker.active.size, 2);
+    await worker.click(worker.shown[2]);
+    assert.deepEqual(worker.navigations, [
+        "https://sub-etha.example/#/room/!two%3Aexample/event/%243",
+    ]);
 });
 
-test("badge-only Matrix pushes update the badge without alerting", async () => {
+test("defensive badge-only Matrix pushes remain visible and update the badge", async () => {
     const worker = createWorker();
 
     await worker.push({ kind: "matrix", unread: 4 });
-    assert.equal(worker.shown.length, 0);
+    assert.equal(worker.shown.length, 1);
+    assert.equal(worker.shown[0].title, "Sub-Etha");
+    assert.equal(worker.shown[0].options.body, "A new transmission has arrived.");
+    assert.equal(worker.shown[0].options.tag, "sub-etha-fallback");
+    assertOnlyNotificationKind(worker.shown[0], "fallback");
     assert.deepEqual(worker.badgeSets, [4]);
 });
 
-test("visible clients suppress Matrix notifications while badges remain accurate", async () => {
+test("visible clients do not suppress Matrix notifications", async () => {
     const worker = createWorker(true);
 
     await worker.push({ kind: "matrix", roomId: "!one:example", eventId: "$1", unread: 4 });
-    assert.equal(worker.shown.length, 0);
+    assert.equal(worker.shown.length, 1);
     assert.deepEqual(worker.badgeSets, [4]);
 
     await worker.push({ kind: "matrix", roomId: "!one:example", eventId: "$2", unread: 0 });
+    assert.equal(worker.shown.length, 2);
     assert.equal(worker.badgeClears(), 1);
+});
+
+test("malformed and unowned pushes use generic root-only fallbacks", async () => {
+    const malformed = createWorker();
+
+    await malformed.pushMalformed();
+    assert.equal(malformed.shown.length, 1);
+    assert.equal(malformed.shown[0].title, "Sub-Etha");
+    assert.equal(malformed.shown[0].options.body, "A new transmission has arrived.");
+    assert.equal(malformed.shown[0].options.tag, "sub-etha-fallback");
+    assertOnlyNotificationKind(malformed.shown[0], "fallback");
+
+    const unowned = createWorker();
+
+    await unowned.rawPush({
+        kind: "matrix",
+        roomId: "!private:example",
+        eventId: "$private",
+    });
+    assert.equal(unowned.shown.length, 1);
+    assert.equal(unowned.shown[0].options.data?.kind, "fallback");
+    assert.equal(unowned.shown[0].options.data?.roomId, undefined);
+    assert.equal(unowned.shown[0].options.data?.eventId, undefined);
+    await unowned.click(unowned.shown[0]);
+    assert.deepEqual(unowned.navigations, ["https://sub-etha.example/#/"]);
+    assert.deepEqual(unowned.openedWindows, []);
+});
+
+test("fresh random generations remain independent from verified owner hashes", async () => {
+    const worker = createWorker();
+    const generation = "fresh-random-generation";
+    const deliveryKey = "fresh-delivery-capability";
+    const owner = await hashForTest(deliveryKey);
+
+    assert.notEqual(generation, owner);
+    await worker.configure(generation, true, deliveryKey);
+    await worker.rawUnboundPush({
+        kind: "matrix",
+        owner,
+        roomId: "!fresh:example",
+        eventId: "$fresh",
+        unread: 3,
+    });
+    await worker.rawUnboundPush({
+        kind: "test",
+        owner,
+        eventId: "test-fresh",
+        unread: 0,
+    });
+
+    assert.equal(worker.shown.length, 2);
+    assert.equal(worker.shown[0].options.tag, "sub-etha-room:!fresh:example");
+    assert.equal(worker.shown[0].options.data?.generation, generation);
+    assert.equal(worker.shown[0].options.data?.owner, owner);
+    assert.equal(worker.shown[1].options.tag, "sub-etha-test");
+    assert.equal(worker.shown[1].options.data?.generation, generation);
+    assert.equal(worker.shown[1].options.data?.owner, owner);
+    assert.equal(JSON.stringify(worker.shown).includes(deliveryKey), false);
+    assert.deepEqual(worker.badgeSets, [3]);
+    await worker.click(worker.shown[0]);
+    assert.deepEqual(worker.navigations, [
+        "https://sub-etha.example/#/room/!fresh%3Aexample/event/%24fresh",
+    ]);
+});
+
+test("old or unbound owners handled after replacement use root-only fallbacks", async () => {
+    const worker = createWorker();
+    const oldDeliveryKey = "delivery-old";
+
+    await worker.configure("generation-new", true, "delivery-new");
+    await worker.rawUnboundPush({
+        kind: "matrix",
+        owner: await hashForTest(oldDeliveryKey),
+        roomId: "!old:example",
+        eventId: "$old",
+        unread: 9,
+    });
+    await worker.rawUnboundPush({
+        kind: "matrix",
+        roomId: "!unbound:example",
+        eventId: "$unbound",
+    });
+
+    assert.equal(worker.shown.length, 2);
+    assert.deepEqual(worker.badgeSets, []);
+
+    for (const notification of worker.shown) {
+        assertOnlyNotificationKind(notification, "fallback");
+        assert.equal(JSON.stringify(notification).includes(oldDeliveryKey), false);
+        await worker.click(notification);
+    }
+
+    assert.deepEqual(worker.navigations, [
+        "https://sub-etha.example/#/",
+        "https://sub-etha.example/#/",
+    ]);
+});
+
+test("badge failures cannot block visible Matrix notifications", async () => {
+    const worker = createWorker();
+
+    worker.setBadgeFails(true);
+    await worker.push({ kind: "matrix", roomId: "!one:example", eventId: "$1", unread: 4 });
+    assert.equal(worker.shown.length, 1);
+    assert.deepEqual(worker.badgeSets, []);
 });
 
 test("test pushes always alert without changing the unread badge", async () => {
@@ -436,7 +628,7 @@ test("test pushes always alert without changing the unread badge", async () => {
     assert.equal(worker.badgeClears(), 0);
 });
 
-test("subscription challenges confirm silently through the service worker", async () => {
+test("subscription challenges confirm visibly through the service worker", async () => {
     const worker = createWorker();
 
     await worker.configure("generation-current");
@@ -445,7 +637,13 @@ test("subscription challenges confirm silently through the service worker", asyn
         challenge: "challenge-token",
         generation: "generation-current",
     });
-    assert.equal(worker.shown.length, 0);
+    assert.equal(worker.shown.length, 1);
+    assert.equal(worker.shown[0].title, "Sub-Etha");
+    assert.equal(worker.shown[0].options.body, "Notifications are ready to receive transmissions.");
+    assert.equal(worker.shown[0].options.tag, "sub-etha-setup");
+    assertOnlyNotificationKind(worker.shown[0], "setup");
+    assert.equal(JSON.stringify(worker.shown[0]).includes("challenge-token"), false);
+    assert.equal(JSON.stringify(worker.shown[0]).includes("generation-current"), false);
     assert.deepEqual(worker.badgeSets, []);
     assert.equal(worker.requests.length, 1);
     assert.equal(worker.requests[0].input, "/api/push/subscriptions");
@@ -457,6 +655,24 @@ test("subscription challenges confirm silently through the service worker", asyn
         JSON.stringify(worker.clientMessages),
         JSON.stringify([{ type: "PUSH_SUBSCRIPTION_CONFIRMED" }]),
     );
+});
+
+test("failed subscription challenges display without confirming", async () => {
+    const worker = createWorker();
+
+    await worker.configure("generation-current");
+    worker.setChallengePatchStatus(503);
+    await worker.rawPush({
+        kind: "subscription-challenge",
+        challenge: "failed-challenge",
+        generation: "generation-current",
+    });
+
+    assert.equal(worker.shown.length, 1);
+    assertOnlyNotificationKind(worker.shown[0], "setup");
+    assert.equal(JSON.stringify(worker.shown[0]).includes("failed-challenge"), false);
+    assert.equal(worker.clientMessages.length, 0);
+    assert.equal(worker.requests.length, 1);
 });
 
 test("legacy push config migrates under the worker queue and accepts one legacy challenge", async () => {
@@ -483,7 +699,7 @@ test("legacy push config migrates under the worker queue and accepts one legacy 
     assert.equal(current?.config?.legacyGeneration, true);
 
     await worker.rawPush({ kind: "matrix", roomId: "!legacy:example", eventId: "$legacy" });
-    assert.equal(worker.shown.length, 1);
+    assert.equal(worker.shown.length, 2);
 
     await worker.renew();
     assert.equal(worker.requests.length, 2);
@@ -560,6 +776,26 @@ test("a cleared generation cannot confirm a late subscription challenge", async 
 
     assert.equal(worker.requests.length, 0);
     assert.equal(worker.clientMessages.length, 0);
+    assert.equal(worker.shown.length, 1);
+    assert.equal(worker.shown[0].options.data?.kind, "setup");
+});
+
+test("stale notification clicks open the app root after replacement", async () => {
+    const worker = createWorker();
+
+    await worker.configure("generation-old");
+    await worker.rawPush({
+        kind: "matrix",
+        roomId: "!old:example",
+        eventId: "$old",
+        generation: "generation-old",
+    });
+    const staleNotification = worker.shown[0];
+
+    await worker.configure("generation-new");
+    await worker.click(staleNotification);
+
+    assert.deepEqual(worker.navigations, ["https://sub-etha.example/#/"]);
 });
 
 test("opening a room dismisses its grouped notification", async () => {
@@ -585,7 +821,10 @@ test("an older cleanup generation cannot clear a newer push configuration", asyn
     assert.equal(cleared?.ok, true);
     assert.equal(cleared?.cleared, true);
     await worker.rawPush({ kind: "matrix", roomId: "!late:example", eventId: "$late" });
-    assert.equal(worker.shown.length, 1);
+    assert.equal(worker.shown.length, 2);
+    assert.equal(worker.shown[1].options.data?.kind, "fallback");
+    assert.equal(worker.shown[1].options.data?.roomId, undefined);
+    assert.equal(worker.shown[1].options.data?.eventId, undefined);
 });
 
 test("a push display paused across cleanup cannot recreate a notification", async () => {
@@ -698,7 +937,7 @@ test("stale push compensation preserves a newer same-tag notification and badge"
     assert.equal(worker.shown[0].options.data?.generation, "generation-old");
     assert.equal(worker.shown[1].options.data?.generation, "generation-new");
     assert.equal([...worker.active.values()][0]?.data?.generation, "generation-new");
-    assert.deepEqual(worker.badgeSets, [2, 9]);
+    assert.deepEqual(worker.badgeSets, [9]);
     assert.equal(worker.badgeClears(), 1);
     assert.equal(worker.badgeValue(), 9);
 });
