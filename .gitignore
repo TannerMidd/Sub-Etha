@@ -43,6 +43,7 @@ yarn-error.log*
 *.tsbuildinfo
 /outputs/
 /work/
+/PLAN.md
 
 # local visual QA evidence
 /design-*.png
