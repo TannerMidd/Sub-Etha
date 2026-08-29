@@ -17,6 +17,7 @@ import {
     hasLocalPushStateForCleanup,
     hasPendingLocalPushCleanup,
     readAbandonedMatrixPusherWarning,
+    reconcilePushOnStartup,
     registerServiceWorker,
 } from "@/lib/matrix/notifications";
 import {
@@ -671,6 +672,7 @@ export function SubEthaApp() {
                 }
 
                 replaceService(nextService);
+                void reconcilePushOnStartup(nextService).catch(() => undefined);
                 const securityWarning = combineSecurityWarnings();
 
                 setAppState(

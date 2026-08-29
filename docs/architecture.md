@@ -35,7 +35,7 @@ Sub-Etha is a browser-first Matrix client with a narrow deployment backend. This
                       Approved push provider
 ```
 
-The push callback can transiently carry `room_id`, `event_id`, and unread counts. The database retains an event ID only for bounded deduplication. Room IDs, Matrix user IDs, sender and room names, message content, access tokens, encryption keys, synced history, and client IP addresses are not persisted by Sub-Etha. Notification text remains generic; the browser retrieves and decrypts the event from its homeserver.
+The push callback can transiently carry `room_id`, `event_id`, and unread counts. Count-only callbacks are acknowledged without contacting a Web Push provider; closed-app badges reconcile from Matrix state when the app next runs. Every provider-delivered push is user-visible, including the generic endpoint-confirmation alert, because WebKit may revoke `userVisibleOnly` subscriptions after silent pushes. The database retains an event ID only for bounded deduplication. Room IDs, Matrix user IDs, sender and room names, message content, access tokens, encryption keys, synced history, and client IP addresses are not persisted by Sub-Etha. Notification text remains generic; the browser retrieves and decrypts the event from its homeserver.
 
 When an eligible lazy YouTube preview enters the viewport, the browser requests a fixed public thumbnail URL directly from `i.ytimg.com`. That request discloses the public video ID and ordinary network metadata to YouTube, but it does not pass through the Sub-Etha backend and does not include Matrix credentials, room or user identifiers, or other message content.
 
@@ -77,7 +77,7 @@ Resource-intensive media work is admitted serially through a bounded count-and-b
 | Worker-side push configuration replica           | Service worker          | IndexedDB                                                                                                                  |
 | Push subscriptions, budgets, and delivery leases | Push service/repository | PostgreSQL via Drizzle (Neon HTTP in production; standard wire protocol for [local Docker deployments](./local-docker.md)) |
 
-Page-side push capabilities are authoritative. Enabling or reconciling push sends `SET_PUSH_CONFIG` to the worker replica; disable and logout send `CLEAR_PUSH_CONFIG`. The replica exists so the worker can handle subscription lifecycle while no page is open. Other mirrored state needs an explicit synchronization rule; otherwise consumers derive it from the owner.
+Page-side push capabilities are authoritative. Enabling or reconciling push sends `SET_PUSH_CONFIG` to the worker replica; disable and logout send `CLEAR_PUSH_CONFIG`. Startup reconciliation repairs an existing subscription only from page-owned capabilities; worker-only artifacts are cleaned rather than promoted into authoritative state. The replica exists so the worker can handle subscription lifecycle while no page is open. Other mirrored state needs an explicit synchronization rule; otherwise consumers derive it from the owner.
 
 ## When architecture documentation changes
 

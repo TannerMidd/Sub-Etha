@@ -279,6 +279,10 @@ test("app cleanup ordering preserves local finality and partial migration recove
     assert.match(source, /abandonMatrixPusherAfterGatewayCleanup: true/);
     assert.match(
         source,
+        /replaceService\(nextService\);\s*void reconcilePushOnStartup\(nextService\)\.catch/,
+    );
+    assert.match(
+        source,
         /setup\.mode === "migration"[\s\S]*inspectSession\(\)[\s\S]*routeInspection\(inspection, operation\)/,
     );
     assert.match(

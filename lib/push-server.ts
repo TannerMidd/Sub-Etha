@@ -380,6 +380,18 @@ export function createPushServer(dependencies: PushServerDependencies = {}) {
             return removed ? "rejected" : "transient";
         }
 
+        const eventId =
+            typeof notification.event_id === "string" && notification.event_id.length > 0
+                ? notification.event_id
+                : null;
+
+        // Matrix homeservers send count-only callbacks to keep badges current. Forwarding those
+        // callbacks as silent Web Push messages violates WebKit's userVisibleOnly contract, so
+        // only event-bearing callbacks may consume delivery capacity or contact a provider.
+        if (!eventId) {
+            return "suppressed";
+        }
+
         const timestamp = now();
 
         if (
@@ -393,10 +405,7 @@ export function createPushServer(dependencies: PushServerDependencies = {}) {
             return "suppressed";
         }
 
-        const eventId = typeof notification.event_id === "string" ? notification.event_id : null;
-
         if (
-            eventId &&
             !(await repository.claimDelivery(
                 keyHash,
                 eventId,
@@ -424,7 +433,7 @@ export function createPushServer(dependencies: PushServerDependencies = {}) {
         try {
             await sendNotification(
                 snapshot,
-                genericNotificationPayload(notification),
+                genericNotificationPayload(notification, "matrix", snapshot.deliveryKeyHash),
                 pushConfiguration,
             );
 
@@ -748,6 +757,7 @@ export function createPushServer(dependencies: PushServerDependencies = {}) {
                     const payload = genericNotificationPayload(
                         { event_id: `test-${timestamp}`, counts: { unread: 0 } },
                         "test",
+                        subscription.deliveryKeyHash,
                     );
 
                     await sendNotification(subscription, payload, pushConfiguration);
@@ -788,12 +798,6 @@ export function createPushServer(dependencies: PushServerDependencies = {}) {
 
         notify(request: Request): Promise<Response> {
             return guarded("matrix-notify", async () => {
-                const pushConfiguration = configured();
-
-                if (pushConfiguration instanceof Response) {
-                    return pushConfiguration;
-                }
-
                 const body = await readJson<MatrixNotifyRequest>(request);
                 const notification = body.notification;
                 const devices = notification?.devices;
@@ -835,9 +839,57 @@ export function createPushServer(dependencies: PushServerDependencies = {}) {
                             : (snapshotByHash.get(deviceHashes[index]) ?? null),
                 }));
 
+                const eventBearing =
+                    typeof notification.event_id === "string" && notification.event_id.length > 0;
+
+                const summarize = (results: DeviceDeliveryResult[]) => {
+                    const rejected = validDevices.flatMap((device, index) =>
+                        results[index] === "rejected" && typeof device.pushkey === "string"
+                            ? [device.pushkey]
+                            : [],
+                    );
+                    const counts = results.reduce<Record<DeviceDeliveryResult, number>>(
+                        (summary, result) => {
+                            summary[result] += 1;
+
+                            return summary;
+                        },
+                        { sent: 0, suppressed: 0, rejected: 0, transient: 0 },
+                    );
+
+                    log({
+                        route: "matrix-notify-summary",
+                        notificationKind: eventBearing ? "event" : "counts-only",
+                        ...counts,
+                        deviceCount: validDevices.length,
+                    });
+
+                    return { counts, rejected };
+                };
+
+                if (!eventBearing) {
+                    const results = resolvedDevices.map(({ device, keyHash, snapshot }) =>
+                        device.app_id === APP_ID &&
+                        validPushKey(device.pushkey) &&
+                        keyHash &&
+                        snapshot
+                            ? "suppressed"
+                            : "rejected",
+                    ) satisfies DeviceDeliveryResult[];
+                    const { rejected } = summarize(results);
+
+                    return json({ rejected });
+                }
+
+                const pushConfiguration = configured();
+
+                if (pushConfiguration instanceof Response) {
+                    return pushConfiguration;
+                }
+
                 if (snapshots.length === 0) {
-                    const rejected = validDevices.flatMap((device) =>
-                        typeof device.pushkey === "string" ? [device.pushkey] : [],
+                    const { rejected } = summarize(
+                        resolvedDevices.map(() => "rejected" satisfies DeviceDeliveryResult),
                     );
 
                     return json({ rejected });
@@ -862,29 +914,12 @@ export function createPushServer(dependencies: PushServerDependencies = {}) {
                     DELIVERY_CONCURRENCY,
                     (device) => deliver(device, notification, pushConfiguration),
                 );
-                const rejected = validDevices.flatMap((device, index) =>
-                    results[index] === "rejected" && typeof device.pushkey === "string"
-                        ? [device.pushkey]
-                        : [],
-                );
-                const counts = results.reduce<Record<DeviceDeliveryResult, number>>(
-                    (summary, result) => {
-                        summary[result] += 1;
-
-                        return summary;
-                    },
-                    { sent: 0, suppressed: 0, rejected: 0, transient: 0 },
-                );
+                const { counts, rejected } = summarize(results);
 
                 await repository
                     .cleanupDeliveries(now() - DELIVERY_RETENTION_SECONDS)
                     .catch(() => undefined);
                 await cleanupStaleSubscriptions().catch(() => undefined);
-                log({
-                    route: "matrix-notify-summary",
-                    ...counts,
-                    deviceCount: validDevices.length,
-                });
 
                 if (counts.transient > 0) {
                     return json(

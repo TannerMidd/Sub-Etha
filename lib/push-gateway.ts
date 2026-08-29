@@ -159,9 +159,11 @@ export function createPublicPushAgent(resolver?: PushHostResolver): Agent {
 export function genericNotificationPayload(
     notification: MinimalMatrixNotification,
     kind: PushNotificationKind = "matrix",
+    owner?: string | null,
 ): string {
     return JSON.stringify({
         kind,
+        ...(owner ? { owner } : {}),
         roomId: notification.room_id ?? null,
         eventId: notification.event_id ?? null,
         unread: Number.isFinite(notification.counts?.unread)

@@ -1642,7 +1642,9 @@ async function runDurablePushSetup(
     });
 }
 
-export async function refreshPushState(service: MatrixService): Promise<PushState> {
+const pushRefreshTasks = new WeakMap<MatrixService, Promise<PushState>>();
+
+async function performPushStateRefresh(service: MatrixService): Promise<PushState> {
     const initial = readPushState();
 
     if (!initial.supported) {
@@ -1719,6 +1721,54 @@ export async function refreshPushState(service: MatrixService): Promise<PushStat
                     : "Closed-app notifications could not be verified.",
         };
     }
+}
+
+export function refreshPushState(service: MatrixService): Promise<PushState> {
+    const existing = pushRefreshTasks.get(service);
+
+    if (existing) {
+        return existing;
+    }
+
+    const refresh = performPushStateRefresh(service);
+
+    pushRefreshTasks.set(service, refresh);
+    void refresh.then(
+        () => {
+            if (pushRefreshTasks.get(service) === refresh) {
+                pushRefreshTasks.delete(service);
+            }
+        },
+        () => {
+            if (pushRefreshTasks.get(service) === refresh) {
+                pushRefreshTasks.delete(service);
+            }
+        },
+    );
+
+    return refresh;
+}
+
+export async function reconcilePushOnStartup(service: MatrixService): Promise<PushState | null> {
+    const initial = readPushState();
+
+    if (!initial.supported || initial.permission !== "granted") {
+        return null;
+    }
+
+    let priorEnrollment = false;
+
+    try {
+        priorEnrollment = hasLocalPushStateForCleanup();
+    } catch {
+        return null;
+    }
+
+    if (!priorEnrollment) {
+        priorEnrollment = await hasBrowserPushArtifacts();
+    }
+
+    return priorEnrollment ? refreshPushState(service) : null;
 }
 
 export async function enablePush(service: MatrixService): Promise<PushState> {
@@ -1879,6 +1929,7 @@ async function performLocalPushCleanup(
         cleanup.deliveryKey = workerSession.config.deliveryKey;
         cleanup.managementKey = workerSession.config.managementKey;
         cleanup.gatewayDone = false;
+        cleanup.pusherDone = false;
         persistPendingPushCleanup(cleanup);
     } else if (
         workerSession?.config &&

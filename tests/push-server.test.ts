@@ -17,6 +17,12 @@ const SUBSCRIPTION: StoredPushSubscription = {
     auth: "auth",
 };
 
+async function hashForTest(value: string): Promise<string> {
+    const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
+
+    return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
 class MemoryPushRepository implements PushRepository {
     subscriptions = new Map<string, StoredPushSubscription>();
     managementKeys = new Map<string, string>();
@@ -29,6 +35,8 @@ class MemoryPushRepository implements PushRepository {
     deleted = 0;
     released = 0;
     allowRate = true;
+    rateLimitCalls = 0;
+    markDeliveredCalls = 0;
     globalBudgets = new Map<string, boolean>();
     globalBudgetCalls: string[] = [];
     registrationOutcome: "created" | "refreshed" | "reassigned" | "capacity_exceeded" = "created";
@@ -193,6 +201,8 @@ class MemoryPushRepository implements PushRepository {
     }
 
     async consumeRateLimit(): Promise<boolean> {
+        this.rateLimitCalls += 1;
+
         return this.allowRate;
     }
 
@@ -221,6 +231,7 @@ class MemoryPushRepository implements PushRepository {
     }
 
     async markDelivered(snapshot: PushSubscriptionSnapshot): Promise<boolean> {
+        this.markDeliveredCalls += 1;
         const current =
             this.subscriptions.get(snapshot.deliveryKeyHash) ??
             (this.returnAnySubscription ? this.anySubscription : null);
@@ -295,12 +306,16 @@ function subscriptionBody(
     };
 }
 
-function notifyRequest(devices: unknown[], eventId = "$event"): Request {
+function notifyRequest(devices: unknown[], eventId: string | null = "$event"): Request {
     return new Request(`${ORIGIN}/_matrix/push/v1/notify`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-            notification: { event_id: eventId, room_id: "!room:example", devices },
+            notification: {
+                ...(eventId === null ? {} : { event_id: eventId }),
+                room_id: "!room:example",
+                devices,
+            },
         }),
     });
 }
@@ -694,12 +709,87 @@ test("Matrix relay payload excludes sender and message text", async () => {
     assert.equal(response.status, 200);
     assert.deepEqual(JSON.parse(payloads[0] ?? "{}"), {
         kind: "matrix",
+        owner: await hashForTest(PUSH_KEY),
         roomId: "!room:example",
         eventId: "$routing-only",
         unread: 7,
     });
     assert.equal(payloads[0]?.includes("secret message text"), false);
     assert.equal(payloads[0]?.includes("Private sender"), false);
+});
+
+test("count-only Matrix callbacks never contact Web Push providers", async () => {
+    for (const eventId of [null, ""] as const) {
+        const repository = new MemoryPushRepository();
+
+        repository.returnAnySubscription = true;
+        const logs: Array<Record<string, unknown>> = [];
+        let sends = 0;
+        const server = configuredServer(
+            repository,
+            async () => {
+                sends += 1;
+            },
+            logs,
+        );
+        const response = await server.notify(
+            notifyRequest([{ app_id: "chat.subetha.pwa", pushkey: PUSH_KEY }], eventId),
+        );
+
+        assert.equal(response.status, 200);
+        assert.deepEqual(await response.json(), { rejected: [] });
+        assert.equal(sends, 0);
+        assert.equal(repository.rateLimitCalls, 0);
+        assert.equal(repository.markDeliveredCalls, 0);
+        assert.equal(repository.deliveries.size, 0);
+        assert.equal(
+            repository.globalBudgetCalls.filter(
+                (bucket) => bucket === "matrix-notify" || bucket === "outbound-deliveries",
+            ).length,
+            0,
+        );
+        const summary = logs.find((entry) => entry.route === "matrix-notify-summary");
+
+        assert.equal(summary?.notificationKind, "counts-only");
+        assert.equal(summary?.suppressed, 1);
+        const serialized = JSON.stringify(logs);
+
+        assert.equal(serialized.includes(PUSH_KEY), false);
+        assert.equal(serialized.includes("!room:example"), false);
+    }
+});
+
+test("count-only Matrix callbacks succeed without provider configuration or notify budget", async () => {
+    const repository = new MemoryPushRepository();
+    const deliveryKeyHash = await hashForTest(PUSH_KEY);
+
+    repository.subscriptions.set(deliveryKeyHash, SUBSCRIPTION);
+    repository.managementKeys.set(GENERATION, deliveryKeyHash);
+    repository.globalBudgets.set("matrix-notify", false);
+    let sends = 0;
+    const server = createPushServer({
+        repository,
+        sendNotification: async () => {
+            sends += 1;
+        },
+        configuration: () => null,
+        log: () => undefined,
+    });
+    const unknownKey = "z".repeat(40);
+    const response = await server.notify(
+        notifyRequest(
+            [
+                { app_id: "chat.subetha.pwa", pushkey: PUSH_KEY },
+                { app_id: "chat.subetha.pwa", pushkey: unknownKey },
+            ],
+            null,
+        ),
+    );
+
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), { rejected: [unknownKey] });
+    assert.equal(sends, 0);
+    assert.deepEqual(repository.globalBudgetCalls, []);
 });
 
 test("concurrent duplicate Matrix deliveries emit one Web Push notification", async () => {
@@ -796,8 +886,10 @@ test("transient Web Push failures release deduplication claims and return a retr
 
 test("same-origin test notifications use the registered generic push channel", async () => {
     const repository = new MemoryPushRepository();
+    const deliveryKeyHash = await hashForTest(PUSH_KEY);
 
-    repository.returnAnySubscription = true;
+    repository.subscriptions.set(deliveryKeyHash, SUBSCRIPTION);
+    repository.managementKeys.set(await hashForTest(MANAGEMENT_KEY), deliveryKeyHash);
     const payloads: string[] = [];
     const server = configuredServer(repository, async (_subscription, payload) => {
         payloads.push(payload);
@@ -812,12 +904,17 @@ test("same-origin test notifications use the registered generic push channel", a
 
     assert.equal(response.status, 200);
     assert.equal(payloads.length, 1);
-    assert.deepEqual(JSON.parse(payloads[0]), {
+    const payload = JSON.parse(payloads[0]);
+
+    assert.deepEqual(payload, {
         kind: "test",
+        owner: await hashForTest(PUSH_KEY),
         roomId: null,
         eventId: "test-1800000000",
         unread: 0,
     });
+    assert.match(payload.owner, /^[a-f0-9]{64}$/);
+    assert.equal(payload.owner.includes(PUSH_KEY), false);
 });
 
 test("Matrix delivery identifiers cannot authorize browser test sends", async () => {
