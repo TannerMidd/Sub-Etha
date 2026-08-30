@@ -78,7 +78,12 @@ import {
     type MediaOperationLease,
 } from "./media";
 import { normalizeRooms, normalizeTimeline } from "./normalize";
-import { createMediaContent, createTextContent } from "./message-content";
+import {
+    createMediaContent,
+    createMediaEditContent,
+    createTextContent,
+    isMediaMessageContent,
+} from "./message-content";
 import type {
     DeviceSummary,
     DeviceVerificationState,
@@ -1544,7 +1549,7 @@ export class MatrixService {
         const client = this.requireClient();
         const roomId = this.snapshot.activeRoomId;
 
-        if (!roomId || !body.trim()) {
+        if (!roomId) {
             return;
         }
 
@@ -1557,12 +1562,36 @@ export class MatrixService {
             throw new Error("You can only edit your own messages.");
         }
 
-        const editedRelation = editedEvent?.getContent<Record<string, unknown>>()[
-            "m.relates_to"
-        ] as { "m.in_reply_to"?: { event_id?: string } } | undefined;
+        const originalContent = editedEvent?.getOriginalContent<Record<string, unknown>>();
+        const displayedContent = editedEvent?.getContent<Record<string, unknown>>();
+        const effectiveEditedContent =
+            (displayedContent?.["m.new_content"] as Record<string, unknown> | undefined) ??
+            displayedContent;
+        const editedRelation = originalContent?.["m.relates_to"] as
+            { "m.in_reply_to"?: { event_id?: string } } | undefined;
         const replyTo = options.replyTo ?? editedRelation?.["m.in_reply_to"]?.event_id;
         const replyUserId = replyTo ? room?.findEventById(replyTo)?.getSender() : undefined;
-        const content = createTextContent(body, { ...options, replyTo, replyUserId });
+        let content: Record<string, unknown>;
+
+        if (
+            options.editEventId &&
+            effectiveEditedContent &&
+            isMediaMessageContent(effectiveEditedContent)
+        ) {
+            const mediaContent = { ...effectiveEditedContent };
+
+            if (editedRelation?.["m.in_reply_to"]?.event_id) {
+                mediaContent["m.relates_to"] = editedRelation;
+            }
+
+            content = createMediaEditContent(mediaContent, body, options.editEventId);
+        } else {
+            if (!body.trim()) {
+                return;
+            }
+
+            content = createTextContent(body, { ...options, replyTo, replyUserId });
+        }
 
         try {
             await client.sendMessage(roomId, content as never);

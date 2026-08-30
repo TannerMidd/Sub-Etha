@@ -68,7 +68,7 @@ export function MessageRow({
     const nextDay =
         next && new Date(next.timestamp).toDateString() !== new Date(item.timestamp).toDateString();
     const actionable = timelineItemHasActions(item);
-    const editable = actionable && item.own && item.type === "message" && !item.media;
+    const editable = actionable && item.own && (item.type === "message" || Boolean(item.media));
     const youtubePreviews = useMemo(() => timelineYouTubePreviews(item), [item]);
 
     if (item.type === "system") {

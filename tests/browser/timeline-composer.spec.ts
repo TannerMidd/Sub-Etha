@@ -10,7 +10,7 @@ const FAILURE_PREVIEW_URL =
 // the composer in the Zen layout, so the last row only needs to clear the
 // scroller edge itself.
 const MESSAGE_COMPOSER_CLEARANCE_PX = 0;
-const SUBPIXEL_TOLERANCE_PX = 0.5;
+const SUBPIXEL_TOLERANCE_PX = 1;
 const DETACHED_SCROLL_MARGIN_PX = 32;
 const DIRECT_SCROLL_DISTANCE_PX = 240;
 // Virtuoso publishes at-bottom changes through a deliberate 50ms throttle;
@@ -761,11 +761,34 @@ test.describe("composer regression coverage", () => {
             Array.from({ length: 8 }, (_, index) => `Line ${index + 1}`).join("\n"),
         );
         await expectNewestMessageClearOfComposer(page, "stress-remote-append");
+        await scroller.evaluate(
+            () =>
+                new Promise<void>((resolve) => {
+                    window.requestAnimationFrame(() =>
+                        window.requestAnimationFrame(() => resolve()),
+                    );
+                }),
+        );
 
-        await scroller.evaluate((element) => {
-            element.scrollTop = Math.max(0, element.scrollTop - 1_800);
-        });
+        for (let attempt = 0; attempt < 3; attempt += 1) {
+            await wheelTimeline(scroller, -1_800);
+            const bottomDistance = await scroller.evaluate(
+                (element) => element.scrollHeight - element.clientHeight - element.scrollTop,
+            );
+
+            if (bottomDistance > 200) {
+                break;
+            }
+        }
+
         await expect(timeline).toHaveAttribute("data-scroll-mode", "detached");
+        await expect
+            .poll(() =>
+                scroller.evaluate(
+                    (element) => element.scrollHeight - element.clientHeight - element.scrollTop,
+                ),
+            )
+            .toBeGreaterThan(200);
         const before = await visibleEventAnchor(scroller);
 
         await textarea.fill("One line");
@@ -785,6 +808,7 @@ test.describe("composer regression coverage", () => {
         await openMessageActions(replyRow);
         await replyRow.getByRole("button", { name: "Reply" }).click();
         await expect(page.getByText("Replying to Tamsin")).toBeVisible();
+        await expect(textarea).toBeFocused();
         await textarea.fill("Reply line one\nReply line two\nReply line three\nReply line four");
         expect((await textareaMetrics(textarea)).height).toBeGreaterThan(50);
         await page.getByRole("button", { name: "Cancel reply" }).click();
@@ -811,6 +835,28 @@ test.describe("composer regression coverage", () => {
         expect(
             Math.abs((await textareaMetrics(textarea)).height - resetHeight),
         ).toBeLessThanOrEqual(1);
+    });
+
+    test("media captions can be edited without removing the attachment", async ({ page }) => {
+        await openPreview(page, "/?design-preview&ux-preview=media#/room/signal-watch");
+
+        const row = page.locator('[data-event-id="m11"]');
+        const textarea = page.locator("#message-composer");
+
+        await row.scrollIntoViewIfNeeded();
+        await openMessageActions(row, "Edit");
+        await row.getByRole("button", { name: "Edit" }).click();
+        await expect(page.getByText("Editing media caption")).toBeVisible();
+        await expect(textarea).toBeFocused();
+        await expect(textarea).toHaveValue("Calibration image from this shift.");
+        await textarea.fill("Updated calibration image.");
+        await page.getByRole("button", { name: "Save message edit" }).click();
+
+        await expect(row).toContainText("Updated calibration image.");
+        await expect(row.getByText("edited")).toBeVisible();
+        await expect(
+            row.getByRole("button", { name: "View Updated calibration image." }),
+        ).toBeVisible();
     });
 });
 

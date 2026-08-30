@@ -222,6 +222,23 @@ function createPreviewService(): MatrixService {
                           },
                       },
                   ),
+                  previewMessage(
+                      "m11",
+                      "Rayne",
+                      "Calibration image from this shift.",
+                      at(10, 45),
+                      true,
+                      {
+                          type: "image",
+                          media: {
+                              mxcUrl: "/night-receiver-plate.png",
+                              mimeType: "image/png",
+                              size: 382_000,
+                              width: 1024,
+                              height: 1024,
+                          },
+                      },
+                  ),
               ]
             : []),
     ];
