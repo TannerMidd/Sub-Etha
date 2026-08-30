@@ -2670,6 +2670,75 @@ test("logout aborts active attachment and avatar uploads before either can publi
     assert.equal(avatarMutationCalls, 0);
 });
 
+test("media caption edits send a replacement without re-uploading the attachment", async () => {
+    const service = createService();
+    const sent: Record<string, unknown>[] = [];
+    const originalContent = {
+        msgtype: "m.image",
+        body: "Original caption",
+        filename: "receiver.png",
+        info: { mimetype: "image/png", size: 42, w: 320, h: 240 },
+        file: { url: "mxc://matrix.example/receiver", key: { k: "secret" } },
+        "m.relates_to": { "m.in_reply_to": { event_id: "$earlier" } },
+    };
+    let displayedContent = originalContent;
+    const editedEvent = {
+        getSender: () => SESSION.userId,
+        getOriginalContent: () => originalContent,
+        getContent: () => displayedContent,
+    };
+    const internals = service as unknown as {
+        client: MatrixClient | null;
+        snapshot: MatrixSnapshot;
+    };
+
+    internals.client = {
+        getUserId: () => SESSION.userId,
+        getRoom: () => ({
+            findEventById: (eventId: string) =>
+                eventId === "$image" ? editedEvent : { getSender: () => "@ford:matrix.example" },
+        }),
+        sendMessage: async (_roomId: string, content: Record<string, unknown>) => {
+            sent.push(content);
+        },
+    } as unknown as MatrixClient;
+    internals.snapshot = {
+        ...service.getSnapshot(),
+        activeRoomId: "!media:matrix.example",
+    };
+
+    await service.sendText("Updated caption", { editEventId: "$image" });
+
+    assert.equal(sent.length, 1);
+    const replacement = sent[0]["m.new_content"] as Record<string, unknown>;
+
+    assert.equal(replacement.body, "Updated caption");
+    assert.equal(replacement.filename, "receiver.png");
+    assert.deepEqual(replacement.info, originalContent.info);
+    assert.deepEqual(replacement.file, originalContent.file);
+    assert.deepEqual(replacement["m.relates_to"], originalContent["m.relates_to"]);
+    assert.deepEqual(sent[0]["m.relates_to"], {
+        rel_type: "m.replace",
+        event_id: "$image",
+    });
+
+    displayedContent = replacement as typeof originalContent;
+    await service.sendText("", { editEventId: "$image" });
+
+    assert.equal(sent.length, 2);
+    const removedCaption = sent[1]["m.new_content"] as Record<string, unknown>;
+
+    assert.equal(removedCaption.body, "receiver.png");
+    assert.equal(removedCaption.filename, "receiver.png");
+    assert.deepEqual(removedCaption.info, originalContent.info);
+    assert.deepEqual(removedCaption.file, originalContent.file);
+    assert.deepEqual(removedCaption["m.relates_to"], originalContent["m.relates_to"]);
+    assert.deepEqual(sent[1]["m.relates_to"], {
+        rel_type: "m.replace",
+        event_id: "$image",
+    });
+});
+
 test("plain video uploads are not constrained by the 64 MiB image-preview ceiling", async () => {
     const service = createService();
     let uploadedSize = 0;

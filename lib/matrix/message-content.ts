@@ -52,6 +52,50 @@ export function createTextContent(
     return plainContent;
 }
 
+const MEDIA_MESSAGE_TYPES = new Set(["m.image", "m.video", "m.audio", "m.file"]);
+
+export function isMediaMessageContent(content: Record<string, unknown>): boolean {
+    return typeof content.msgtype === "string" && MEDIA_MESSAGE_TYPES.has(content.msgtype);
+}
+
+export function createMediaEditContent(
+    originalContent: Record<string, unknown>,
+    body: string,
+    editEventId: string,
+): Record<string, unknown> {
+    if (!isMediaMessageContent(originalContent)) {
+        throw new Error("Only media messages can use media caption edits.");
+    }
+
+    const originalBody =
+        typeof originalContent.body === "string" && originalContent.body.trim()
+            ? originalContent.body.trim()
+            : "attachment";
+    const fileName =
+        typeof originalContent.filename === "string" && originalContent.filename.trim()
+            ? originalContent.filename.trim()
+            : originalBody;
+    const caption = body.trim();
+    const replacementContent: Record<string, unknown> = {
+        ...originalContent,
+        body: caption || fileName,
+        filename: fileName,
+    };
+
+    // The composer edits plain captions. Do not leave a stale rich caption in
+    // place after its plain-text counterpart changes.
+    delete replacementContent.format;
+    delete replacementContent.formatted_body;
+    delete replacementContent["m.new_content"];
+
+    return {
+        msgtype: originalContent.msgtype,
+        body: `* ${caption || fileName}`,
+        "m.new_content": replacementContent,
+        "m.relates_to": { rel_type: RelationType.Replace, event_id: editEventId },
+    };
+}
+
 function mediaMessageType(mimeType: string): string {
     if (mimeType.startsWith("image/")) {
         return "m.image";

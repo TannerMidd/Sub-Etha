@@ -1017,18 +1017,11 @@ export function ChatShell({
                                             initializing={snapshot.connection === "starting"}
                                             unreadCount={activeRoom.unread}
                                             onReply={(item) => {
-                                                if (isMobileLayout()) {
-                                                    flushSync(() => {
-                                                        setReplyingTo(item);
-                                                        setEditing(null);
-                                                    });
-                                                    composer.current?.focus();
-
-                                                    return;
-                                                }
-
-                                                setReplyingTo(item);
-                                                setEditing(null);
+                                                flushSync(() => {
+                                                    setReplyingTo(item);
+                                                    setEditing(null);
+                                                });
+                                                composer.current?.focus();
                                             }}
                                             onEdit={(item) => {
                                                 setEditing(item);

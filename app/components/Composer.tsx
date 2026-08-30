@@ -75,8 +75,12 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
     const typingTimer = useRef<number | null>(null);
     const attachmentPreviewRef = useRef<string | null>(null);
     const trimmedBody = body.trim();
+    const editingMediaCaption = Boolean(editing?.media);
     const unchangedEdit = Boolean(editing && trimmedBody === editing.body.trim());
-    const canSend = Boolean(attachment || trimmedBody) && !unchangedEdit && !sending;
+    const canSend =
+        (editingMediaCaption
+            ? !unchangedEdit
+            : Boolean(attachment || trimmedBody) && !unchangedEdit) && !sending;
 
     useImperativeHandle(
         ref,
@@ -333,7 +337,11 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
                     {editing ? <Pencil aria-hidden="true" /> : <CornerUpLeft aria-hidden="true" />}
                     <span>
                         <strong>
-                            {editing ? "Editing message" : `Replying to ${replyingTo?.senderName}`}
+                            {editing
+                                ? editingMediaCaption
+                                    ? "Editing media caption"
+                                    : "Editing message"
+                                : `Replying to ${replyingTo?.senderName}`}
                         </strong>
                         {editing ? editing.body : replyingTo?.body}
                     </span>
@@ -465,11 +473,13 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
                         }
                     }}
                     placeholder={
-                        editing
-                            ? "Revise this message…"
-                            : attachment
-                              ? "Add a caption…"
-                              : `Write to ${roomName}`
+                        editingMediaCaption
+                            ? "Revise this caption…"
+                            : editing
+                              ? "Revise this message…"
+                              : attachment
+                                ? "Add a caption…"
+                                : `Write to ${roomName}`
                     }
                     data-compose-mode={editing ? "editing" : attachment ? "attachment" : "message"}
                     rows={1}

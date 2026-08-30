@@ -10,7 +10,11 @@ import { base64UrlToBytes, createSession, randomBase64Url } from "../lib/matrix/
 import type { RoomSummary } from "../lib/matrix/types";
 import { eventDecryptionState, roomAvatarMxcUrl, sortRoomSummaries } from "../lib/matrix/normalize";
 import { genericNotificationPayload, validPushEndpoint, validPushKey } from "../lib/push-gateway";
-import { createMediaContent, createTextContent } from "../lib/matrix/message-content";
+import {
+    createMediaContent,
+    createMediaEditContent,
+    createTextContent,
+} from "../lib/matrix/message-content";
 import { messageTextSegments, stripPlainReplyFallback } from "../lib/matrix/message-text";
 import {
     findOwnReactionEventId,
@@ -353,6 +357,35 @@ test("image attachments preserve captions, dimensions, encryption metadata, and 
     assert.deepEqual(content["m.relates_to"], { "m.in_reply_to": { event_id: "$earlier" } });
     assert.equal((content.file as { url: string }).url, "mxc://example/media");
     assert.equal("url" in content, false);
+});
+
+test("media caption edits preserve the attachment and can remove a caption", () => {
+    const original = createMediaContent({
+        fileName: "signal.gif",
+        mimeType: "image/gif",
+        contentUri: "mxc://example/media",
+        info: { mimetype: "image/gif", size: 42, w: 320, h: 240 },
+        caption: "A moving signal",
+        replyTo: "$earlier",
+        encryptedFile: { key: { k: "secret" }, iv: "iv", hashes: { sha256: "hash" }, v: "v2" },
+    });
+    const edit = createMediaEditContent(original, "A corrected signal", "$original");
+    const replacement = edit["m.new_content"] as Record<string, unknown>;
+
+    assert.equal(edit.msgtype, "m.image");
+    assert.equal(replacement.body, "A corrected signal");
+    assert.equal(replacement.filename, "signal.gif");
+    assert.deepEqual(replacement.info, original.info);
+    assert.deepEqual(replacement.file, original.file);
+    assert.deepEqual(replacement["m.relates_to"], original["m.relates_to"]);
+    assert.deepEqual(edit["m.relates_to"], { rel_type: "m.replace", event_id: "$original" });
+
+    const removedCaption = createMediaEditContent(replacement, "", "$original");
+    const removedReplacement = removedCaption["m.new_content"] as Record<string, unknown>;
+
+    assert.equal(removedReplacement.body, "signal.gif");
+    assert.equal(removedReplacement.filename, "signal.gif");
+    assert.deepEqual(removedReplacement.file, original.file);
 });
 
 test("reaction toggling identifies the current user's relation for redaction", () => {
