@@ -3,6 +3,7 @@ import test from "node:test";
 import { IDBDatabase as FakeIDBDatabase, IDBFactory } from "fake-indexeddb";
 import { ClientEvent, MatrixClient, MemoryStore, OAuth2, SyncState } from "matrix-js-sdk";
 import { encodeRecoveryKey } from "matrix-js-sdk/lib/crypto-api/recovery-key";
+import { VerificationPhase } from "matrix-js-sdk/lib/crypto-api/verification";
 import {
     MatrixAlreadyOpenError,
     MatrixOwnershipUnavailableError,
@@ -3107,6 +3108,74 @@ test("a live same-account to-device request is surfaced without the self-verific
 
     assert.equal(internals.snapshot.verification?.direction, "incoming");
     assert.equal(internals.snapshot.verification?.otherUserId, SESSION.userId);
+});
+
+test("accepting an incoming request starts SAS once the request is ready", async () => {
+    const service = createService();
+    const internals = verificationInternals(service);
+    const client = {
+        off: () => undefined,
+        stopClient: () => undefined,
+    } as unknown as MatrixClient;
+    let phase = VerificationPhase.Requested;
+    let changeHandler: (() => void) | null = null;
+    let startCalls = 0;
+    let cancelCalls = 0;
+    const verifier = {
+        hasBeenCancelled: false,
+        on: () => undefined,
+        off: () => undefined,
+        cancel: () => {
+            cancelCalls += 1;
+        },
+        getShowSasCallbacks: () => null,
+        verify: () => new Promise<void>(() => undefined),
+    };
+    const request = {
+        transactionId: "$incoming-ready",
+        roomId: undefined,
+        initiatedByMe: false,
+        otherUserId: SESSION.userId,
+        otherDeviceId: "ELEMENT_DEVICE",
+        pending: true,
+        get phase() {
+            return phase;
+        },
+        accept: async () => {
+            phase = VerificationPhase.Ready;
+            changeHandler?.();
+        },
+        cancel: async () => undefined,
+        startVerification: async (method: string) => {
+            assert.equal(method, "m.sas.v1");
+            startCalls += 1;
+
+            return verifier;
+        },
+        on: (_event: string, handler: () => void) => {
+            changeHandler = handler;
+        },
+        off: (_event: string, handler: () => void) => {
+            if (changeHandler === handler) {
+                changeHandler = null;
+            }
+        },
+    };
+
+    internals.client = client;
+    internals.handleIncomingVerification(request as never);
+    await service.acceptDeviceVerification();
+    await new Promise<void>((resolve) => setImmediate(resolve));
+
+    assert.equal(startCalls, 1);
+    assert.equal(service.getSnapshot().verification?.stage, "waiting");
+    assert.match(
+        service.getSnapshot().verification?.message ?? "",
+        /negotiating.*sequence of emoji/i,
+    );
+
+    service.stop();
+    assert.equal(cancelCalls, 1);
 });
 
 test("a persisted incoming request is reconciled without a new crypto event", async () => {

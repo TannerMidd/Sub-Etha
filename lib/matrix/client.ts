@@ -1226,7 +1226,7 @@ export class MatrixService {
             return;
         }
 
-        if (request.phase === VerificationPhase.Ready && context.direction === "outgoing") {
+        if (request.phase === VerificationPhase.Ready) {
             void this.runVerifier(context);
 
             return;
